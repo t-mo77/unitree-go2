@@ -1,30 +1,38 @@
 # Image for the `gazebo` service: go2-voice-ltl-gazebo:dev
-# Gazebo Classic 11 + legubiao/quadruped_ros2_control (unitree_guide controller, Go2 model).
+# Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic + legubiao/quadruped_ros2_control
+# (unitree_guide controller, Go2 model, gz_quadruped_playground with a LiDAR).
+# Gazebo Classic 11 has no arm64 build for Ubuntu 22.04, so only this container moves to
+# Jazzy + Harmonic (both have arm64 packages). The app container stays on Humble and talks
+# to this one over DDS (CycloneDDS) with the same unitree_go / unitree_api messages.
 # Gazebo's screen runs on a virtual display (Xvfb :1) and is seen in the browser through
 # noVNC (http://localhost:6080/vnc.html). Docker on a Mac has no GPU, so OpenGL is
-# drawn in software.
-# Build the shared image first: docker compose build app
-FROM go2-voice-ltl:dev
+# drawn in software (llvmpipe).
+FROM ros:jazzy-ros-base-noble
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Pinned commit of the humble branch (checked on 2026-11-04)
-ARG QUADRUPED_ROS2_CONTROL_COMMIT=a808acbd0bdb9d298d07de3c954010e3d57a15f6
+# Pinned versions (checked on 2026-11-04)
+# quadruped_ros2_control: head of the default branch (main) on 2026-11-04
+ARG QUADRUPED_ROS2_CONTROL_COMMIT=5434c5810d1a7fe223bcfd04550e9d3bfdd4b458
+# unitree_ros2: same commit as docker/Dockerfile (the Humble image)
+ARG UNITREE_ROS2_COMMIT=668d1ec5a05d1c38d3306bdca7d59f2ba3581a88
 
-# Gazebo Classic, ros2_control and the virtual screen.
-# rviz2: the upstream gazebo_classic.launch.py starts it.
+# Gazebo Harmonic (ros_gz), ros2_control, DDS and the virtual screen.
+# rviz2: the upstream gz_quadruped_playground gazebo.launch.py starts it.
 # ros2controlcli: `ros2 control list_controllers`.
 # feh: without a wallpaper setter, fluxbox shows a "can't find an app to set the
 #      wallpaper" window in the middle of the screen.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ros-humble-gazebo-ros-pkgs \
-        ros-humble-gazebo-ros2-control \
-        ros-humble-ros2-controllers \
-        ros-humble-xacro \
-        ros-humble-rviz2 \
-        ros-humble-ros2controlcli \
+        ros-jazzy-ros-gz \
+        ros-jazzy-gz-ros2-control \
+        ros-jazzy-ros2-controllers \
+        ros-jazzy-xacro \
+        ros-jazzy-rmw-cyclonedds-cpp \
+        ros-jazzy-rosidl-generator-dds-idl \
+        ros-jazzy-rviz2 \
+        ros-jazzy-ros2controlcli \
         xvfb \
         fluxbox \
         feh \
@@ -32,27 +40,44 @@ RUN apt-get update \
         novnc \
         websockify \
         mesa-utils \
+        python3-numpy \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone -b humble https://github.com/legubiao/quadruped_ros2_control \
+# unitree_ros2 messages (unitree_api, unitree_go), built on Jazzy from the same commit
+# as the Humble image, so both containers use the same message definitions.
+RUN git clone https://github.com/unitreerobotics/unitree_ros2 /root/unitree_ros2 \
+    && cd /root/unitree_ros2 \
+    && git checkout "${UNITREE_ROS2_COMMIT}" \
+    && cd cyclonedds_ws \
+    && source /opt/ros/jazzy/setup.bash \
+    && colcon build --packages-select unitree_api unitree_go \
+    && rm -rf build log
+
+# Our setup.sh replaces the upstream one (which is written for foxy + enp3s0)
+COPY unitree_setup_jazzy.sh /root/unitree_ros2/setup.sh
+
+RUN git clone https://github.com/legubiao/quadruped_ros2_control \
         /root/gz_ws/src/quadruped_ros2_control \
     && cd /root/gz_ws/src/quadruped_ros2_control \
     && git checkout "${QUADRUPED_ROS2_CONTROL_COMMIT}"
 
 WORKDIR /root/gz_ws
 RUN apt-get update \
-    && rosdep update --rosdistro humble \
+    && rosdep update --rosdistro jazzy \
     && rosdep install --from-paths src --ignore-src -r -y \
     && rm -rf /var/lib/apt/lists/*
 
-# leg_pd_controller: Gazebo Classic only gives joint effort; this controller turns the
-# position/velocity/kp/kd commands of unitree_guide controller into effort (upstream README 1.2).
-RUN source /opt/ros/humble/setup.bash \
+# gz_quadruped_playground pulls in gz_quadruped_hardware (the ros2_control system for
+# Gazebo Harmonic). It takes position / velocity / effort / kp / kd itself, so the
+# leg_pd_controller that Gazebo Classic needed is not used here.
+RUN source /opt/ros/jazzy/setup.bash \
     && MAKEFLAGS=-j4 colcon build --parallel-workers 2 \
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
-        --packages-up-to unitree_guide_controller go2_description keyboard_input leg_pd_controller \
+        --packages-up-to unitree_guide_controller go2_description keyboard_input gz_quadruped_playground \
     && rm -rf build log
 
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV DISPLAY=:1
 
@@ -63,4 +88,4 @@ EXPOSE 6080
 WORKDIR /work
 
 ENTRYPOINT ["/usr/local/bin/gazebo_entry.sh"]
-CMD ["ros2", "launch", "unitree_guide_controller", "gazebo_classic.launch.py", "pkg_description:=go2_description"]
+CMD ["ros2", "launch", "gz_quadruped_playground", "gazebo.launch.py", "pkg_description:=go2_description"]

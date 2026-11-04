@@ -1,7 +1,7 @@
 # docker compose --profile fake up        : app (Web + brain) and the fake Go2
 # docker compose run --rm --no-deps app <cmd> : run a command in /work (= this folder)
-# docker compose --profile gazebo up      : Go2 in Gazebo Classic (screen: http://localhost:6080/vnc.html)
-#   build `app` first: the gazebo image is built FROM go2-voice-ltl:dev
+# docker compose --profile gazebo up      : Go2 in Gazebo Harmonic (screen: http://localhost:6080/vnc.html)
+#   the gazebo image is ROS 2 Jazzy (Ubuntu 24.04); app stays on Humble and talks to it over DDS
 x-go2: &go2
   build:
     context: ./docker
@@ -31,17 +31,19 @@ services:
     command: python3 -m sim.fake_go2
 
   gazebo:
-    <<: *go2
+    # not built on the shared image: ROS 2 Jazzy + Gazebo Harmonic (arm64 has no Gazebo Classic)
+    # no env_file and no login volumes: the simulator needs no LLM login
     profiles: ["gazebo"]
     build:
       context: ./docker
       dockerfile: Dockerfile.gazebo
     image: go2-voice-ltl-gazebo:dev
-    env_file: []  # the simulator needs no LLM login
+    init: true
+    volumes:
+      - ./:/work
     ports:
       - "127.0.0.1:6080:6080"
-    entrypoint: ["/usr/local/bin/gazebo_entry.sh"]
-    command: ros2 launch unitree_guide_controller gazebo_classic.launch.py pkg_description:=go2_description
+    command: ros2 launch gz_quadruped_playground gazebo.launch.py pkg_description:=go2_description
 
 volumes:
   hf-cache:

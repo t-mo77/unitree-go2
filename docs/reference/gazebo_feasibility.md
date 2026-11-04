@@ -1,5 +1,7 @@
 # Gazebo の Go2 を動かせるかの試し（Task 15 の記録）
 
+> Classic は arm64 で不可 → Jazzy 版（ROS 2 Jazzy + Gazebo Harmonic、Task 15b）は `gazebo_feasibility_jazzy.md`。
+
 - 試した日：2026-11-04
 - 場所：この Mac（Apple Silicon、arm64）の Docker Desktop。CPU 8、メモリ 8 GB、GPU なし。
 - 土台のイメージ：`go2-voice-ltl:dev`（`ros:humble-ros-base-jammy`、Ubuntu 22.04、arm64）
