@@ -1,13 +1,11 @@
 """Instruction -> LTLf formula, with up to max_tries re-asks on rejected formulas."""
 
 from dataclasses import dataclass, field
-from typing import Callable
 
 from voice_ltl.grammar import check
+from voice_ltl.llm import LLM
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import PROPOSITIONS
-
-LLM = Callable[[str, dict], dict]
 
 
 @dataclass
