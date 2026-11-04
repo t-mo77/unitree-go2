@@ -5,7 +5,7 @@ import time
 
 import pytest
 from go2_nl_control.actions import (BALANCE_STAND, DANCE1, HELLO, LYING, MOVE, RISE_SIT, SIT,
-                                    STAND_DOWN, STAND_UP, STANDING, STOP_MOVE, STRETCH)
+                                    STAND_DOWN, STAND_UP, STANDING, STOP_MOVE, STRETCH, UNKNOWN)
 from go2_nl_control.supervisor import BLOCKED
 
 import voice_ltl.session as session_mod
@@ -96,7 +96,8 @@ def test_back_box_holds_backward(tmp_path):
     snap = sess.snapshot()
     assert snap["status"] == "executing" and link.sim.accepted[-1] == STOP_MOVE
     assert not link.sim.collided and -0.35 < link.sim.x < -0.2        # 0.5 m 手前で止まった
-    assert any("後方に障害物" in line for line in snap["log"])
+    assert any("後方に障害物" in line for line in snap["debug_log"])
+    assert "一時停止：後退（後方に障害物があります）" in snap["log"]
     link.sim.clear_boxes(); drive(sess, link, 10)                    # どければ下がる
     assert sess.snapshot()["status"] == "done"
     assert link.sim.x == pytest.approx(-0.5, abs=0.05)
@@ -127,9 +128,10 @@ def test_readings_while_not_standing_count_as_clear(tmp_path):
     snap = sess.snapshot()
     assert link.sim.accepted == [STAND_UP, BALANCE_STAND]              # 立ち上がった
     assert link.sim.posture == STANDING and snap["status"] == "waiting"  # 物があるので待つ
-    assert "センサー: front_blocked" in snap["log"]
+    assert "センサー: front_blocked" in snap["debug_log"] and "前方に物が出た" in snap["log"]
     link.box = False; drive(sess, link, 10)                            # 物が消えれば進む
-    assert sess.snapshot()["status"] == "done"
+    snap = sess.snapshot()
+    assert snap["status"] == "done" and "前方の物が消えた" in snap["log"]
     assert link.sim.accepted[:3] == [STAND_UP, BALANCE_STAND, MOVE]
     assert link.sim.x == pytest.approx(0.5, abs=0.05)
 
@@ -146,7 +148,10 @@ def test_stop_word_stops_immediately(tmp_path):
     drive(sess, link, 5)
     assert link.sim.accepted[sent:] == [STOP_MOVE]                     # 計画を捨てたので続きは送らない
     assert len(llm.prompts) == calls and link.sim.x == pytest.approx(x, abs=0.01)
-    assert sess.snapshot()["status"] == "idle"
+    snap = sess.snapshot()
+    assert snap["status"] == "idle" and snap["stop_word"] == "止まって"
+    sess.stop()                                                        # the button: no word
+    assert sess.snapshot()["stop_word"] is None
 
 
 def test_new_instruction_replaces_plan(tmp_path):
@@ -235,7 +240,7 @@ def test_posture_mismatch_aborts(tmp_path):
     snap = sess.snapshot()
     assert snap["status"] == "error" and "姿勢が計画と違います" in snap["message"]
     assert DANCE1 not in link.sim.accepted
-    assert any("完了: hello" in line for line in snap["log"])
+    assert [(s["action"], s["status"]) for s in snap["steps"]] == [("stand", "done"), ("hello", "done")]
 
 
 def test_diagrams_are_made_and_sup_follows_the_supervisor(tmp_path):
@@ -244,7 +249,7 @@ def test_diagrams_are_made_and_sup_follows_the_supervisor(tmp_path):
     session.submit_text("手を振って")
     v0 = session.diagram_version
     drive(session, link, 0.1)
-    assert set(session.diagrams) == {"PLANT", "SPEC", "TRIMMED", "SUP"}
+    assert set(session.diagrams) == {"FOCUS", "PLANT", "SPEC", "TRIMMED", "SUP"}
     assert all("<svg" in svg for svg in session.diagrams.values())
     assert session.diagram_version > v0
     sup0, v1 = session.diagrams["SUP"], session.diagram_version
@@ -496,3 +501,177 @@ def test_negated_stop_word_is_an_instruction(tmp_path):
     sess, link = make(tmp_path, llm)
     sess.submit_text("止まらないで")
     assert len(llm.prompts) == 1 and sess.snapshot()["status"] == "thinking"
+
+
+# ---------------- the snapshot for the page (S2a) ----------------
+def drive_until(session, link, cond, limit=60.0):
+    """drive() one tick at a time until cond(snapshot) holds; the snapshot then."""
+    end = link.now + limit
+    while link.now < end - 1e-9:
+        drive(session, link, 0.1)
+        snap = session.snapshot()
+        if cond(snap):
+            return snap
+    raise AssertionError(f"not reached in {limit} s: {session.snapshot()['status']}")
+
+
+def step_states(snap):
+    return [(s["action"], s["label"], s["status"]) for s in snap["steps"]]
+
+
+def test_steps_show_the_whole_plan_done_current_and_pending(tmp_path):
+    sess, link = make(tmp_path, llm_for("F(hello & F danced)"))
+    assert sess.snapshot()["steps"] == []
+    sess.submit_text("立って挨拶してから、ダンスして"); drive(sess, link, 0.1)
+    assert step_states(sess.snapshot()) == [
+        ("stand", "立つ", "current"), ("hello", "挨拶", "pending"), ("dance", "ダンス", "pending")]
+    snap = drive_until(sess, link, lambda s: s["current"] == "hello")
+    assert step_states(snap) == [
+        ("stand", "立つ", "done"), ("hello", "挨拶", "current"), ("dance", "ダンス", "pending")]
+    snap = drive_until(sess, link, lambda s: s["status"] == "done")
+    assert [st for _, _, st in step_states(snap)] == ["done", "done", "done"]
+    sess.submit_text("伸びをして")                                     # a new instruction: no steps yet
+    assert sess.snapshot()["steps"] == []
+
+
+def test_log_is_for_people_and_debug_log_keeps_the_details(tmp_path):
+    sess, link = make(tmp_path, llm_for("F(hello & F danced)"))
+    sess.submit_text("立って挨拶してから、ダンスして"); drive(sess, link, 40)
+    snap = sess.snapshot()
+    assert snap["status"] == "done"
+    assert snap["log"] == [
+        "指示：「立って挨拶してから、ダンスして」", "式：F(hello & F danced)",
+        "計画：立つ → 挨拶 → ダンス",
+        "開始：立つ", "完了：立つ（伏せ → 立ち）",
+        "開始：挨拶", "完了：挨拶",
+        "開始：ダンス", "完了：ダンス",
+        "終わりました"]
+    debug = snap["debug_log"]                                          # the lines as they were
+    assert debug[0] == "指示: 立って挨拶してから、ダンスして" and "式: F(hello & F danced)" in debug
+    assert any(line.startswith("監督器: ") for line in debug)
+    assert "イベント: " + "stand_to_standing" in debug and "完了: hello" in debug
+    assert debug.count("計画をすべて終えました") == 3 and debug[-1] == "終わりました"
+
+
+def test_stop_word_in_the_log(tmp_path):
+    sess, link = make(tmp_path, llm_for("F(moved_forward & X F moved_forward)"))
+    sess.submit_text("1メートル進んで"); drive(sess, link, 5.5)
+    sess.submit_text("止まって")
+    log = sess.snapshot()["log"]
+    assert log[-3:] == ["止める言葉：「止まって」", "中止：前進（止める）", "止めました"]
+
+
+class Whisper:
+    """A transcriber like stt.Transcriber: it has model_size, and takes a while."""
+
+    model_size = "small"
+
+    def __call__(self, audio):
+        time.sleep(0.25)
+        return "挨拶して"
+
+
+def test_stt_is_the_model_and_seconds_of_the_transcript(tmp_path):
+    sess, link = make(tmp_path, llm_for("F hello", "F stretched"), transcribe=Whisper())
+    assert sess.snapshot()["stt"] is None
+    sess.submit_audio(b"RIFF....")
+    snap = sess.snapshot()
+    assert snap["transcript"] == "挨拶して" and snap["stt"]["model"] == "small"
+    assert 0.2 <= snap["stt"]["seconds"] < 1.0
+    sess.submit_text("伸びをして")                                     # typed: no transcription
+    assert sess.snapshot()["stt"] is None
+
+
+def test_link_kind_llm_backend_and_block_timeout(tmp_path):
+    from voice_ltl.llm import ClaudeCLI, CodexCLI
+
+    sess, _ = make(tmp_path, llm_for())
+    snap = sess.snapshot()
+    assert snap["link_kind"] == "fake" and snap["llm_backend"] is None and snap["block_timeout"] == 15
+    link = DirectSimLink(SimGo2())
+    assert Session(link, ClaudeCLI(), None, tmp_path, background=False,
+                   link_kind="gazebo").snapshot()["link_kind"] == "gazebo"
+    assert Session(link, ClaudeCLI(), None, tmp_path, background=False).snapshot()["llm_backend"] == "claude"
+    assert Session(link, CodexCLI(), None, tmp_path, background=False).snapshot()["llm_backend"] == "codex"
+
+
+def test_waiting_since_for_a_wait_and_for_a_held_move(tmp_path):
+    sess, link = make(tmp_path, llm_for("F moved_forward", "F(moved_forward & X F moved_forward)"))
+    link.sim.place_box("front", 0.6)
+    sess.submit_text("前に進んで")
+    snap = drive_until(sess, link, lambda s: s["status"] == "waiting")
+    assert snap["waiting_since"] == pytest.approx(link.now)            # the session waits from now
+    since = snap["waiting_since"]
+    drive(sess, link, 3)
+    assert sess.snapshot()["waiting_since"] == since                   # not moved by later ticks
+    link.sim.clear_boxes()
+    snap = drive_until(sess, link, lambda s: s["status"] == "done")
+    assert snap["waiting_since"] is None
+    link.sim.place_box("front", 1.2)                                   # on the way: the move is held
+    sess.submit_text("1メートル進んで")
+    snap = drive_until(sess, link, lambda s: s["waiting_since"] is not None)
+    assert snap["status"] == "executing" and snap["current"] == "forward"
+    assert snap["waiting_since"] == pytest.approx(link.now)
+    link.sim.clear_boxes()
+    snap = drive_until(sess, link, lambda s: s["waiting_since"] is None, limit=2)
+    assert snap["current"] == "forward"
+
+
+def test_focus_diagram_follows_the_supervisor(tmp_path):
+    sess, link = make(tmp_path, llm_for("F hello"))
+    sess.submit_text("手を振って"); drive(sess, link, 0.1)
+    focus = sess.diagrams["FOCUS"]
+    assert "<svg" in focus and sup_highlight(focus)[0] == [sess.runtime.state]
+    assert "完了" not in focus
+    drive_until(sess, link, lambda s: s["status"] == "done")
+    focus = sess.diagrams["FOCUS"]
+    assert sup_highlight(focus)[0] == [sess.runtime.state] and "完了" in focus
+
+
+# ---------------- a posture that is UNKNOWN for a moment (real Go2, S2a) ----------------
+class UnknownForAMoment(DirectSimLink):
+    """posture() reads UNKNOWN until `unknown_until`, as a real Go2 does while its error_code
+    changes from one value to the next."""
+
+    def __init__(self):
+        super().__init__(SimGo2())
+        self.unknown_until = float("-inf")
+
+    def posture(self):
+        return UNKNOWN if self.now < self.unknown_until - 1e-9 else super().posture()
+
+
+@pytest.mark.parametrize("formula,at,then", [
+    ("F(hello & F danced)", lambda s: s["steps"][0]["status"] == "done", [HELLO, DANCE1]),  # between steps
+    ("F hello", lambda s: all(st["status"] == "done" for st in s["steps"]) and s["steps"], []),  # at the end
+])
+def test_a_short_unknown_posture_is_waited_for(tmp_path, formula, at, then):
+    link = UnknownForAMoment()
+    sess = Session(link, llm_for(formula), None, tmp_path, background=False)
+    sess.submit_text("指示")
+    drive_until(sess, link, at)
+    sent = list(link.sim.accepted)
+    link.unknown_until = link.now + 0.8
+    drive(sess, link, 0.7)
+    snap = sess.snapshot()
+    assert snap["posture"] == UNKNOWN and snap["status"] == "executing"   # not an error yet
+    assert link.sim.accepted == sent                                    # nothing new sent meanwhile
+    drive(sess, link, 40)
+    snap = sess.snapshot()
+    assert snap["status"] == "done", snap["message"]
+    assert link.sim.accepted == sent + then
+
+
+def test_an_unknown_posture_longer_than_1s_aborts(tmp_path):
+    link = UnknownForAMoment()
+    sess = Session(link, llm_for("F(hello & F danced)"), None, tmp_path, background=False)
+    sess.submit_text("挨拶してからダンスして")
+    drive_until(sess, link, lambda s: s["steps"][0]["status"] == "done")
+    sent = list(link.sim.accepted)
+    link.unknown_until = link.now + 5
+    drive(sess, link, 0.9)
+    assert sess.snapshot()["status"] == "executing"
+    drive(sess, link, 0.3)
+    snap = sess.snapshot()
+    assert snap["status"] == "error" and snap["message"] == "姿勢が計画と違います（計画: 立ち / 実際: 不明）"
+    assert link.sim.accepted == sent + [STOP_MOVE] and HELLO not in link.sim.accepted

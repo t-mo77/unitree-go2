@@ -25,6 +25,9 @@ services:
     environment:
       SIM: "1"
       GO2_UI_PORT: "${GO2_UI_PORT:-8810}"  # only for the page address in the log
+      # what the page says it drives: fake (the fake Go2) or gazebo
+      # (SIM_KIND=gazebo docker compose --profile gazebo up)
+      SIM_KIND: "${SIM_KIND:-fake}"
     command: python3 -m voice_ltl.server
 
   sim:

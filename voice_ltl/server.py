@@ -5,12 +5,18 @@
 - POST /api/text            {"text": str} -> Session.submit_text, 202 (typed instructions)
 - POST /api/stop            Session.stop, 204
 - POST /api/obstacle        {"cmd": "front" | "back" | "clear"}; 404 when not simulating
-- GET /api/diagram/X.svg    X = PLANT | SPEC | TRIMMED | SUP; 404 until it is drawn
+- GET /api/diagram/X.svg    X = FOCUS | SUP | TRIMMED | SPEC | PLANT; 404 until it is drawn
 - WS /ws                    Session.snapshot() every 0.2 s, plus "diagram_names" and, when
                             simulating, "world" (SimControl.latest_world())
 
 Run in the container: python3 -m voice_ltl.server (compose passes env.txt as variables).
 The page is http://localhost:8810 on the host; GO2_UI_PORT changes the port (listen_address).
+
+What the page says it is connected to (link_kind, snapshot "link_kind"): SIM=0 is the real Go2
+(「実機」). With SIM=1, SIM_KIND names the simulator: fake (the default; compose sets it) is the
+fake Go2 (`docker compose --profile fake up`), gazebo is Gazebo, started as
+`SIM_KIND=gazebo docker compose --profile gazebo up`. Both send the same topics, so only
+SIM_KIND tells them apart.
 """
 
 import asyncio
@@ -37,7 +43,8 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).resolve().parent / "static"
-DIAGRAM_NAMES = ("PLANT", "SPEC", "TRIMMED", "SUP")
+DIAGRAM_NAMES = ("FOCUS", "SUP", "TRIMMED", "SPEC", "PLANT")
+SIM_KINDS = ("fake", "gazebo")
 WS_PERIOD = 0.2       # [s] between two snapshots on /ws
 CONTROL_PERIOD = 0.1  # [s] the control loop (10 Hz)
 UI_PORT = 8810        # the page's port on the host (GO2_UI_PORT, R25)
@@ -151,6 +158,18 @@ def ui_port(env: Mapping[str, str]) -> int:
     return port
 
 
+def link_kind(env: Mapping[str, str]) -> str:
+    """What the page says it is connected to: "robot" when not simulating (SIM=0), else
+    SIM_KIND: "fake" (the fake Go2; empty or unset) or "gazebo". ValueError for anything else."""
+    if not sim_mode(env):
+        return "robot"
+    raw = env.get("SIM_KIND") or ""
+    kind = raw.strip().lower() or "fake"
+    if kind not in SIM_KINDS:
+        raise ValueError(f"SIM_KIND は fake か gazebo にしてください（今: {raw!r}）")
+    return kind
+
+
 def listen_address(env: Mapping[str, str]) -> tuple[str, int]:
     """Where uvicorn listens. SIM=1: in the container on 0.0.0.0:8000, which compose publishes
     as 127.0.0.1:GO2_UI_PORT. Otherwise the host network (a real Go2): 127.0.0.1:GO2_UI_PORT,
@@ -170,6 +189,7 @@ def _serve() -> None:
     try:
         page_port = ui_port(os.environ)
         host, port = listen_address(os.environ)
+        kind = link_kind(os.environ)
     except ValueError as exc:
         _logger.error("%s", exc)
         raise SystemExit(1) from None
@@ -184,7 +204,7 @@ def _serve() -> None:
     try:
         sim = SimControl(link.node) if simulating else None
         transcriber = Transcriber((os.environ.get("WHISPER_MODEL") or "").strip() or "small")
-        session = Session(link, make_llm(os.environ), transcriber, workdir=WORKDIR)
+        session = Session(link, make_llm(os.environ), transcriber, workdir=WORKDIR, link_kind=kind)
         try:
             link.wait_ready()
         except RuntimeError as exc:  # Go2 not found, or another program sends commands

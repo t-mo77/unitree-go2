@@ -12,6 +12,11 @@
   controllable event on the shortest path runs on the zip's Executor, one Step at a time;
   when the Step ends, the event that happened (the action and the label from the current
   sensors) moves the supervisor; done needs the Go2 in the planned final posture (§7.6).
+  A posture that reads UNKNOWN for a moment there (a real Go2 between two error_codes) is
+  waited for, up to POSTURE_SETTLE_S.
+- snapshot() is what the page shows: the steps of the plan, what the session is connected to,
+  the transcription, the wait, and two logs: "log" in words for people, "debug_log" with the
+  session's and the executor's own lines (event names and all).
 """
 
 import dataclasses
@@ -20,6 +25,7 @@ import logging
 import queue
 import re
 import threading
+import time
 import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
@@ -34,8 +40,8 @@ from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
-from voice_ltl.diagrams import render_svg
-from voice_ltl.llm import LLM, LLMError
+from voice_ltl.diagrams import render_focus_svg, render_svg
+from voice_ltl.llm import LLM, ClaudeCLI, CodexCLI, LLMError
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.translator import Translation, translate
@@ -52,6 +58,15 @@ EXEC_ACTIONS: dict[str, ActionSpec] = {
     **ACTIONS, "backward": dataclasses.replace(ACTIONS["backward"], forward=True)}
 
 POSTURE_JA = {LYING: "伏せ", STANDING: "立ち", SITTING: "おすわり", UNKNOWN: "不明"}
+ACTION_JA = {
+    "stand": "立つ", "lie_down": "伏せる", "sit": "おすわり", "rise_sit": "立ち上がる",
+    "hello": "挨拶", "stretch": "伸び", "content": "喜ぶ", "heart": "ハート", "scrape": "おじぎ",
+    "dance": "ダンス", "forward": "前進", "backward": "後退", "turn_left": "左に回る",
+    "turn_right": "右に回る",
+}
+SENSOR_JA = {"front_blocked": "前方に物が出た", "front_clear": "前方の物が消えた",
+             "back_blocked": "後方に物が出た", "back_clear": "後方の物が消えた"}
+FOCUS_TITLE = "計画の道"
 MSG_EMPTY = "聞き取れませんでした"
 MSG_UNSATISFIABLE = "この指示は満たせません"
 MSG_DONE = "終わりました"
@@ -64,6 +79,7 @@ MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏�
 LOG_LINES = 200
 
 POSTURE_WAIT_S = 3.0   # R27: how long an unknown posture may take to settle before a plan
+POSTURE_SETTLE_S = 1.0  # mid-plan and at the end: how long an UNKNOWN posture is waited for
 STAND_LOCK = 1002      # error_code of Standing Lock: StandUp done, BalanceStand not yet (UNKNOWN)
 # R28: a posture change or gesture runs to its end in the Go2 (StopMove does not end it). Each
 # such command keeps the Go2 busy for the time its action's sequence waits after it.
@@ -184,24 +200,37 @@ def _sup_highlight(rt: Runtime) -> tuple[int, list[tuple[int, str]]]:
     return rt.state, events
 
 
+def _backend(llm: LLM) -> str | None:
+    """Which LLM translates: "claude" or "codex" (None for a test's FakeLLM)."""
+    if isinstance(llm, ClaudeCLI):
+        return "claude"
+    if isinstance(llm, CodexCLI):
+        return "codex"
+    return None
+
+
 class Session:
     def __init__(self, link: Link, llm: LLM, transcribe: Callable[[bytes], str] | None,
-                 workdir: Path, background: bool = True):
+                 workdir: Path, background: bool = True, link_kind: str = "fake"):
+        """link_kind is what the page says the link is: "fake" (the fake Go2), "gazebo" or
+        "robot" (server.link_kind decides it)."""
         self.link = link
         self.llm = llm
         self.transcribe = transcribe
         self.workdir = Path(workdir)
         self.background = background
+        self.link_kind = link_kind
+        self.llm_backend = _backend(llm)
         self.executor = Executor(EXEC_ACTIONS, ExecConfig())
         self.synthesis: Synthesis | None = None
         self.runtime: Runtime | None = None
-        # SVG strings keyed PLANT / SPEC / TRIMMED / SUP; PLANT, SPEC and TRIMMED are drawn
-        # once per synthesis, SUP again whenever the supervisor moves. Drawing never runs
-        # inside tick() when background=True (design §7.8).
+        # SVG strings keyed FOCUS / SUP / TRIMMED / SPEC / PLANT; PLANT, SPEC and TRIMMED are
+        # drawn once per synthesis, FOCUS and SUP again whenever the supervisor moves. Drawing
+        # never runs inside tick() when background=True (design §7.8).
         self.diagrams: dict[str, str] = {}
         self.diagram_version = 0  # bumped whenever self.diagrams changes
         self._syn_id = 0          # which synthesis self.diagrams belong to
-        self._sup_slot: tuple | None = None  # newest SUP drawing request (latest wins)
+        self._sup_slot: tuple | None = None  # newest FOCUS + SUP drawing request (latest wins)
         self._sup_lock = threading.Lock()    # guards _sup_slot between tick and the drawing thread
         self._sup_wake = threading.Event()
 
@@ -212,19 +241,24 @@ class Session:
         self._status = "idle"
         self._transcribing_gen: int | None = None
         self._transcript = ""
+        self._stt: dict | None = None     # {"model", "seconds"} of the transcript; None if typed
         self._translation: Translation | None = None
         self._message = ""
-        self._log: deque[str] = deque(maxlen=LOG_LINES)
-        self._last_report = ""
+        self._stop_word: str | None = None  # the word that made the last stop (None: the button)
+        self._log: deque[str] = deque(maxlen=LOG_LINES)        # in words, for people
+        self._debug_log: deque[str] = deque(maxlen=LOG_LINES)  # the session's own lines
+        self._last_report = ""            # why the executor gave up, for the message
 
         self._prep: _Prep | None = None  # a translation waiting for the Go2 to be ready
         self._busy_until = float("-inf")  # R28: the Go2 is doing a posture change / gesture
         self._running = False           # a supervisor is being followed
         self._action: str | None = None  # the action loaded in the executor
         self._plan: list[str] = []
+        self._done: list[str] = []       # the actions of this instruction's plan done so far
         self._plan_posture = LYING       # posture the supervisor believes in
         self._sensed = (True, True)      # (front, back) blocked, as told to the supervisor
         self._waiting_since: float | None = None
+        self._unknown_since: float | None = None  # since when a check saw the posture UNKNOWN
 
         self._reading: Reading | None = None
         self._posture = UNKNOWN
@@ -255,6 +289,10 @@ class Session:
 
     def stop(self) -> None:
         """StopMove once, forget the plan and any translation on the way, and go idle."""
+        self._stop(None)
+
+    def _stop(self, word: str | None) -> None:
+        """stop(); `word` is the stop word heard, None for the button."""
         with self._lock:
             self._gen += 1                   # drops any translation on the way
             self._transcribing_gen = None
@@ -263,25 +301,29 @@ class Session:
             self.link.send(STOP)
             self._status = "idle"
             self._message = MSG_STOPPED
+            self._stop_word = word
             self._note(MSG_STOPPED)
 
-    def _accept_text(self, text: str) -> int | None:
-        """The quick part of submit_text. Returns the new generation to translate, or None."""
+    def _accept_text(self, text: str, stt: dict | None = None) -> int | None:
+        """The quick part of submit_text. Returns the new generation to translate, or None.
+        stt: how the text was transcribed (None when it was typed)."""
         with self._lock:
             self._transcript = text
+            self._stt = stt
             if not text.strip():
                 self._message = MSG_EMPTY
                 self._note(MSG_EMPTY)
                 return None
             if is_stop_text(text):
-                self._note(f"止める言葉: {text}")
-                self.stop()
+                self._note(f"止める言葉: {text}", f"止める言葉：「{text}」")
+                self._stop(text)
                 return None
             self._gen += 1
             self._prep = None
             if self._running:
                 self._discard_plan("新しい指示")
                 self.link.send(STOP)
+            self._done = []
             self._translation = None
             self.synthesis = None
             self.runtime = None
@@ -289,7 +331,7 @@ class Session:
             self._set_diagrams({})
             self._message = ""
             self._status = "thinking"
-            self._note(f"指示: {text}")
+            self._note(f"指示: {text}", f"指示：「{text}」")
             return self._gen
 
     # ---------------- worker ----------------
@@ -327,7 +369,10 @@ class Session:
         try:
             if self.transcribe is None:
                 raise RuntimeError("no transcriber")
+            started = time.monotonic()
             text = self.transcribe(audio)
+            stt = {"model": getattr(self.transcribe, "model_size", None),   # stt.Transcriber's
+                   "seconds": round(time.monotonic() - started, 1)}
         except Exception:  # faster-whisper and PyAV raise many types
             _logger.exception("transcription failed")
             with self._lock:
@@ -340,7 +385,7 @@ class Session:
             if gen != self._gen:
                 return
             self._transcribing_gen = None
-            new_gen = self._accept_text(text)
+            new_gen = self._accept_text(text, stt)
         if new_gen is not None:
             self._produce(new_gen, self._translate, text)
 
@@ -381,10 +426,11 @@ class Session:
 
     @staticmethod
     def _draw_all(syn: Synthesis) -> dict[str, str]:
-        """The four diagrams of a new synthesis (on the worker thread). {} if drawing fails."""
+        """The five diagrams of a new synthesis (on the worker thread). {} if drawing fails."""
         try:
             state, events = _sup_highlight(Runtime(syn.sup)) if not syn.empty else (None, [])
             return {
+                "FOCUS": render_focus_svg(syn.sup, FOCUS_TITLE, state, events),
                 "PLANT": render_svg(syn.plant, "PLANT"),
                 "SPEC": render_svg(syn.spec, "SPEC"),
                 "TRIMMED": render_svg(syn.trimmed, "TRIMMED"),
@@ -465,7 +511,7 @@ class Session:
 
     def _show_translation(self, tr: Translation | None) -> None:
         if tr is not None and tr is not self._translation and tr.formula:
-            self._note(f"式: {tr.formula}")
+            self._note(f"式: {tr.formula}", f"式：{tr.formula}")
         self._translation = tr
 
     def _start(self, outcome: _Outcome) -> None:
@@ -482,10 +528,12 @@ class Session:
         self._sensed = (outcome.initial.front, outcome.initial.back)
         self._running = True
         self._waiting_since = None
+        self._unknown_since = None
+        self._done = []
         self._status = "executing"
         self._message = ""
         self._refresh_plan()
-        self._note(f"監督器: {outcome.synthesis.sup.size} 状態")
+        self._note(f"監督器: {outcome.synthesis.sup.size} 状態", self._plan_text())
 
     def _step(self, now: float, reading: Reading) -> None:
         if not self._apply_sensor_changes(reading):
@@ -516,7 +564,7 @@ class Session:
             except PlanError:  # supcon keeps every uncontrollable event, so this is a bug
                 self._abort(f"監督器がセンサーの変化を受け付けませんでした（{event}）")
                 return False
-            self._note(f"センサー: {event}")
+            self._note(f"センサー: {event}", SENSOR_JA[event])
         self._sensed = (now_front, now_back)
         if events:
             self._refresh_plan()
@@ -525,7 +573,9 @@ class Session:
 
     def _load_next(self, now: float) -> bool:
         if self.runtime.done:
-            actual = self.link.posture()   # R28: the Go2 may have ignored a command
+            actual = self._settled_posture(now)   # R28: the Go2 may have ignored a command
+            if actual is None:
+                return False
             if actual != self._plan_posture:
                 self._abort(self._posture_mismatch(actual))
             else:
@@ -541,8 +591,11 @@ class Session:
             elif now - self._waiting_since > self.executor.cfg.block_timeout:
                 self._abort(f"{self.executor.cfg.block_timeout:g}秒待っても進めません")
             return False
-        if self._posture != self._plan_posture:
-            self._abort(self._posture_mismatch(self._posture))
+        actual = self._settled_posture(now)
+        if actual is None:
+            return False
+        if actual != self._plan_posture:
+            self._abort(self._posture_mismatch(actual))
             return False
         if self._waiting_since is not None:
             self._waiting_since = None
@@ -552,7 +605,22 @@ class Session:
         self._take_executor_events()
         self._action = action
         self._status = "executing"
+        self._say(f"開始：{ACTION_JA[action]}")
         return True
+
+    def _settled_posture(self, now: float) -> str | None:
+        """The Go2's posture, to compare with the plan's. A real Go2 reads UNKNOWN for a moment
+        while its error_code changes from one value to the next: that is waited for (None) up
+        to POSTURE_SETTLE_S, and only then compared as it is."""
+        actual = self.link.posture()
+        if actual != UNKNOWN:
+            self._unknown_since = None
+            return actual
+        if self._unknown_since is None:
+            self._unknown_since = now
+        if now - self._unknown_since < POSTURE_SETTLE_S - _EPS:
+            return None
+        return actual
 
     @staticmethod
     def _env(action: str, reading: Reading) -> str:
@@ -572,8 +640,12 @@ class Session:
         except PlanError:  # e.g. an obstacle appeared during a gesture the formula forbids then
             self._abort(f"監督器が許していない結果になりました（{event}）")
             return
-        self._plan_posture = ACTIONS[action].transitions[self._plan_posture]
-        self._note(f"イベント: {event}")
+        before = self._plan_posture
+        self._plan_posture = ACTIONS[action].transitions[before]
+        self._done.append(action)
+        moved = (f"（{POSTURE_JA[before]} → {POSTURE_JA[self._plan_posture]}）"
+                 if before != self._plan_posture else "")
+        self._note(f"イベント: {event}", f"完了：{ACTION_JA[action]}{moved}")
         self._refresh_plan()
         self._redraw_sup()
 
@@ -619,13 +691,21 @@ class Session:
         path = self.runtime.plan() if self.runtime is not None else None
         self._plan = [event_action(e) for e in path] if path else []
 
+    def _plan_text(self) -> str:
+        """The plan as a log line, when a supervisor starts."""
+        if self._plan:
+            return "計画：" + " → ".join(ACTION_JA[a] for a in self._plan)
+        if self.runtime.done:
+            return "計画：指示はもう満たされているので、動きません"
+        return "計画：今は進める動作がありません"
+
     def _set_diagrams(self, diagrams: dict[str, str]) -> None:
         self.diagrams = diagrams
         self.diagram_version += 1
 
     def _redraw_sup(self) -> None:
-        """The supervisor moved: draw SUP again with the state and the rest of the plan.
-        With a background thread the control loop only hands over the request."""
+        """The supervisor moved: draw FOCUS and SUP again with the state and the rest of the
+        plan. With a background thread the control loop only hands over the request."""
         if self.runtime is None or self.synthesis is None or not self.diagrams:
             return
         state, events = _sup_highlight(self.runtime)
@@ -650,23 +730,81 @@ class Session:
                     _logger.exception("drawing SUP failed")
 
     def _draw_sup(self, request: tuple) -> None:
+        """FOCUS and SUP of one request, shown together (they always show the same state)."""
         syn_id, sup, state, events = request
+        focus = render_focus_svg(sup, FOCUS_TITLE, state, events)
         svg = render_svg(sup, "SUP", state, events)
         with self._lock:
             if syn_id == self._syn_id and self.diagrams:  # not for an older instruction
-                self._set_diagrams({**self.diagrams, "SUP": svg})
+                self._set_diagrams({**self.diagrams, "FOCUS": focus, "SUP": svg})
 
     def _take_executor_events(self) -> None:
         while self.executor.events:
             line = self.executor.events.pop(0)
             if self._action == "backward":  # the zip names every forward=True hold "前方"
                 line = line.replace("前方に障害物", "後方に障害物")
-            self._last_report = line
-            self._note(line)
+            if line.startswith("中止: "):    # why it gave up: the message, if that ends the plan
+                self._last_report = self._in_words(line[len("中止: "):])
+            self._note(line, self._executor_line(line))
 
-    def _note(self, line: str) -> None:
-        self._log.append(line)
+    def _in_words(self, text: str) -> str:
+        """The executor's text with the loaded Step (`forward(0.5m)`) as its Japanese name."""
+        if self._action is None:
+            return text
+        step = Step(self._action, step_value(self._action)).text(EXEC_ACTIONS)
+        return text.replace(step, ACTION_JA[self._action])
+
+    def _executor_line(self, line: str) -> str:
+        """An executor line for the log people read ("" leaves it out). The executor gets one
+        Step at a time, so its 計画 / 完了 / 計画をすべて終えました lines come once per Step:
+        the session's own 開始 / 完了 lines say that instead."""
+        if line.startswith(("計画: ", "完了: ")) or line == "計画をすべて終えました":
+            return ""
+        if self._action is None:
+            return line
+        label = ACTION_JA[self._action]
+        step = Step(self._action, step_value(self._action)).text(EXEC_ACTIONS)
+        if line.startswith(hold := f"一時停止（{step}）: "):
+            return f"一時停止：{label}（{line[len(hold):]}）"
+        if line == f"再開（{step}）":
+            return f"再開：{label}"
+        if line.startswith("中止: "):
+            return f"中止：{label}（{self._in_words(line[len('中止: '):])}）"
+        return line
+
+    def _note(self, line: str, human: str | None = None) -> None:
+        """`line` goes to debug_log and the program's log; `human` (by default the same line)
+        to the log people read. human="" keeps the line out of that log."""
+        self._debug_log.append(line)
         _logger.info(line)
+        text = line if human is None else human
+        if text:
+            self._log.append(text)
+
+    def _say(self, human: str) -> None:
+        """A line only for the log people read (debug_log has the executor's own line)."""
+        self._log.append(human)
+
+    def _steps(self) -> list[dict]:
+        """This instruction's plan: the actions done, the one running, and the rest of the
+        shortest path. The running one stays even when a sensor change took it off the path."""
+        rows = [(a, "done") for a in self._done]
+        ahead = list(self._plan)
+        if self._action is not None:
+            rows.append((self._action, "current"))
+            if ahead and ahead[0] == self._action:
+                ahead.pop(0)
+        rows += [(a, "pending") for a in ahead]
+        return [{"action": a, "label": ACTION_JA[a], "status": st} for a, st in rows]
+
+    def _wait_start(self) -> float | None:
+        """Since when the plan waits (block_timeout ends it): the session waiting for a
+        controllable event, or the executor holding a move (an obstacle, a lost sensor)."""
+        if self._waiting_since is not None:
+            return self._waiting_since
+        if self._action is not None:
+            return self.executor.paused_since
+        return None
 
     # ---------------- view ----------------
     def snapshot(self) -> dict:
@@ -690,5 +828,13 @@ class Session:
                 "back_dist": r.back_dist if r else None,
                 "sup_state": self.runtime.state if self.runtime is not None else None,
                 "diagram_version": self.diagram_version,
+                "steps": self._steps(),
+                "link_kind": self.link_kind,
+                "stt": dict(self._stt) if self._stt is not None else None,
+                "llm_backend": self.llm_backend,
+                "waiting_since": self._wait_start(),
+                "block_timeout": self.executor.cfg.block_timeout,
+                "stop_word": self._stop_word,
                 "log": list(self._log),
+                "debug_log": list(self._debug_log),
             }
