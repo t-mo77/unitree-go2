@@ -31,7 +31,15 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
    `env.txt` は git に入れません。人にも渡しません。
 3. LLM にログインします。使うほうだけで構いません（`env.txt` の `LLM_BACKEND=claude` か `codex`）。
    - **Claude：** Mac のターミナルで `claude setup-token` を実行します。出てきた長期トークンを、自分で `env.txt` の `CLAUDE_CODE_OAUTH_TOKEN=` のあとに書きます。トークンをチャットや README、コミットに貼ってはいけません。
-   - **Codex：** `docker compose run --rm app codex login`（詳しくは OpenAI の公式ドキュメント）。**Codex の実地での動作は未確認です。**Claude の構造化出力の形（`structured_output`）はコンテナの中で確認済みです。
+   - **Codex：** コンテナの中でログインします。コンテナにはブラウザが無く、ログインの戻り先（コンテナの中の localhost）にも届かないので、端末に出るコードを使う方法（`--device-auth`）にします。
+
+     ```bash
+     docker compose run --rm --no-deps app codex login --device-auth
+     ```
+
+     出てきた URL を Mac のブラウザで開き、端末に出たコードを入れます。ログインは Docker のボリューム `codex-home`（コンテナの `~/.codex`）に残るので、1 回で済みます。うまくいかないときは OpenAI の公式ドキュメントを見てください。
+     API キーで使うときは、ログインの代わりに `env.txt` に `CODEX_API_KEY=` の行を足して、キーを自分で書きます（`codex exec` が読みます）。
+     **Codex の実地での動作は未確認です。**Claude の構造化出力の形（`structured_output`）はコンテナの中で確認済みです。
 4. イメージをビルドします。
 
    ```bash
@@ -41,6 +49,9 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
 > **注意：`env.txt` があるフォルダで `docker compose config` を実行しないでください。** `env.txt` の中身（トークン）が画面に出ます。設定の文法だけ確かめたいときは、出力を捨てます：
 > `docker compose -f compose.robot.yaml config > /dev/null`
 > コンテナの中で `env` や `printenv` を実行するのも同じ理由で避けます。
+
+> **コンテナの中の `/work/env.txt` は空です。** compose が `env.txt` を読んで環境変数として渡し、コンテナの中のファイルは `/dev/null` で覆います（`compose.yaml`・`compose.robot.yaml`）。翻訳役の LLM の CLI は、`/work` の外の空のフォルダで動き、もう一方の LLM のトークンは受け取りません。Codex にはシェル・画像の読み込み・Web 検索を使わせません（Claude は道具なし）。
+> `env.txt` を作る前に compose を使うと、覆うための空の `env.txt` ができます。そのときは `cp env.txt.example env.txt` で上書きします（Linux で root の持ち物になって上書きできなければ、`sudo rm env.txt` してから作り直します）。
 
 ### 書き起こしのモデル
 
@@ -100,12 +111,20 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
 
 ## 5. 単語帳と状態遷移図の足し方
 
-新しい動作を足すときに書き換えるのは、`voice_ltl/world.py` の次の 2 か所です。
+新しい動作を足すときに書き換えるのは、次の場所です。1〜3 のどれかが足りないと、計画や実行、画面の表示でエラーになります。
 
-1. `ACTION_NAMES`（と、命題になる動作なら `ACTION_PROP`）に 1 行。動作そのものは `nl_control` の `actions.py` にあるものを使います。
-2. `PROP_DESCRIPTION_JA` に、その命題の日本語の説明を 1 行。これがそのまま LLM への単語帳の説明になります。
+1. **動作の中身：** `nl_control/go2_nl_control/actions.py` の `ACTIONS` にあるものを使います。ここに、送る `api_id` と送った後に待つ秒数（`sequence`）、できる姿勢と移った先（`transitions`）、距離・角度で動く動作なら `param` と `velocity` があります。`api_id` は公式 `sport_api.py` と同じ番号です。宙返り・逆立ち・二足歩行・ジャンプなど危ない動作は足しません。
+2. **`voice_ltl/world.py`：**
+   - `ACTION_NAMES` に名前を 1 行。
+   - `ACTION_PROP` に、その動作をしたときに真になる命題（姿勢を変えるだけの動作なら `None`）。
+   - `PROP_DESCRIPTION_JA` に、その命題の日本語の説明を 1 行。これがそのまま LLM への単語帳の説明になります。
+   - 距離・角度で動く動作なら、`step_value()` に 1 回分の値（距離なら `STEP_DISTANCE`、角度なら `STEP_ANGLE`）。足さないと 0 になり、動きません。
+3. **画面の名前：** `ACTION_JA`（画面と記録に出す、動作の日本語の名前）に 1 行。今は `voice_ltl/session.py` にあります（`grep -rn "ACTION_JA =" voice_ltl` で場所がわかります）。
+4. **シミュレーション：** 新しい `api_id` のジェスチャーなら、にせ Go2（`sim/sim_core.py`）と Gazebo の橋渡し（`gazebo/bridge_core.py`）の `GESTURES` にも足します。足さないと、シミュレーションの Go2 はその指令を無視します。
+5. **テスト：** 命題・状態・遷移の数を確かめるテスト（`tests/test_world.py`）の数を直します。
 
-式が変わるだけで、sync → trim → 監督器 → 計画は自動で計算されます。足したらテスト（§7）を流してください。
+- 前進・後退のほかに体が動く動作（例：`actions.py` の横歩き `left`・`right`）は、その向きの障害物を見張りません。LiDAR の判定は前方と後方だけです。
+- 式が変わるだけで、meet → trim → 監督器（supcon）→ 計画は自動で計算されます。足したらテスト（§7）を流してください。
 
 ## 6. Linux PC へ移す（設計書 §10）
 
@@ -120,34 +139,93 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
    ping 192.168.123.161
    ```
 5. **`env.txt` の `GO2_IFACE`** に、有線の差し口の名前（`ip a` で確認。例：`enp3s0`）を書きます。
-6. **起動：**
+
+最初に歩かせる前に、手順 6〜8 で実機の値を確かめます。どれもサーバーを起動する前に、同じイメージのコンテナを 1 回だけ起動して実行します。Go2 には何も送りません。
+
+6. **実機とつながったか確かめる：**
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate
+   ```
+
+   位置と姿勢の値が流れてくれば、実機とつながっています。Ctrl+C で終わります。
+7. **姿勢の値（`error_code`）を確かめる（必須）：** このプログラムは `/sportmodestate` の `error_code` で Go2 の姿勢を知ります。対応は `nl_control/go2_nl_control/actions.py` の `_ERROR_CODE_TO_STATE` で、公式の表から作ったものです（実機では未確認）。リモコンで Go2 を「立つ → 座る → 立つ → 伏せる」の順にして、そのたびに値を見ます。
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate --field error_code
+   ```
+
+   | 姿勢 | 表の値 |
+   |---|---|
+   | 立つ（歩ける立ち方） | 1013（歩いている間は 1015。100・1016・1017・2010 も立ち） |
+   | 座る（おすわり） | 1007 |
+   | 伏せる | 1001・1004・2006 |
+
+   1002 は StandUp の直後の「歩けない立ち方」なので、わざと「不明」にしています。
+   表と違う値が出たら、そのときの姿勢と値を書き留めて知らせてください。表にない値は「不明」になり、計画を始められなかったり、動作の後に「姿勢が計画と違います」で止まったりします。
+8. **LiDAR を確かめる（必須）：** 障害物で止まる・待つのは、LiDAR の点群を胴の座標に直した判定だけが頼りです。その直し方（`PerceptionConfig` の `lidar_x`・`lidar_z`・`lidar_pitch`）は仮の値なので、実機で確かめます。Go2 をリモコンで立たせ、前と後ろを 1 m 以上空けてから、次を実行します。
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app python3 -m voice_ltl.sensor_check
+   ```
+
+   アプリと同じ判定で、`前方 なし — ｜ 後方 なし —` のような 1 行が 0.5 秒ごとに出ます。Ctrl+C で終わります。距離は胴の中心（前足と後ろ足の真ん中）から測った値です。高さ 20〜40 cm ほどの箱を Go2 の正面（真後ろ）に置いて、次のとおりになるか見ます。
+
+   | 箱の手前の面の位置（胴の中心から） | 出るはずの表示 |
+   |---|---|
+   | 前 0.4 m（頭の先から数 cm） | `前方 あり 0.40 m` 前後 |
+   | 前 0.8 m | `前方 なし 0.80 m` 前後 |
+   | 後ろ 0.4 m（お尻から数 cm） | `後方 あり 0.40 m` 前後 |
+   | 後ろ 0.8 m | `後方 なし 0.80 m` 前後 |
+   | 何も置かない | `前方 なし — ｜ 後方 なし —` |
+
+   0.5 m より近いと「あり」、0.7 m より遠くなると「なし」に戻ります（その間は前の判定のまま）。0.4 m の次に 0.8 m を試すと、「あり」から「なし」に戻るのも確かめられます。
+
+   - **前が合わないとき**（箱を置いても「なし」、何も無いのに「あり」、距離が大きくずれる）：LiDAR の取り付けの値が合っていません。`--lidar-x`（前後のずれ [m]）・`--lidar-z`（高さのずれ [m]）・`--lidar-pitch`（y 軸まわりの傾き [rad]）で値を変えて試します。
+
+     ```bash
+     docker compose -f compose.robot.yaml run --rm --no-deps app python3 -m voice_ltl.sensor_check --lidar-x 0.28945 --lidar-z -0.046825 --lidar-pitch 2.8782
+     ```
+
+     この値は Unitree の Go2 のモデル（`go2_description`）の LiDAR の取り付け（頭の下に上下逆さ）です（[docs/reference/gazebo_feasibility_jazzy.md](docs/reference/gazebo_feasibility_jazzy.md)）。既定値で合わなければ、まずこれを試してください。何も無いのに「あり」で床が映っているなら、`z_min` を上げます。
+     合う値が見つかったら、`nl_control/go2_nl_control/perception.py` の `PerceptionConfig` の既定値（`lidar_x`・`lidar_z`・`lidar_pitch`）に書きます。サーバーもこの既定値を使います。書いたら、もう一度オプション無しで `sensor_check` を流して確かめます。
+     既定値を変えると、既定の取り付けを前提にしたテストが落ちます。Go2 のモデルの値で確かめると、次の 3 件でした（実機の PC では Gazebo を使わないので、そのままで構いません）。
+     - `tests/test_bridge_core.py::test_self_points_dropped_and_mount_matches_perception`
+     - `tests/test_sim_core.py::test_cloud_of_back_box_is_behind_the_body`
+     - `nl_control/tests/test_core.py::test_obstacle_hysteresis_and_filters`
+   - **後ろが見えないとき**（前は合うのに、後ろ 0.4 m の箱で「あり」にならない）：実機の LiDAR は頭の下にあるので、真後ろは胴体の陰になるかもしれません。後退の安全は後ろが見えることが前提なので、**`voice_ltl/world.py` の次の 3 行を消して、後退をやめます**（「後ろに下がって」は単語帳にない言葉として却下されます）。
+
+     - `ACTION_NAMES` の `"backward",`
+     - `ACTION_PROP` の `"backward": "moved_backward",`
+     - `PROP_DESCRIPTION_JA` の `"moved_backward": "後ろへ下がった",`
+
+     `obstacle_back`（後ろの障害物センサー）は消しません。
+     後退の命題が消えるので、後退を前提にしたテストは落ちます。コードを読んで3行を消し、`-m "not slow" tests` を流した結果、落ちたのは次の 7 件でした（手元で確かめ済み）。
+     これらは後退を前提にしているので、後退をやめるなら同じ commit で直すか外します。
+
+     - `tests/test_world.py`：`test_vocabulary_is_safe_and_complete`（命題が 15 個、という確認）、`test_go2_world_counts`（状態・遷移の数）
+     - `tests/test_automata.py`：`test_safety_events_never_in_sup[F moved_backward]`
+     - `tests/test_session.py`：`test_back_box_holds_backward`
+     - `tests/test_adversarial_session.py`：`test_fuzz_reaches_the_interesting_cases`、`test_property_holds_in_every_trial[P7]`、`[P7b]`
+   - **rviz2 で点群を見たいとき：** このイメージには rviz2 が入っていないので、コンテナの中では動きません。Linux PC に ROS 2 Humble が入っていれば、`sudo apt install ros-humble-rviz2 ros-humble-rmw-cyclonedds-cpp` で入れて、別の手段として使えます。コンテナと同じ設定（`docker/unitree_setup.sh` と同じ）にしてから起動し、Fixed Frame を `utlidar_lidar` にして `/utlidar/cloud` を PointCloud2 で表示します。
+
+     ```bash
+     source /opt/ros/humble/setup.bash
+     export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+     export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="enp3s0" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>'
+     rviz2
+     ```
+
+     `enp3s0` は `env.txt` の `GO2_IFACE` と同じ名前にします。
+
+   `sensor_check` は `/api/sport/request` の送り手として見えるので、動かしたままサーバーを起動すると「別のプログラム」として断られます。終わってから手順 9 に進みます。
+9. **起動：**
 
    ```bash
    docker compose -f compose.robot.yaml up
    ```
 
    `network_mode: host`、`SIM=0` です。サーバーは 127.0.0.1 だけで待ち受け（ポートは既定で 8810。変えるときは `env.txt` に `GO2_UI_PORT=<ポート>` を書きます。`compose.robot.yaml` では `.env` やシェルの変数は使いません）、箱のボタンは出ません。偽の Go2 は起動しません。
-7. **実機の状態を確かめる**（別の端末で、同じイメージのコンテナを 1 回だけ起動して実行）：
-
-   ```bash
-   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate
-   ```
-
-   位置と姿勢の値が流れてくれば、実機とつながっています。
-8. **後方の LiDAR を確かめる（必須）：** 後退の安全は後ろの LiDAR が見えていることが前提です。`rviz2` で `/utlidar/cloud` を表示し、Go2 の後ろに物を置いて、点群に映るか見ます。映るなら `backward` はそのまま使えます。**映らない場合は、`voice_ltl/world.py` の次の 3 行を消してください**（後退ができなくなり、「後ろに下がって」は単語帳にない言葉として却下されます）。
-
-   - `ACTION_NAMES` の `"backward",`
-   - `ACTION_PROP` の `"backward": "moved_backward",`
-   - `PROP_DESCRIPTION_JA` の `"moved_backward": "後ろへ下がった",`
-
-   `obstacle_back`（後ろの障害物センサー）は消しません。
-   後退の命題が消えるので、後退を前提にしたテストは落ちます。コードを読んで3行を消し、`-m "not slow" tests` を流した結果、落ちたのは次の 7 件でした（手元で確かめ済み）。
-   これらは後退を前提にしているので、後退をやめるなら同じ commit で直すか外します。
-
-   - `tests/test_world.py`：`test_vocabulary_is_safe_and_complete`（命題が 15 個、という確認）、`test_go2_world_counts`（状態・遷移の数）
-   - `tests/test_automata.py`：`test_safety_events_never_in_sup[F moved_backward]`
-   - `tests/test_session.py`：`test_back_box_holds_backward`
-   - `tests/test_adversarial_session.py`：`test_fuzz_reaches_the_interesting_cases`、`test_property_holds_in_every_trial[P7]`、`[P7b]`
 
 ### 安全の注意
 
@@ -168,6 +246,7 @@ docker compose run --rm --no-deps app python3 -m pytest -q -m "not slow" tests n
 
 ## 8. わかっていないこと
 
-- **Codex：** 実地で動かして確かめていません（`codex login` と構造化出力）。
-- **実機での後方の検知：** 実機の LiDAR で後方の物が見えるかは未確認です（§6 の手順 8）。
+- **Codex：** 実地で動かして確かめていません（`codex login --device-auth` と構造化出力）。道具を外す設定（`voice_ltl/llm.py`）は、ログインせずに `codex debug prompt-input` で確かめただけです。
+- **実機の LiDAR：** 取り付けの値（`lidar_x`・`lidar_z`・`lidar_pitch`）と、前方・後方の物が見えるかは未確認です（§6 の手順 8）。
+- **実機の `error_code`：** 姿勢と `error_code` の対応、ジェスチャーの間や後の値、ジェスチャーの待ち時間（`actions.py`）が実機に合うかは未確認です（§6 の手順 7）。
 - **Whisper の正確さ：** 合成音声の「立って」は 3 モデルとも正しく書き起こせませんでした。本物の声と、実機の PC での精度は未確認です。
