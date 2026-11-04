@@ -3,95 +3,172 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Go2 声で指示</title>
+  <meta name="color-scheme" content="light dark">
+  <title>Go2 Voice</title>
   <link rel="icon" href="data:,">
+  <!-- Optional web fonts, loaded without holding up the page; offline the system fonts of the
+       stack in style.css are used. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" media="print" onload="this.media='all'">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header id="talk" class="talk">
-    <div id="talk-label" class="talk-label">スペースを押している間、話せます</div>
-    <div class="talk-sub">
-      <button id="mic" type="button">マイクを使う</button>
-      <span>状態：<b id="status">—</b></span>
-      <span id="hint" class="hint" role="status"></span>
+  <!-- The design: docs/reference/ui-design (Main, TalkStates, Messages). -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <h1 class="brand-name">Go2 Voice</h1>
+        <span class="brand-sub">声で指示 → LTL → 監督制御</span>
+      </div>
+      <div class="topbar-right">
+        <span id="link" class="pill link" data-tone="off">
+          <span class="dot" aria-hidden="true"></span><span id="link-text">つないでいます…</span>
+        </span>
+        <button id="stop" type="button" class="stop-button">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="1" width="12" height="12" rx="2.5" fill="currentColor"/></svg>止める
+        </button>
+      </div>
     </div>
   </header>
 
-  <main class="columns">
-    <section class="left">
-      <div class="card">
-        <h2>書き起こし</h2>
-        <p id="transcript" class="transcript">—</p>
-        <form id="text-form" class="text-form">
-          <input id="text-input" type="text" autocomplete="off" placeholder="文字で指示する（試験用）">
-          <button type="submit">送る</button>
-        </form>
+  <main class="page">
+    <section id="talk" class="talk" data-state="idle" aria-label="話す">
+      <div class="talk-button-wrap">
+        <span class="talk-ring" aria-hidden="true"></span>
+        <button id="talk-button" type="button" class="talk-button" aria-label="押している間、話せます">
+          <svg class="talk-mic" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+          <span class="talk-bars" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+          <svg class="talk-spin" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="var(--spin-track)" stroke-width="3"/><path d="M20 4 A16 16 0 0 1 36 20" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/></svg>
+        </button>
       </div>
-      <div class="card">
-        <h2>LLM の試行</h2>
-        <table class="attempts">
-          <thead><tr><th>回</th><th>式</th><th>合否</th><th>却下理由</th></tr></thead>
-          <tbody id="attempts"></tbody>
-        </table>
+      <div class="talk-text">
+        <span id="talk-title" class="talk-title">スペースを押しながら話す</span>
+        <span id="talk-sub" class="talk-sub">離すと、そこまでを1つの指示として送ります</span>
+        <ol id="steps" class="steps" aria-label="今の段階" hidden>
+          <li data-step="transcribe"><svg class="check" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg>書き起こし</li>
+          <li data-step="translate"><svg class="check" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg>ロジックに翻訳</li>
+          <li data-step="synthesize"><svg class="check" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"/></svg>監督器を合成</li>
+        </ol>
       </div>
-      <div class="card">
-        <h2>最終的な式</h2>
+      <div class="talk-meta">
+        <span id="status" class="pill status" data-tone="neutral">
+          <span class="dot" aria-hidden="true"></span><span id="status-text">—</span>
+        </span>
+        <button id="mic" type="button" class="mic-button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg><span id="mic-text">マイクを使う</span>
+        </button>
+      </div>
+      <span id="hint" class="hint" role="status"></span>
+    </section>
+
+    <div class="notices">
+      <div id="notice-status" role="status"></div>
+      <div id="notice-alert" role="alert"></div>
+    </div>
+
+    <section class="pair" aria-label="指示と式">
+      <article class="card">
+        <h2 class="label">あなたの指示</h2>
+        <p id="transcript" class="transcript" data-empty="true">まだ指示はありません</p>
+        <span class="caption">書き起こした文</span>
+        <details class="text-entry">
+          <summary>文字で指示する（試験用）</summary>
+          <form id="text-form" class="text-form">
+            <label class="visually-hidden" for="text-input">指示の文</label>
+            <input id="text-input" type="text" autocomplete="off" placeholder="例：立って挨拶して">
+            <button type="submit" class="button">送る</button>
+          </form>
+        </details>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2 class="label">ロジック（LTLf）</h2>
+          <span id="verdict" class="verdict" data-tone="ok" hidden></span>
+        </div>
         <code id="formula" class="formula">—</code>
-      </div>
-      <div class="card">
-        <h2>計画</h2>
-        <ol id="plan" class="plan"></ol>
-      </div>
-      <div class="card">
-        <h2>メッセージ</h2>
-        <p id="message" class="message"></p>
-      </div>
-      <div class="card">
-        <h2>ログ</h2>
-        <pre id="log" class="log"></pre>
-      </div>
+        <span id="formula-caption" class="caption">LLM が指示を式に翻訳します</span>
+        <details id="attempts-box" class="attempts" hidden>
+          <summary>LLM の試行<span id="attempts-count" class="summary-meta"></span></summary>
+          <ol id="attempts" class="attempt-list"></ol>
+        </details>
+      </article>
     </section>
 
-    <section class="right card">
-      <h2>状態遷移図</h2>
-      <div class="tabs" role="tablist">
-        <button type="button" role="tab" data-name="SUP" aria-selected="true">SUP</button>
-        <button type="button" role="tab" data-name="TRIMMED" aria-selected="false">TRIMMED</button>
-        <button type="button" role="tab" data-name="SPEC" aria-selected="false">SPEC</button>
-        <button type="button" role="tab" data-name="PLANT" aria-selected="false">PLANT</button>
-        <label class="fit"><input id="fit" type="checkbox" checked> 幅に合わせる</label>
+    <section class="card plan-card" aria-labelledby="plan-label">
+      <div class="card-head">
+        <h2 id="plan-label" class="label">計画</h2>
+        <span id="plan-meta" class="meta"></span>
       </div>
-      <div id="diagram-box" class="diagram-box fit">
-        <img id="diagram" alt="状態遷移図" hidden>
-        <p id="diagram-empty" class="diagram-empty">まだ図はありません</p>
-      </div>
+      <ol id="plan" class="plan"></ol>
+      <p id="plan-empty" class="empty-text">まだ計画はありません</p>
     </section>
+
+    <section class="duo" aria-label="状態遷移図と Go2">
+      <article class="card diagram-card">
+        <div class="card-head">
+          <h2 class="label">状態遷移図</h2>
+          <div class="segmented" role="tablist" aria-label="図の種類">
+            <button id="tab-SUP" type="button" role="tab" data-name="SUP" aria-selected="true" aria-controls="diagram-panel">監督器</button>
+            <button id="tab-TRIMMED" type="button" role="tab" data-name="TRIMMED" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">trim 後</button>
+            <button id="tab-SPEC" type="button" role="tab" data-name="SPEC" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">要求</button>
+            <button id="tab-PLANT" type="button" role="tab" data-name="PLANT" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">環境</button>
+          </div>
+        </div>
+        <div id="diagram-panel" class="diagram-box" role="tabpanel" aria-labelledby="tab-SUP" tabindex="0">
+          <img id="diagram" alt="" hidden>
+          <p id="diagram-empty" class="diagram-empty">まだ図はありません</p>
+        </div>
+        <div class="legend">
+          <span class="legend-item"><svg width="28" height="8" viewBox="0 0 28 8" aria-hidden="true"><path d="M2 4 H26" stroke="var(--edge)" stroke-width="2" stroke-linecap="round"/></svg>Go2 の動作（止められる）</span>
+          <span class="legend-item"><svg width="28" height="8" viewBox="0 0 28 8" aria-hidden="true"><path d="M2 4 H26" stroke="var(--edge)" stroke-width="2" stroke-linecap="round" stroke-dasharray="5 5"/></svg>センサー（止められない）</span>
+          <span class="legend-item"><svg width="28" height="8" viewBox="0 0 28 8" aria-hidden="true"><path d="M2 4 H26" stroke="var(--diagram-plan)" stroke-width="3" stroke-linecap="round"/></svg>これからの計画と今の状態</span>
+          <button id="fit" type="button" class="toggle" aria-pressed="false">幅に合わせる</button>
+        </div>
+      </article>
+
+      <article class="card go2-card" aria-labelledby="go2-label">
+        <div class="card-head">
+          <h2 id="go2-label" class="label">Go2</h2>
+          <span class="meta">/sportmodestate · /utlidar/cloud</span>
+        </div>
+        <dl class="tiles">
+          <div class="tile">
+            <dt>姿勢</dt>
+            <dd><span id="posture" class="tile-value">—</span></dd>
+          </div>
+          <div class="tile">
+            <dt>前方</dt>
+            <dd><span id="front-dist" class="tile-value">—</span><span id="front" class="judge" data-tone="off">—</span></dd>
+          </div>
+          <div class="tile">
+            <dt>後方</dt>
+            <dd><span id="back-dist" class="tile-value">—</span><span id="back" class="judge" data-tone="off">—</span></dd>
+          </div>
+        </dl>
+        <dl class="facts">
+          <div><dt>動作</dt><dd id="current">—</dd></div>
+          <div><dt>位置</dt><dd id="position">—</dd></div>
+          <div><dt>向き</dt><dd id="heading">—</dd></div>
+        </dl>
+        <figure class="map-figure">
+          <div class="map-box"><canvas id="map" class="map" role="img" aria-label="上から見た図"></canvas></div>
+          <figcaption>上から見た図 · 1 マス 0.2 m · 点線は止まる距離 0.5 m</figcaption>
+        </figure>
+        <div id="box-buttons" class="box-buttons" hidden>
+          <button id="box-front" type="button" class="button">前に箱を置く</button>
+          <button id="box-back" type="button" class="button">後ろに箱を置く</button>
+          <button id="box-clear" type="button" class="button quiet">箱を全部どける</button>
+        </div>
+      </article>
+    </section>
+
+    <details class="card log-card">
+      <summary>記録</summary>
+      <ol id="log" class="log"></ol>
+    </details>
   </main>
-
-  <footer class="bottom">
-    <div class="card">
-      <h2>Go2 の状態</h2>
-      <dl class="go2">
-        <dt>姿勢</dt><dd id="posture">—</dd>
-        <dt>実行中の動作</dt><dd id="current">—</dd>
-        <dt>位置</dt><dd id="position">—</dd>
-        <dt>向き</dt><dd id="heading">—</dd>
-        <dt>前方</dt><dd id="front">—</dd>
-        <dt>後方</dt><dd id="back">—</dd>
-      </dl>
-    </div>
-    <div class="card">
-      <h2>上から見た図</h2>
-      <canvas id="map" class="map" width="320" height="240"></canvas>
-    </div>
-    <div class="card controls">
-      <h2>操作</h2>
-      <button id="box-front" type="button" class="sim-only" hidden>前に箱を置く</button>
-      <button id="box-back" type="button" class="sim-only" hidden>後ろに箱を置く</button>
-      <button id="box-clear" type="button" class="sim-only" hidden>箱を全部どける</button>
-      <button id="stop" type="button" class="stop">止める</button>
-    </div>
-  </footer>
 
   <script src="/static/app.js"></script>
 </body>
