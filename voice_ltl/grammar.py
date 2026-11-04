@@ -23,9 +23,11 @@ def _parens_balanced(formula: str) -> bool:
     return depth == 0
 
 
-def check(formula: str, propositions: Sequence[str]) -> list[str]:
+def check(formula: object, propositions: Sequence[str]) -> list[str]:
     """Return Japanese rejection reasons; an empty list means the formula passes."""
-    if not formula or not formula.strip():
+    if not isinstance(formula, str):
+        return [f"式は文字列で渡してください（{type(formula).__name__} が渡されました）。"]
+    if not formula.strip():
         return ["式が空です。"]
     errors: list[str] = []
     if len(formula) > MAX_FORMULA_LEN:
@@ -43,6 +45,9 @@ def check(formula: str, propositions: Sequence[str]) -> list[str]:
     bad = sorted({c for c in rest if c not in _ALLOWED_SYMBOLS})
     if bad:
         errors.append("使えない記号があります：" + " ".join(bad))
+    stray = sorted(set(rest.replace("->", "  ")) & {"-", ">"})
+    if stray:
+        errors.append("- と > は -> （ならば）の形でだけ使えます：" + " ".join(stray))
     if not errors:
         try:
             LTLfParser()(formula)

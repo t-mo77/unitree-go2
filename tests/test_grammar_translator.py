@@ -1,3 +1,5 @@
+import pytest
+
 from voice_ltl.grammar import check
 from voice_ltl.llm import FakeLLM
 from voice_ltl.prompt import build_prompt
@@ -56,3 +58,27 @@ def test_prompt_has_four_parts():
     p = build_prompt("挨拶して")
     for part in ("Grammar", "Vocabulary", "Examples", "挨拶して", "unsupported"):
         assert part in p
+
+
+@pytest.mark.parametrize("bad", [None, 3, ["F hello"], {"a": 1}])
+def test_check_non_string_is_rejected_not_raised(bad):
+    errors = check(bad, PROPOSITIONS)
+    assert errors and all(isinstance(e, str) for e in errors)
+    assert any("文字列" in e for e in errors)
+
+
+@pytest.mark.parametrize("formula", ["hello - danced", "F hello > danced", "F -hello", "F hello -"])
+def test_check_rejects_stray_minus_and_gt_with_reason(formula):
+    errors = check(formula, PROPOSITIONS)
+    assert any("->" in e for e in errors)
+    assert not any("読めません" in e for e in errors)  # 文法の検査で落ちる（flloat まで行かない）
+
+
+def test_check_still_accepts_implication():
+    assert check("G(hello -> F danced)", PROPOSITIONS) == []
+
+
+def test_translator_uses_llm_type_from_llm_module():
+    from voice_ltl import llm as llm_module
+    from voice_ltl import translator
+    assert translator.LLM is llm_module.LLM

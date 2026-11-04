@@ -115,3 +115,56 @@ def test_claude_is_error_payload_with_exit_zero():
     run, _ = fake_run(json.dumps(payload))
     with pytest.raises(LLMError, match="ログイン"):
         ClaudeCLI(runner=run)("p", SCHEMA)
+
+
+def test_cli_not_found_is_llm_error():
+    def run(argv, **kw):
+        raise FileNotFoundError(argv[0])
+    with pytest.raises(LLMError, match="見つかりません"):
+        ClaudeCLI(runner=run)("p", SCHEMA)
+    with pytest.raises(LLMError, match="見つかりません"):
+        CodexCLI(runner=run)("p", SCHEMA)
+
+
+def test_codex_timeout_is_llm_error():
+    def run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 30)
+    with pytest.raises(LLMError, match="30"):
+        CodexCLI(timeout_s=30, runner=run)("p", SCHEMA)
+
+
+def test_subprocess_and_files_use_utf8(monkeypatch):
+    run, calls = fake_run(json.dumps({"is_error": False, "structured_output": GOOD}))
+    ClaudeCLI(runner=run)("日本語", SCHEMA)
+    assert calls[0][1]["encoding"] == "utf-8"
+
+    seen = {}
+
+    def run2(argv, **kw):
+        seen["kw"] = kw
+        reply = {"formula": "F hello", "unsupported": ["キッチン"]}
+        Path(argv[argv.index("-o") + 1]).write_bytes(json.dumps(reply, ensure_ascii=False).encode("utf-8"))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    out = CodexCLI(runner=run2)("p", SCHEMA)
+    assert seen["kw"]["encoding"] == "utf-8" and out["unsupported"] == ["キッチン"]
+
+
+def test_is_error_exit_zero_non_login_logs_stderr_and_result_redacted(monkeypatch):
+    logged = []
+    monkeypatch.setattr(llm_module.log, "warning", lambda fmt, *a: logged.append(fmt % a))
+    payload = {"is_error": True,
+               "result": "Overloaded, try later\nsk-leaky999\nTOKEN=zzz\n" + "x" * 500}
+    run, _ = fake_run(json.dumps(payload), stderr="stderr-note\nBearer token abc")
+    with pytest.raises(LLMError, match="読めません"):
+        ClaudeCLI(runner=run)("p", SCHEMA)
+    text = "\n".join(logged)
+    assert "stderr-note" in text and "Overloaded" in text
+    assert "sk-" not in text and "token" not in text.lower()
+    assert len(text) < 700
+
+
+def test_fake_llm_exhausted_raises_llm_error():
+    llm = FakeLLM([GOOD])
+    llm("a", SCHEMA)
+    with pytest.raises(LLMError, match="FakeLLM: 返事が足りません"):
+        llm("b", SCHEMA)

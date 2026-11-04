@@ -2,16 +2,14 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable
 
 from voice_ltl.grammar import check
+from voice_ltl.llm import LLM
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 
 # An unsupported part that is a number (0.7メートル, 45度, 七回): design §7.4.0
 _NUMBER = re.compile(r"\d|[〇一二三四五六七八九十百千]+(?:回|度|メートル|センチ|歩|周)")
-
-LLM = Callable[[str, dict], dict]
 
 
 @dataclass

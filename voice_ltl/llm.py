@@ -24,13 +24,17 @@ def _msg_timeout(timeout_s: float) -> str:
     return f"LLM の返事が {t} 秒で返ってきませんでした"
 
 
+def _redacted_head(text: str | None) -> str:
+    """先頭 300 文字だけ返す（トークンらしき行は除く）。"""
+    if not text:
+        return ""
+    lines = [l for l in text.splitlines()
+             if "sk-" not in l and "oauth" not in l.lower() and "token" not in l.lower()]
+    return "\n".join(lines)[:300]
+
+
 def _log_stderr(stderr: str | None) -> None:
-    """標準エラーの先頭 300 文字だけをログに残す（トークンらしき行は除く）。"""
-    if not stderr:
-        return
-    lines = [l for l in stderr.splitlines()
-             if "sk-" not in l and "oauth" not in l.lower()]
-    text = "\n".join(lines)[:300]
+    text = _redacted_head(stderr)
     if text:
         log.warning("LLM stderr: %s", text)
 
@@ -75,7 +79,8 @@ def _validated(value, schema: dict) -> dict:
 
 def _run(runner, argv, prompt: str, timeout_s: float):
     try:
-        return runner(argv, input=prompt, capture_output=True, text=True, timeout=timeout_s)
+        return runner(argv, input=prompt, capture_output=True, text=True,
+                      encoding="utf-8", timeout=timeout_s)
     except subprocess.TimeoutExpired:
         raise LLMError(_msg_timeout(timeout_s)) from None
     except FileNotFoundError:
@@ -112,6 +117,10 @@ class ClaudeCLI:
             if _looks_like_login_problem(proc) or any(
                     k in str(data.get("result", "")).lower() for k in ("login", "auth", "api key")):
                 raise LLMError(MSG_LOGIN)
+            _log_stderr(proc.stderr)
+            result = _redacted_head(str(data.get("result", "")))
+            if result:
+                log.warning("LLM result: %s", result)
             raise LLMError(MSG_UNREADABLE)
         out = data.get("structured_output")
         if out is None:
@@ -129,7 +138,7 @@ class CodexCLI:
     def __call__(self, prompt: str, schema: dict) -> dict:
         with tempfile.TemporaryDirectory() as d:
             schema_path, out_path = Path(d) / "schema.json", Path(d) / "out.json"
-            schema_path.write_text(json.dumps(schema))
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
             argv = ["codex", "exec", "--skip-git-repo-check", "--ephemeral",
                     "--sandbox", "read-only",
                     "--output-schema", str(schema_path), "-o", str(out_path)]
@@ -139,7 +148,7 @@ class CodexCLI:
             proc = _run(self.runner, argv, prompt, self.timeout_s)
             _check_exit(proc)
             try:
-                out = json.loads(out_path.read_text())
+                out = json.loads(out_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 raise LLMError(MSG_UNREADABLE) from None
         return _validated(out, schema)
@@ -157,6 +166,8 @@ class FakeLLM:
         self.prompts.append(prompt)
         if self.delay_s:
             time.sleep(self.delay_s)
+        if len(self.prompts) > len(self.replies):
+            raise LLMError("FakeLLM: 返事が足りません")
         reply = self.replies[len(self.prompts) - 1]
         if isinstance(reply, Exception):
             raise reply
