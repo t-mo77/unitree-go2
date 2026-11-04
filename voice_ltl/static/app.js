@@ -389,7 +389,8 @@ function renderInstruction(s) {
   // stt: the Whisper model and seconds of this transcript; null when it was typed
   const caption = s.stt
     ? ["書き起こし", s.stt.model && `Whisper ${s.stt.model}`, `${s.stt.seconds.toFixed(1)} 秒`]
-      .filter(Boolean).join(" · ")
+      .filter(Boolean).join(" · ") +
+      (s.stt.load_seconds ? `（初回の読み込み ${s.stt.load_seconds.toFixed(1)} 秒）` : "")
     : empty ? "書き起こした文" : "文字で入力した文";
   setText("transcript-caption", caption);
 }
@@ -469,10 +470,10 @@ function renderPlan(steps) {
 // every second (the distance, the time left); they are shown but kept out of the live region,
 // so a screen reader does not read the notice again each time.
 
-// The seconds left before the wait ends the plan: waiting_since (epoch s, the server's clock)
-// and block_timeout come from the snapshot.
+// The seconds left before the wait ends the plan: waiting_since and server_now (both the
+// server's clock, so the browser's clock does not matter) and block_timeout come from the snapshot.
 function secondsLeft(s) {
-  const waited = Date.now() / 1000 - s.waiting_since;
+  const waited = s.server_now - s.waiting_since;
   return Math.min(s.block_timeout, Math.max(0, Math.ceil(s.block_timeout - waited)));
 }
 
