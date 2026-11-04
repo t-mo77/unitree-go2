@@ -127,7 +127,7 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
 
 ### 使えることを確認した部品（PyPI）
 - `pitct` 1.0.8：TCT の Python 版。Linux の aarch64 と x86_64、macOS arm64 のビルド済みファイルがある。graphviz に依存する。
-- `flloat` 0.3.0：LTLf → DFA。Python だけで書かれている。
+- `flloat` 0.3.0：Python だけで書かれている。SPEC は formula progression（講義 5.2）で作る。flloat は式の読み取りとテストの照合に使う。
 - `faster-whisper` 1.2.1 + `ctranslate2` 4.8.5：Linux の aarch64 と x86_64 のビルド済みファイルがある。
 
 ## 6. ユーザーが決めたこと
