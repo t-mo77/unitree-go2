@@ -51,7 +51,7 @@ SAFETY_FORMULA = "G(!(obstacle_front & moved_forward)) & G(!(obstacle_back & mov
 
 STEP_DISTANCE = 0.5  # [m] per forward/backward step
 STEP_ANGLE = 90.0    # [deg] per turn step
-MAX_REPEAT = 6
+MAX_REPEAT = 3       # 4 repeats with SAFETY_FORMULA take flloat > 60 s (design §7.4.0)
 
 
 @dataclass(frozen=True)
