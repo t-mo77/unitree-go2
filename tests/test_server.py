@@ -480,7 +480,7 @@ def test_serve_logs_the_caution_and_serves_on_the_page_port(monkeypatch, tmp_pat
         def __init__(self, perception):
             self.node = None
 
-        def wait_ready(self):
+        def wait_ready(self, timeout_s=5.0):
             pass
 
         def close(self, stop_times=3):
