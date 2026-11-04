@@ -232,8 +232,10 @@ def test_llm_failure_reports_and_stays_idle(tmp_path):
 
 
 def test_posture_mismatch_aborts(tmp_path):
+    # Between two Steps (during a Step the posture is checked too: test_session_safety.py)
     sess, link = make(tmp_path, llm_for("F(hello & F danced)"))
-    sess.submit_text("挨拶してからダンスして"); drive(sess, link, 8)
+    sess.submit_text("挨拶してからダンスして")
+    drive_until(sess, link, lambda s: [st["status"] for st in s["steps"]][:2] == ["done", "done"])
     assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO]       # 挨拶は Go2 の中で終わった
     link.sim.error_code = 1004                                         # 強制的に伏せ
     drive(sess, link, 20)
