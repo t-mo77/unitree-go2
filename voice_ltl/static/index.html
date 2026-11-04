@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go2 声で指示</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="talk" class="talk">
+    <div id="talk-label" class="talk-label">スペースを押している間、話せます</div>
+    <div class="talk-sub">
+      <button id="mic" type="button">マイクを使う</button>
+      <span>状態：<b id="status">—</b></span>
+      <span id="hint" class="hint" role="status"></span>
+    </div>
+  </header>
+
+  <main class="columns">
+    <section class="left">
+      <div class="card">
+        <h2>書き起こし</h2>
+        <p id="transcript" class="transcript">—</p>
+        <form id="text-form" class="text-form">
+          <input id="text-input" type="text" autocomplete="off" placeholder="文字で指示する（試験用）">
+          <button type="submit">送る</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>LLM の試行</h2>
+        <table class="attempts">
+          <thead><tr><th>回</th><th>式</th><th>合否</th><th>却下理由</th></tr></thead>
+          <tbody id="attempts"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>最終的な式</h2>
+        <code id="formula" class="formula">—</code>
+      </div>
+      <div class="card">
+        <h2>計画</h2>
+        <ol id="plan" class="plan"></ol>
+      </div>
+      <div class="card">
+        <h2>メッセージ</h2>
+        <p id="message" class="message"></p>
+      </div>
+      <div class="card">
+        <h2>ログ</h2>
+        <pre id="log" class="log"></pre>
+      </div>
+    </section>
+
+    <section class="right card">
+      <h2>状態遷移図</h2>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-name="SUP" aria-selected="true">SUP</button>
+        <button type="button" role="tab" data-name="TRIMMED" aria-selected="false">TRIMMED</button>
+        <button type="button" role="tab" data-name="SPEC" aria-selected="false">SPEC</button>
+        <button type="button" role="tab" data-name="PLANT" aria-selected="false">PLANT</button>
+        <label class="fit"><input id="fit" type="checkbox" checked> 幅に合わせる</label>
+      </div>
+      <div id="diagram-box" class="diagram-box fit">
+        <img id="diagram" alt="状態遷移図" hidden>
+        <p id="diagram-empty" class="diagram-empty">まだ図はありません</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <div class="card">
+      <h2>Go2 の状態</h2>
+      <dl class="go2">
+        <dt>姿勢</dt><dd id="posture">—</dd>
+        <dt>実行中の動作</dt><dd id="current">—</dd>
+        <dt>位置</dt><dd id="position">—</dd>
+        <dt>向き</dt><dd id="heading">—</dd>
+        <dt>前方</dt><dd id="front">—</dd>
+        <dt>後方</dt><dd id="back">—</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>上から見た図</h2>
+      <canvas id="map" class="map" width="320" height="240"></canvas>
+    </div>
+    <div class="card controls">
+      <h2>操作</h2>
+      <button id="box-front" type="button" class="sim-only" hidden>前に箱を置く</button>
+      <button id="box-back" type="button" class="sim-only" hidden>後ろに箱を置く</button>
+      <button id="box-clear" type="button" class="sim-only" hidden>箱を全部どける</button>
+      <button id="stop" type="button" class="stop">止める</button>
+    </div>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

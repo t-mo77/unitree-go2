@@ -18,6 +18,7 @@ _EXAMPLES = (
     ("挨拶するまで座らないで", "!sitting U hello", []),
     ("1メートル進んで", "F(moved_forward & X F moved_forward)", []),
     ("キッチンへ行って", None, ["キッチン"]),
+    ("45度回って", None, ["45度"]),
 )
 
 

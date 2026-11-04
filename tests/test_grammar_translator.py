@@ -40,6 +40,18 @@ def test_unsupported_stops_without_retry():
     assert "キッチン" in t.message and "単語帳" in t.message
 
 
+def test_unsupported_number_says_it_cannot_be_given():
+    # design §7.4.0: a number off the 0.5 m / 90 度 / 1回 units -> 「この数は指定できません」
+    llm = FakeLLM([{"formula": None, "unsupported": ["0.7メートル"]}])
+    t = translate("0.7メートル進んで", llm)
+    assert not t.ok and "0.7メートル" in t.message and "指定できません" in t.message
+    assert "単語帳" not in t.message
+    llm = FakeLLM([{"formula": None, "unsupported": ["キッチン", "七回"]}])
+    t = translate("キッチンで七回挨拶して", llm)
+    assert "「キッチン」は単語帳にない" in t.message and "「七回」" in t.message
+    assert "指定できません" in t.message
+
+
 def test_prompt_has_four_parts():
     p = build_prompt("挨拶して")
     for part in ("Grammar", "Vocabulary", "Examples", "挨拶して", "unsupported"):
