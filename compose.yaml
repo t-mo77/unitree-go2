@@ -1,0 +1,33 @@
+# docker compose --profile fake up        : app (Web + brain) and the fake Go2
+# docker compose run --rm --no-deps app <cmd> : run a command in /work (= this folder)
+x-go2: &go2
+  build:
+    context: ./docker
+    dockerfile: Dockerfile
+  image: go2-voice-ltl:dev
+  init: true
+  volumes:
+    - ./:/work
+    - hf-cache:/root/.cache/huggingface
+    - codex-home:/root/.codex
+  env_file:
+    - path: env.txt
+      required: false
+
+services:
+  app:
+    <<: *go2
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      SIM: "1"
+    command: python3 -m voice_ltl.server
+
+  sim:
+    <<: *go2
+    profiles: ["fake"]
+    command: python3 -m sim.fake_go2
+
+volumes:
+  hf-cache:
+  codex-home:
