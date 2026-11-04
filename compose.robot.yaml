@@ -1,0 +1,28 @@
+# Real Go2 on a Linux PC (design section 10, method A). No fake Go2, no Gazebo here.
+#   docker compose -f compose.robot.yaml up
+# network_mode: host lets the container see the LAN port wired to the Go2.
+# SIM=0: the server listens on 127.0.0.1:8000 only and the page has no box buttons.
+# GO2_IFACE (the LAN port name, e.g. enp3s0) is read from env.txt.
+# Never run `docker compose config` while env.txt exists: it prints the secrets.
+services:
+  app:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    image: go2-voice-ltl:dev
+    init: true
+    network_mode: host
+    volumes:
+      - ./:/work
+      - hf-cache:/root/.cache/huggingface
+      - codex-home:/root/.codex
+    env_file:
+      - path: env.txt
+        required: false
+    environment:
+      SIM: "0"
+    command: python3 -m voice_ltl.server
+
+volumes:
+  hf-cache:
+  codex-home:
