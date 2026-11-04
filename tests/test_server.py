@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +18,8 @@ import voice_ltl.server as server
 from sim.sim_core import SimGo2
 from voice_ltl.llm import MSG_LOGIN, FakeLLM
 from voice_ltl.server import control_loop, create_app
-from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_POSTURE_UNKNOWN,
+from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
+                               MSG_POSTURE_CHANGED, MSG_POSTURE_UNKNOWN,
                                MSG_SETTLING, MSG_STOPPED, MSG_UNSATISFIABLE, MSG_WAITING,
                                DirectSimLink, Session)
 import voice_ltl.session as session_module
@@ -406,6 +408,8 @@ NOTICE_KINDS = [
     ("thinking", MSG_SETTLING, "busy"),     # R27
     ("waiting", MSG_WAITING, "waiting"),
     ("error", MSG_POSTURE_UNKNOWN, "error"),
+    ("error", MSG_OTHER_SENDERS, "error"),      # another program sends to Go2
+    ("error", MSG_POSTURE_CHANGED, "error"),    # stopped; the page says 続けられませんでした
     ("error", "「キッチン」は単語帳にないので、式にできません", "error"),
     ("error", "15秒待っても進めません", "error"),
     ("idle", "", None),
@@ -418,10 +422,19 @@ def test_message_kind(status, message, kind):
     assert server.message_kind(status, message) == kind
 
 
+def session_source_names():
+    """Names assigned at module level in session.py itself, not imported."""
+    import ast
+    tree = ast.parse(Path(session_module.__file__).read_text(encoding="utf-8"))
+    return {t.id for node in tree.body if isinstance(node, ast.Assign)
+            for t in node.targets if isinstance(t, ast.Name)}
+
+
 def test_every_session_message_has_its_notice_kind():
     """A new MSG_* in session.py needs its row in NOTICE_KINDS (and a kind the page knows)."""
     covered = {m for _, m, _ in NOTICE_KINDS}
-    names = [n for n in vars(session_module) if n.startswith("MSG_")]
+    # only messages defined in session.py (MSG_REDACTED etc. are imported from elsewhere)
+    names = [n for n in session_source_names() if n.startswith("MSG_")]
     assert names and all(getattr(session_module, n) in covered for n in names), names
 
 

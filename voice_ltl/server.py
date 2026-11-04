@@ -45,8 +45,8 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from voice_ltl.llm import MSG_LOGIN, make_llm
-from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_SETTLING,
-                               MSG_STOPPED, MSG_UNSATISFIABLE, MSG_WAITING, Session)
+from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
+                               MSG_POSTURE_CHANGED, MSG_SETTLING, MSG_STOPPED, MSG_UNSATISFIABLE, MSG_WAITING, Session)
 
 if TYPE_CHECKING:
     from voice_ltl.ros_link import RosLink, SimControl
@@ -139,6 +139,8 @@ def message_kind(status: str, message: str) -> str | None:
         return "unsat"
     if message.startswith(MSG_LOGIN):
         return "login"
+    if message in (MSG_OTHER_SENDERS, MSG_POSTURE_CHANGED):  # both end with the page's 続けられませんでした
+        return "error"
     return "error" if status == "error" else "info"
 
 
