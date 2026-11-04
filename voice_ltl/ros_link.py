@@ -147,6 +147,10 @@ class RosLink:
     def pose(self) -> Optional[Pose]:
         return self._pose
 
+    def error_code(self) -> Optional[int]:
+        """最後に受けた /sportmodestate の error_code。まだ届いていなければ None。"""
+        return self._error_code
+
     def reading(self, now: float) -> Reading:
         r = self._sensing.current(now)
         if self._state_time is None or now - self._state_time > STATE_TIMEOUT:

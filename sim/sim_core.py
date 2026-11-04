@@ -17,7 +17,9 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
 
-FOOTPRINT = 0.35      # 中心から箱までの、これより近づく動きは打ち切る [m]
+FOOTPRINT = 0.35      # 体の前後の半分の長さ（本物の Go2 は約 0.70 m）[m]
+FOOTPRINT_HALF_WIDTH = 0.16   # 体の左右の半分の幅（本物の Go2 は約 0.31 m）[m]
+CONTACT_MARGIN = 0.02         # 体の長方形と箱の隙間がこれより狭くなる動きは打ち切る [m]
 MOVE_HOLD_S = 1.0     # Move は送り直しが無ければこの秒数で止まる
 GROUND_Z = -0.30      # 機体座標での地面の高さ [m]
 POINT_STEP = 0.05     # 点群の間隔 [m]
@@ -26,6 +28,34 @@ GESTURE_S = 3.0
 GESTURES = (HELLO, STRETCH, CONTENT, DANCE1, SCRAPE, HEART)
 _EPS = 1e-9
 _START_CODE = {LYING: 1004, STANDING: 1013, SITTING: 1007}
+
+
+def _point_segment_dist(p, a, b) -> float:
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    t = ((p[0] - ax) * dx + (p[1] - ay) * dy) / (dx * dx + dy * dy)
+    t = min(1.0, max(0.0, t))
+    return math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
+
+
+def _polygon_gap(p, q) -> float:
+    """凸な四角形 2 つの隙間。重なっていれば 0（分離軸で調べ、離れていれば頂点と辺の距離の最小）。"""
+    for poly in (p, q):
+        for i in range(4):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % 4]
+            nx, ny = ay - by, bx - ax
+            pp = [nx * x + ny * y for x, y in p]
+            qq = [nx * x + ny * y for x, y in q]
+            if max(pp) < min(qq) or max(qq) < min(pp):
+                break
+        else:
+            continue
+        break
+    else:
+        return 0.0
+    return min(_point_segment_dist(v, b[i], b[(i + 1) % 4])
+               for a, b in ((p, q), (q, p)) for v in a for i in range(4))
 
 
 @dataclass
@@ -134,7 +164,7 @@ class SimGo2:
         ny = self.y + (vx * s + vy * c) * dt
         old = self._nearest_box_dist(self.x, self.y)
         new = self._nearest_box_dist(nx, ny)
-        if new < FOOTPRINT and new < old:       # 箱に近づく動きは打ち切る（離れる動きは許す）
+        if new < CONTACT_MARGIN and new < old:       # 箱に近づく動きは打ち切る（離れる動きは許す）
             self.collided = True
             self._stop_walking(self._last_step if self._last_step is not None else 0.0)
             return
@@ -144,12 +174,16 @@ class SimGo2:
             self.collided = False
 
     def _nearest_box_dist(self, px: float, py: float) -> float:
+        """体（向き self.yaw の長方形）と箱の隙間の最小値 [m]。重なっていれば 0。"""
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        body = [(px + c * u - s * v, py + s * u + c * v)
+                for u, v in ((FOOTPRINT, FOOTPRINT_HALF_WIDTH), (FOOTPRINT, -FOOTPRINT_HALF_WIDTH),
+                             (-FOOTPRINT, -FOOTPRINT_HALF_WIDTH), (-FOOTPRINT, FOOTPRINT_HALF_WIDTH))]
         best = math.inf
         for b in self.boxes:
             h = b.size / 2.0
-            dx = max(abs(px - b.x) - h, 0.0)
-            dy = max(abs(py - b.y) - h, 0.0)
-            best = min(best, math.hypot(dx, dy))
+            box = [(b.x + h, b.y + h), (b.x - h, b.y + h), (b.x - h, b.y - h), (b.x + h, b.y - h)]
+            best = min(best, _polygon_gap(body, box))
         return best
 
     # ---- 箱と点群 ----
