@@ -1,10 +1,12 @@
+import math
+
 import numpy as np
 import pytest
 
 from go2_nl_control.actions import (BALANCE_STAND, HELLO, MOVE, RISE_SIT, SIT, STAND_DOWN,
                                     STAND_UP, STANDING, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
-from sim.sim_core import FOOTPRINT, FOOTPRINT_HALF_WIDTH, Box, SimGo2
+from sim.sim_core import FOOTPRINT, FOOTPRINT_HALF_WIDTH, Box, SimGo2, _polygon_gap
 from voice_ltl.sensing import Sensing
 
 
@@ -68,7 +70,59 @@ def test_box_beside_the_body_is_not_hit_but_box_ahead_is():
 
 
 def test_footprint_is_a_rectangle():
-    assert FOOTPRINT == 0.35 and FOOTPRINT_HALF_WIDTH == 0.16
+    # 横 0.40 m の箱：長方形なら隙間 0.40-0.15-0.16=0.09 m（円 0.35 m なら重なる）
+    side = standing_sim()
+    side.boxes.append(Box(0.0, 0.40))
+    assert side._nearest_box_dist(0.0, 0.0, 0.0) == pytest.approx(0.09)
+    ahead = standing_sim()
+    ahead.boxes.append(Box(FOOTPRINT + 0.15 - 0.01, 0.0))        # 正面で 1 cm 食い込む
+    assert ahead._nearest_box_dist(0.0, 0.0, 0.0) == 0.0
+    assert FOOTPRINT > FOOTPRINT_HALF_WIDTH
+
+
+@pytest.mark.parametrize("yaw_deg", [45, 90])
+@pytest.mark.parametrize("side", [1, -1])
+@pytest.mark.parametrize("wz", [0.5, -0.5])
+def test_turning_in_place_beside_a_box_does_not_penetrate(yaw_deg, side, wz):
+    sim = SimGo2(posture=STANDING)
+    sim.yaw = math.radians(yaw_deg)
+    c, s = math.cos(sim.yaw), math.sin(sim.yaw)
+    off = FOOTPRINT_HALF_WIDTH
+    while True:                                                   # 体の横で、隙間が約 5 cm になる位置へ箱を置く
+        box = Box(-s * side * off, c * side * off)
+        sim.boxes[:] = [box]
+        if sim._nearest_box_dist(0.0, 0.0, sim.yaw) >= 0.05:
+            break
+        off += 0.005
+    t = 0.0
+    while t < 6:
+        sim.handle(MOVE, '{"x":0,"y":0,"z":%s}' % wz, t)
+        t = run(sim, t, t + 0.1)
+        assert sim._nearest_box_dist(sim.x, sim.y, sim.yaw) > 0.0
+
+
+def test_overlapping_body_may_only_move_away():
+    sim = SimGo2(posture=STANDING)
+    sim.boxes.append(Box(0.0, 0.25))                              # すでに体と重なっている
+    assert sim._nearest_box_dist(0.0, 0.0, 0.0) == 0.0
+    sim._vel = (0.0, 0.1, 0.0)                                    # 箱へ向かう
+    sim._last_step = 0.0
+    sim._integrate(0.1)
+    assert sim.collided and sim.y == 0.0
+    sim._vel = (0.0, -0.1, 0.0)                                   # 離れる
+    sim._integrate(0.1)
+    assert sim.y == pytest.approx(-0.01)
+
+
+def _square(x0, y0, size=1.0):
+    return [(x0 + size, y0 + size), (x0, y0 + size), (x0, y0), (x0 + size, y0)]
+
+
+def test_polygon_gap_touching_overlapping_and_diagonal():
+    assert _polygon_gap(_square(0, 0), _square(1, 0)) == 0.0                 # 接している
+    assert _polygon_gap(_square(0, 0), _square(0.5, 0.5)) == 0.0             # 重なっている
+    assert _polygon_gap(_square(0, 0), _square(1.5, 0)) == pytest.approx(0.5)  # 離れている
+    assert _polygon_gap(_square(0, 0), _square(2, 2)) == pytest.approx(math.sqrt(2))  # 斜め
 
 
 def test_collided_is_stable_while_move_is_resent_into_box():

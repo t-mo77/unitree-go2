@@ -51,3 +51,47 @@ def test_focus_svg_done_and_empty():
     svg = render_focus_svg(a, "SUP", 2, [])
     assert "完了" in svg and svg.count('<g id="node') <= 2
     assert "満たせません" in render_focus_svg(Automaton("S", 0, [], set(), set()), "S", 0, [])
+
+
+def test_focus_path_edge_group_carries_hl_class():
+    import re
+    from voice_ltl.diagrams import render_focus_svg
+    a, path = _focus_fixture()
+    svg = render_focus_svg(a, "SUP", 0, path)
+    # the wrapper <g class="hl"> encloses an <g ... class="edge"> group (not just the node circle)
+    assert re.search(r'<g class="hl"><g id="edge\d+" class="edge[^"]*">', svg)
+    plain = render_svg(a, "SUP", highlight_events=[(0, "stand_to_x")])
+    assert re.search(r'<g class="hl"><g id="edge\d+" class="edge[^"]*">', plain)
+
+
+def test_focus_waiting_is_not_shown_as_done():
+    from voice_ltl.diagrams import render_focus_svg
+    a, _ = _focus_fixture()
+    svg = render_focus_svg(a, "SUP", 1, [])          # state 1 is not marked, nothing left to do
+    assert "完了" not in svg and "待っています" in svg
+    assert "stroke-dasharray" in svg                 # the sensor arrow (front_blocked) is dotted
+    assert "front_blocked" in svg
+    unresolved = render_focus_svg(a, "SUP", 1, [(3, "nope")])  # path cannot be resolved: same rule
+    assert "完了" not in unresolved and "待っています" in unresolved
+    assert "完了" in render_focus_svg(a, "SUP", 2, [(2, "nope")])  # marked: done
+
+
+def test_focus_side_edges_grey_more_node_and_lr():
+    from voice_ltl.diagrams import GREY, render_focus_svg
+    a, _ = _focus_fixture()
+    svg = render_focus_svg(a, "SUP", 1, [], max_side_edges=2)
+    assert GREY.lower() in svg.lower()               # thin grey arrows
+    assert "…" in svg                                # collapsed targets
+    from voice_ltl import diagrams
+    import graphviz
+    seen = {}
+    orig = graphviz.Digraph.pipe
+    def spy(self, *aa, **kw):
+        seen["src"] = self.source
+        return orig(self, *aa, **kw)
+    graphviz.Digraph.pipe = spy
+    try:
+        render_focus_svg(a, "SUP", 1, [])
+    finally:
+        graphviz.Digraph.pipe = orig
+    assert "rankdir=LR" in seen["src"]
