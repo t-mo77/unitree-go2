@@ -68,6 +68,14 @@ RUN apt-get update \
     && rosdep install --from-paths src --ignore-src -r -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Our fixes to unitree_guide_controller (docker/patches/*.patch), applied in name order to the
+# pinned commit before the build; upstream is not forked. Without them the Go2 falls over right
+# after an in-place turn (the state estimator mixes body and world frames):
+# docs/reference/gazebo_turn_fix.md.
+COPY patches /tmp/quadruped_ros2_control_patches
+RUN cd /root/gz_ws/src/quadruped_ros2_control \
+    && for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose "$p" || exit 1; done
+
 # gz_quadruped_playground pulls in gz_quadruped_hardware (the ros2_control system for
 # Gazebo Harmonic). It takes position / velocity / effort / kp / kd itself, so the
 # leg_pd_controller that Gazebo Classic needed is not used here.

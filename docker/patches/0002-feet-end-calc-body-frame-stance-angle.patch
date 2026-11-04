@@ -1,0 +1,26 @@
+unitree_guide_controller: 歩くに入るときの足の角度（FeetEndCalc::init）を胴の座標で測る
+
+legubiao/quadruped_ros2_control 5434c5810d1a7fe223bcfd04550e9d3bfdd4b458 に
+0001-estimator-world-frame-leg-odometry.patch の後で当てる（docker/Dockerfile.gazebo）。
+
+直すこと：feet_init_angle_ は胴の座標の角度でなければならない（calcFootPos() が今の向き yaw を足す）。
+ところが getFeetPos2Body() は世界の座標（R * p_b）なので、向き ψ0 ≠ 0 で歩くに入ると、
+すべての足の置き場所が ψ0 だけ回った所になる（例：90 度回った後に伏せて立ち直すと、
+最初の数歩でよろけて倒れる）。R^T を掛けて胴の座標に戻す。
+diff --git a/controllers/unitree_guide_controller/src/gait/FeetEndCalc.cpp b/controllers/unitree_guide_controller/src/gait/FeetEndCalc.cpp
+index 836f554..886e459 100644
+--- a/controllers/unitree_guide_controller/src/gait/FeetEndCalc.cpp
++++ b/controllers/unitree_guide_controller/src/gait/FeetEndCalc.cpp
+@@ -20,7 +20,11 @@ void FeetEndCalc::init() {
+     t_stance_ = ctrl_component_.wave_generator_->get_t_stance();
+     t_swing_ = ctrl_component_.wave_generator_->get_t_swing();
+ 
+-    Vec34 feet_pos_body = estimator_->getFeetPos2Body();
++    // feet_init_angle_ must be a body-frame angle: calcFootPos() adds the current yaw to it.
++    // getFeetPos2Body() is world-frame (R * p_b), so entering trotting at yaw psi0 != 0 would
++    // place every foot psi0 too far round the body (unitree_guide uses the ideal body-frame
++    // stance here).
++    const Vec34 feet_pos_body = estimator_->getRotation().transpose() * estimator_->getFeetPos2Body();
+     // Vec34 feet_pos_body = robot_model_.feet_pos_normal_stand_;
+     for (int i(0); i < 4; ++i) {
+         feet_radius_(i) =
