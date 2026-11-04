@@ -18,6 +18,8 @@ class Runtime:
         self._out: dict[int, dict[str, int]] = {}
         for src, event, dst in sup.trans:
             self._out.setdefault(src, {})[event] = dst
+        # Descending order (Ruling R14), made once here, not at every search step.
+        self._order = {src: sorted(out, reverse=True) for src, out in self._out.items()}
 
     @property
     def done(self) -> bool:
@@ -40,7 +42,7 @@ class Runtime:
         queue = deque([self.state])
         while queue:
             src = queue.popleft()
-            for event in sorted(self._out.get(src, {}), reverse=True):
+            for event in self._order.get(src, ()):
                 if event in self.sup.uncontrollable or (src, event) in avoid:
                     continue
                 dst = self._out[src][event]

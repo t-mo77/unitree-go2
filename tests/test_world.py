@@ -36,3 +36,13 @@ def test_vocabulary_is_safe_and_complete():
     assert len(PROPOSITIONS) == 15 and set(PROP_DESCRIPTION_JA) == set(PROPOSITIONS)
     assert not {"flip", "jump", "handstand"} & set(ACTION_NAMES)
     assert step_value("forward") == 0.5 and step_value("turn_left") == 90.0 and step_value("hello") == 0
+    assert all(type(step_value(a)) is float for a in ACTION_NAMES)
+
+
+def test_forward_is_in_the_plant_even_when_blocked_but_forbidden():
+    # The supervisor forbids moving into an obstacle; the plant itself still has the event.
+    w = go2_world(PlantState(STANDING, True, False))
+    forward = [t for t in w.transitions if t[0] == w.initial and event_action(t[1]) == "forward"]
+    assert len(forward) == 1 and forward[0][3] == "c"
+    assert forward[0][1] in w.forbidden
+    assert w.event_label[forward[0][1]] >= {"obstacle_front", "moved_forward"}
