@@ -60,6 +60,23 @@ def test_prompt_has_four_parts():
         assert part in p
 
 
+def test_prompt_maps_paraphrases_but_not_other_actions_or_places():
+    # design §7.4.1 (2026-11-05): a paraphrase of a vocabulary action is translated; another action is not
+    p = build_prompt("しゃがんで")
+    assert "同じ動作・姿勢の別の言い方は、単語帳の命題に直して" in p
+    assert '指示: しゃがんで\n答え: {"formula": "F sitting", "unsupported": []}' in p
+    assert '指示: ジャンプして\n答え: {"formula": null, "unsupported": ["ジャンプ"]}' in p
+    assert '指示: キッチンへ行って\n答え: {"formula": null, "unsupported": ["キッチン"]}' in p
+    assert "近い言葉に置き換えず" not in p
+
+
+def test_prompt_examples_all_pass_the_grammar_check():
+    from voice_ltl.prompt import _EXAMPLES
+    for _, formula, unsupported in _EXAMPLES:
+        if formula is not None:
+            assert check(formula, PROPOSITIONS) == [] and unsupported == []
+
+
 @pytest.mark.parametrize("bad", [None, 3, ["F hello"], {"a": 1}])
 def test_check_non_string_is_rejected_not_raised(bad):
     errors = check(bad, PROPOSITIONS)

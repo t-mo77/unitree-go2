@@ -181,7 +181,8 @@ def test_unsupported_and_unsatisfiable_do_not_move(tmp_path):
 @pytest.mark.parametrize("word,is_number", [
     ("2階", False), ("3番目の部屋", False), ("1号室", False),
     ("0.7メートル", True), ("0.7 m", True), ("30cm", True), ("45度", True),
-    ("10回", True), ("七回", True), ("２メートル", True),
+    ("10回", True), ("七回", True), ("２メートル", True), ("約45度", True),
+    ("障害物の周りを一周する", False), ("この周りを一周する（周回）", False),
 ])
 def test_number_message_only_for_a_number_with_a_unit(tmp_path, word, is_number):
     # 「この数は指定できません」 is for a distance, angle or count; 「2階」 is a word not in the vocabulary.

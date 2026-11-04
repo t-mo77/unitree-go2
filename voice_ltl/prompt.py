@@ -19,7 +19,11 @@ _EXAMPLES = (
     ("挨拶してからダンスして", "F(hello & F danced)", []),
     ("挨拶するまで座らないで", "!sitting U hello", []),
     ("1メートル進んで", "F(moved_forward & X F moved_forward)", []),
+    ("しゃがんで", "F sitting", []),
+    ("寝そべって", "F lying", []),
+    ("その場で一周して", "F(turned_left & X F(turned_left & X F(turned_left & X F turned_left)))", []),
     ("キッチンへ行って", None, ["キッチン"]),
+    ("ジャンプして", None, ["ジャンプ"]),
     ("45度回って", None, ["45度"]),
 )
 
@@ -57,8 +61,10 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
 ## Vocabulary
 {vocab}
 
-単語帳で表せない部分は、近い言葉に置き換えず unsupported に入れて、formula を null にしてください。
-数は {STEP_DISTANCE} m・{STEP_ANGLE:g} 度・1回を単位とした繰り返しで表します。繰り返しは {MAX_REPEAT} 回までです。割り切れない数や、それを超える数は unsupported に入れてください。
+同じ動作・姿勢の別の言い方は、単語帳の命題に直してください。
+（例：しゃがんで・お座り → sitting、寝そべって・横になって → lying、起きて → standing、歩いて → moved_forward、バックして → moved_backward、曲がって → turned_left か turned_right、お辞儀して → scraped、手を振って → hello）
+単語帳にない場所・物・別の動作（キッチン、ジャンプ、障害物の周りを回る など）は、似た動作で代用せず unsupported に入れて、formula を null にしてください。同じ動作か迷うときも unsupported に入れます。
+数は {STEP_DISTANCE} m・{STEP_ANGLE:g} 度・1回を単位とした繰り返しで表します（例：その場で一周 → {STEP_ANGLE:g} 度を {round(360 / STEP_ANGLE)} 回）。繰り返しは {MAX_REPEAT} 回までです。割り切れない数や、それを超える数は、数と単位だけ（例：45度）を unsupported に入れてください。
 
 ## Examples
 {examples}

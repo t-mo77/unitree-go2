@@ -30,8 +30,14 @@ class Translation:
     message: str = ""
 
 
+def _is_number(item: str) -> bool:
+    # Only an item that IS a number with a unit (0.7メートル, 約45度) gets the number message.
+    # 「障害物の周りを一周する」 contains 一周 but is a behavior the vocabulary lacks.
+    return re.fullmatch(r"\s*(?:約|およそ)?\s*(?:" + _NUMBER.pattern + r")\s*(?:だけ)?\s*", item) is not None
+
+
 def _unsupported_message(unsupported: list[str]) -> str:
-    numbers = [u for u in unsupported if _NUMBER.search(u)]
+    numbers = [u for u in unsupported if _is_number(u)]
     words = [u for u in unsupported if u not in numbers]
     parts = []
     if words or not numbers:
