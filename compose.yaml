@@ -10,6 +10,9 @@ x-go2: &go2
   init: true
   volumes:
     - ./:/work
+    # Only compose reads env.txt (env_file, on the host). Inside, /work/env.txt is empty, so
+    # nothing in the container (an LLM CLI included) can read the token file.
+    - /dev/null:/work/env.txt:ro
     - hf-cache:/root/.cache/huggingface
     - codex-home:/root/.codex
   env_file:
@@ -46,6 +49,7 @@ services:
     init: true
     volumes:
       - ./:/work
+      - /dev/null:/work/env.txt:ro   # the simulator never needs the token file
     ports:
       - "127.0.0.1:6080:6080"
     # Go2 + unitree_guide controller + our bridge (gazebo/gazebo_bridge.py); LiDAR only, no rviz2

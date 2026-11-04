@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -6,6 +7,18 @@ import pytest
 
 from voice_ltl import llm as llm_module
 from voice_ltl.llm import ClaudeCLI, CodexCLI, FakeLLM, LLMError, make_llm
+
+REPO = Path(__file__).resolve().parents[1]   # /work in the container
+# test-only fake values (never real secrets)
+FAKE_ENV = {
+    "CLAUDE_CODE_OAUTH_TOKEN": "fake-claude-token",
+    "ANTHROPIC_API_KEY": "fake-anthropic-key",
+    "ANTHROPIC_BASE_URL": "http://claude.invalid",
+    "OPENAI_API_KEY": "fake-openai-key",
+    "OPENAI_BASE_URL": "http://openai.invalid",
+    "CODEX_API_KEY": "fake-codex-key",
+    "CODEX_HOME": "/fake/codex-home",
+}
 
 SCHEMA = {
     "type": "object",
@@ -168,3 +181,77 @@ def test_fake_llm_exhausted_raises_llm_error():
     llm("a", SCHEMA)
     with pytest.raises(LLMError, match="FakeLLM: 返事が足りません"):
         llm("b", SCHEMA)
+
+
+# ---- SEC-3 (Ruling R37): an empty temp dir outside /work, no secrets of the other backend ----
+
+def _empty_dir_outside_repo(kw) -> Path:
+    """The cwd the runner got: an empty folder outside the repo (/work), checked at call time."""
+    cwd = Path(kw["cwd"]).resolve()
+    assert cwd.is_dir() and list(cwd.iterdir()) == []
+    assert cwd != REPO and REPO not in cwd.parents
+    assert Path("/work") not in cwd.parents
+    return cwd
+
+
+def _pairs(argv):
+    return list(zip(argv, argv[1:]))
+
+
+def test_claude_runs_in_an_empty_temp_dir_without_codex_secrets(monkeypatch):
+    for k, v in FAKE_ENV.items():
+        monkeypatch.setenv(k, v)
+    seen = {}
+
+    def run(argv, **kw):
+        seen["cwd"], seen["env"] = _empty_dir_outside_repo(kw), kw["env"]
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps({"is_error": False, "structured_output": GOOD}), "")
+    assert ClaudeCLI(runner=run)("p", SCHEMA) == GOOD
+    env = seen["env"]
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "fake-claude-token"   # its own login stays
+    assert env["ANTHROPIC_BASE_URL"] == "http://claude.invalid"
+    assert env["PATH"] == os.environ["PATH"] and env["HOME"] == os.environ["HOME"]
+    assert [k for k in env if k.startswith(("OPENAI_", "CODEX_"))] == []
+    assert not seen["cwd"].exists()   # removed after the call
+
+
+def test_codex_runs_in_an_empty_temp_dir_without_claude_secrets_or_tools(monkeypatch):
+    for k, v in FAKE_ENV.items():
+        monkeypatch.setenv(k, v)
+    seen = {}
+
+    def run(argv, **kw):
+        seen["cwd"], seen["env"], seen["argv"] = _empty_dir_outside_repo(kw), kw["env"], argv
+        Path(argv[argv.index("-o") + 1]).write_text(json.dumps(GOOD))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    assert CodexCLI(runner=run)("p", SCHEMA) == GOOD
+    argv, env, cwd = seen["argv"], seen["env"], seen["cwd"]
+    # its working root is that empty folder; the schema and answer files sit outside it
+    assert Path(argv[argv.index("-C") + 1]).resolve() == cwd
+    for flag in ("--output-schema", "-o"):
+        assert Path(argv[argv.index(flag) + 1]).resolve().parent != cwd
+    # no tools: no shell (exec_command / write_stdin), no image reading, no web search,
+    # no user config.toml (MCP servers), read-only sandbox
+    pairs = _pairs(argv)
+    for feature in ("shell_tool", "unified_exec", "view_image"):
+        assert ("--disable", feature) in pairs
+    assert ("-c", 'web_search="disabled"') in pairs
+    assert "--ignore-user-config" in argv and ("--sandbox", "read-only") in pairs
+    assert argv[-1] == "-"   # the prompt still comes on stdin
+    # its own login stays, Claude's does not
+    assert env["OPENAI_API_KEY"] == "fake-openai-key" and env["CODEX_API_KEY"] == "fake-codex-key"
+    assert env["CODEX_HOME"] == "/fake/codex-home" and env["PATH"] == os.environ["PATH"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert [k for k in env if k.startswith("ANTHROPIC_")] == []
+    assert not cwd.exists()
+
+
+def test_child_env_is_read_when_called(monkeypatch):
+    run, calls = fake_run(json.dumps({"is_error": False, "structured_output": GOOD}))
+    llm = ClaudeCLI(runner=run)
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-late")
+    monkeypatch.setenv("GO2_TEST_MARK", "1")
+    llm("p", SCHEMA)
+    env = calls[0][1]["env"]
+    assert "OPENAI_API_KEY" not in env and env["GO2_TEST_MARK"] == "1"

@@ -1,6 +1,14 @@
-"""LLM の窓口。Claude CLI / Codex CLI / テスト用の偽物。"""
+"""LLM の窓口。Claude CLI / Codex CLI / テスト用の偽物。
+
+翻訳役の CLI に、トークンや作業のファイルを触らせない（SEC-3、Ruling R37）:
+- 空の一時フォルダ（/work の外）を作業場所にして起動する。
+- 子のプロセスの環境変数から、もう一方の LLM の秘密を除く。
+- Codex には道具（シェル・画像の読み込み・Web 検索）を使わせない。Claude は `--tools ""`。
+- compose は /work/env.txt を空のもの（/dev/null）で覆う（compose.yaml・compose.robot.yaml）。
+"""
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -88,10 +96,28 @@ def _validated(value, schema: dict) -> dict:
     return value
 
 
-def _run(runner, argv, prompt: str, timeout_s: float):
+# 子のプロセスに渡さない、もう一方の LLM の秘密（環境変数の名前の頭）
+_CLAUDE_SECRETS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_")   # Codex に渡さない
+_CODEX_SECRETS = ("OPENAI_", "CODEX_")                         # Claude に渡さない
+
+# Codex に道具を使わせない（codex-cli 0.166.0 の `codex features list` と
+# `codex debug prompt-input` で確かめた）。shell_tool・unified_exec を切るとシェル
+# （exec_command・write_stdin）が、view_image を切ると画像の読み込みが消える。
+# Web 検索は切る。ユーザーの config.toml（MCP サーバーなど）は読まない（ログインは ~/.codex のまま）。
+_CODEX_NO_TOOLS = ("--ignore-user-config",
+                   "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
+                   "-c", 'web_search="disabled"')
+
+
+def _child_env(drop: tuple[str, ...]) -> dict[str, str]:
+    """今の環境変数の写しから、名前が drop のどれかで始まるものを除く。"""
+    return {k: v for k, v in os.environ.items() if not k.startswith(drop)}
+
+
+def _run(runner, argv, prompt: str, timeout_s: float, cwd: str, env: dict[str, str]):
     try:
         return runner(argv, input=prompt, capture_output=True, text=True,
-                      encoding="utf-8", timeout=timeout_s)
+                      encoding="utf-8", timeout=timeout_s, cwd=cwd, env=env)
     except subprocess.TimeoutExpired:
         raise LLMError(_msg_timeout(timeout_s)) from None
     except FileNotFoundError:
@@ -116,7 +142,8 @@ class ClaudeCLI:
                 "--tools", "", "--no-session-persistence"]
         if self.model:
             argv += ["--model", self.model]
-        proc = _run(self.runner, argv, prompt, self.timeout_s)
+        with tempfile.TemporaryDirectory(prefix="go2-llm-") as cwd:   # 空のフォルダ（/work の外）
+            proc = _run(self.runner, argv, prompt, self.timeout_s, cwd, _child_env(_CODEX_SECRETS))
         _check_exit(proc)
         try:
             data = json.loads(proc.stdout)
@@ -147,16 +174,20 @@ class CodexCLI:
         self.model, self.timeout_s, self.runner = model, timeout_s, runner
 
     def __call__(self, prompt: str, schema: dict) -> dict:
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory(prefix="go2-llm-") as d:
+            # Codex の作業場所は空のフォルダ（/work の外）。schema と答えのファイルはその外に置く
+            cwd = Path(d) / "cwd"
+            cwd.mkdir()
             schema_path, out_path = Path(d) / "schema.json", Path(d) / "out.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
             argv = ["codex", "exec", "--skip-git-repo-check", "--ephemeral",
-                    "--sandbox", "read-only",
+                    "--sandbox", "read-only", *_CODEX_NO_TOOLS, "-C", str(cwd),
                     "--output-schema", str(schema_path), "-o", str(out_path)]
             if self.model:
                 argv += ["-m", self.model]
             argv.append("-")  # プロンプトは標準入力から読む
-            proc = _run(self.runner, argv, prompt, self.timeout_s)
+            proc = _run(self.runner, argv, prompt, self.timeout_s, str(cwd),
+                        _child_env(_CLAUDE_SECRETS))
             _check_exit(proc)
             try:
                 out = json.loads(out_path.read_text(encoding="utf-8"))
