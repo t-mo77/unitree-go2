@@ -5,17 +5,23 @@ session.tick(now)) for at most 120 s of simulated time. At random moments it thr
 new instructions (FakeLLM answers with a formula from a fixed set, an unsupported reply,
 an unsatisfiable formula or an LLMError), stop words, the stop button, boxes in front of
 or behind the Go2, box removal, and quiet time. After a random phase of at most 60 s a
-last instruction is left alone until the session settles.
+last instruction is left alone until the session settles. Half of the stops (chosen by a
+stream of their own, so the schedule stays the same) wait up to 6 s for a move to be
+running: a new plan may start seconds after its instruction (R28), so stops that land on a
+move would otherwise be rare.
 
 The trials run once per module. Each property is its own test over all trials, so one
 broken property does not hide the others. Only Session's public names are used
 (submit_text, tick, snapshot, stop); what the Go2 really did is read from the fake Go2.
 
-Known bugs (product code is not changed here; see the strict xfail tests at the bottom):
-- BUG-C2-1: a new instruction during a gesture or posture change sends the next command
-  while the Go2 is still busy; the Go2 ignores it, and the session still says 終わりました.
-- BUG-C2-2: the Standing Lock posture (UNKNOWN, after a stop during stand) is planned as
-  lying, so `F lying` is done at once while the Go2 stands.
+Bugs found here and fixed in Session (Task F1; the step-by-step tests are at the bottom):
+- BUG-C2-1: a new instruction during a gesture or posture change sent the next command
+  while the Go2 was still busy; the Go2 ignored it, and the session still said 終わりました.
+  Now the new plan waits for the planned time of that action, and done needs the planned
+  final posture (R28).
+- BUG-C2-2: the Standing Lock posture (UNKNOWN, after a stop during stand) was planned as
+  lying, so `F lying` was done at once while the Go2 stood. Now the session never plans
+  from UNKNOWN: it waits, sends BalanceStand for 1002, or refuses (R27).
 """
 
 import math
@@ -60,6 +66,8 @@ UNSUPPORTED = ({"formula": None, "unsupported": ["キッチン"]}, "キッチン
 UNSATISFIABLE = ({"formula": "F sitting & G !sitting", "unsupported": []}, "座って、でも絶対に座らないで")
 LLM_DOWN = (LLMError("LLM の返事が 60 秒で返ってきませんでした"), "挨拶して")
 STOP_TEXTS = ("止まって", "ストップ", "停止")
+STOP_WAITS_FOR_MOVE = 0.5      # share of the random phase's stops that wait for a move to be running
+STOP_WAIT_S = 6.0              # how long such a stop waits at most
 
 # The test's own reading of what the Go2 did (not taken from voice_ltl.world).
 POSTURE_PROP = {LYING: "lying", STANDING: "standing", SITTING: "sitting"}   # UNKNOWN: none
@@ -83,7 +91,7 @@ PROPERTIES = {
     "P7b": "done のとき、にせ Go2 が実際にしたことのラベル列で式が真（既知のバグ以外）",
     "P8": "done / error のあと、次の指示・停止まで何も送らない",
     "BUG-C2-1": "Go2 が動作中で無視した指令を、Session が実行済みとして done にする",
-    "BUG-C2-2": "姿勢 UNKNOWN（立ち固め 1002）を伏せとして計画し、F lying がすぐ done になる",
+    "BUG-C2-2": "姿勢 UNKNOWN（立ち固め 1002 など）のまま計画を始める（R27）",
     "harness": "テストの前提（FakeLLM の返事の数、ログの読み取り）",
 }
 
@@ -250,6 +258,7 @@ class Episode:
     obstacles0: frozenset
     sent0: int
     pose0: tuple
+    start_posture: str | None = None             # the fake Go2's posture when the plan started
     events: list = field(default_factory=list)   # (t, event, posture, pose, obstacles, sent index)
     checked: bool = False
 
@@ -291,6 +300,8 @@ class Runner:
     def __init__(self, seed: int, workdir):
         schedule, replies, self.final_tick = make_schedule(random.Random(seed))
         self.trial = Trial(seed, schedule)
+        self.wait_rng = random.Random(seed + 1)         # its own stream: the schedule stays the same
+        self.held: list[tuple[int, Event]] = []         # (last tick, stop) waiting for a move
         self.by_tick: dict[int, list[Event]] = {}
         for e in schedule:
             self.by_tick.setdefault(e.tick, []).append(e)
@@ -339,6 +350,26 @@ class Runner:
         return str(self.link.sent[i0].api_id) if len(self.link.sent) > i0 else "nothing"
 
     # ---- inputs (between ticks) ----
+    def feed(self, tick: int) -> None:
+        """This tick's events, and the stops held for a move (fired while one runs, or at
+        their last tick; never once the last instruction is in)."""
+        current = self.session.snapshot()["current"]
+        for last, e in list(self.held):
+            if current in MOVES or tick >= last:
+                self.held.remove((last, e))
+                if tick < self.final_tick:
+                    fired = Event(tick, e.kind, e.arg)
+                    self.trial.schedule.append(fired)    # shown where it really happened
+                    self.trial.schedule.sort(key=lambda ev: ev.tick)
+                    self.apply(fired)
+        for e in self.by_tick.get(tick, []):
+            if (e.kind in ("stop_word", "stop_button") and tick < self.final_tick
+                    and self.wait_rng.random() < STOP_WAITS_FOR_MOVE):
+                self.trial.schedule.remove(e)
+                self.held.append((tick + round(STOP_WAIT_S / DT), e))
+            else:
+                self.apply(e)
+
     def apply(self, e: Event) -> None:
         if e.kind == "instruct":
             text, reply = e.arg
@@ -392,6 +423,13 @@ class Runner:
         ep = self.episode
         if ep is not None and not ep.checked:
             for line in new:
+                if line.startswith("監督器: ") and ep.start_posture is None:
+                    # the session plans from the posture it reads in this very tick (R27, R28)
+                    ep.start_posture = self.sim.posture
+                    if ep.start_posture not in POSTURE_PROP:
+                        self.flag("BUG-C2-2", f"'{ep.text}' planned while the fake Go2 is "
+                                              f"{ep.start_posture} (error_code {self.sim.error_code}); "
+                                              f"steps: {self.trial.steps_until(self.now)}")
                 if line.startswith("イベント: "):
                     self.stats["events"] += 1
                     ep.events.append((self.now, line[len("イベント: "):], self.sim.posture,
@@ -424,8 +462,15 @@ class Runner:
             self.flag("P7", f"'{ep.text}' ended done without a formula")
             return
         self.trial.done_formulas[ep.formula] += 1
-        plan_posture = LYING if ep.posture0 not in POSTURE_PROP else ep.posture0  # Session's rule
-        claimed = [frozenset({POSTURE_PROP[plan_posture]}) | ep.obstacles0]
+        if ep.start_posture is None:
+            self.flag("harness", f"'{ep.text}' ended done without a 監督器 line")
+            return
+        if ep.start_posture not in POSTURE_PROP:
+            return                                   # already flagged BUG-C2-2 when it started
+        # Session's rule: the plan starts from the posture once the Go2 is ready (R27, R28),
+        # which is also what the fake Go2 really was then.
+        start = frozenset({POSTURE_PROP[ep.start_posture]}) | ep.obstacles0
+        claimed = [start]
         for _, ev, *_ in ep.events:
             label = label_of_event(ev)
             if label is None:
@@ -436,7 +481,7 @@ class Runner:
             self.flag("P7", f"'{ep.formula}' done but false on the session's events "
                             f"{[ev for _, ev, *_ in ep.events]}; steps: {self.trial.steps_until(self.now)}")
         # what the fake Go2 did: its posture, the commands it accepted, how far it moved
-        truth = [frozenset({POSTURE_PROP[p] for p in [ep.posture0] if p in POSTURE_PROP}) | ep.obstacles0]
+        truth = [start]
         ignored = [False]
         idx_prev, pose_prev = ep.sent0, ep.pose0
         did = []
@@ -455,11 +500,8 @@ class Runner:
         if holds(ep.formula, truth):
             return
         # Which known bug explains it: put back the session's belief where it is the bug's own.
-        unknown_start = [claimed[0]] + truth[1:] if ep.posture0 not in POSTURE_PROP else None
         ignored_cmds = [c if ign else t for t, c, ign in zip(truth, claimed, ignored)]
-        if unknown_start is not None and holds(ep.formula, unknown_start):
-            kind = "BUG-C2-2"
-        elif any(ignored) and holds(ep.formula, ignored_cmds):
+        if any(ignored) and holds(ep.formula, ignored_cmds):
             kind = "BUG-C2-1"
         else:
             kind = "P7b"
@@ -481,8 +523,7 @@ class Runner:
             self.guarded("tick", self.session.tick, self.now)
             self.ticked = True
             self.observe(tick)
-            for e in self.by_tick.get(tick, []):
-                self.apply(e)
+            self.feed(tick)
             if tick > self.final_tick and settled_tick is None and self.status in ("done", "error"):
                 settled_tick = tick
             if settled_tick is not None and tick - settled_tick >= round(QUIET_AFTER_S / DT):
@@ -544,14 +585,10 @@ def test_property_holds_in_every_trial(trials, prop):
     _assert_none(trials, prop)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-C2-1: a command the busy Go2 ignored is counted as "
-                                       "done (seen in the fuzz trials)")
 def test_fuzz_no_ignored_command_counted_as_done(trials):
     _assert_none(trials, "BUG-C2-1")
 
 
-@pytest.mark.xfail(strict=True, reason="BUG-C2-2: Standing Lock (UNKNOWN) is planned as lying, so "
-                                       "F lying is done while the Go2 stands (seen in the fuzz trials)")
 def test_fuzz_unknown_posture_not_taken_as_lying(trials):
     _assert_none(trials, "BUG-C2-2")
 
@@ -581,10 +618,8 @@ def drive(session, link, seconds):
         session.tick(now)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="BUG-C2-1: the new plan's first command reaches the Go2 while it is still "
-                          "doing the interrupted gesture / sit; the Go2 ignores it and the session "
-                          "still reports 終わりました")
+# BUG-C2-1 (fixed, R28): the new plan's first command waits until the interrupted gesture / sit
+# has had its planned time, so the Go2 takes it and 終わりました is true.
 @pytest.mark.parametrize("first,busy_api,second,expected_api", [
     ("F hello", HELLO, "F stretched", STRETCH),     # hello: 3 s in the Go2, new instruction after 0.8 s
     ("F sitting", SIT, "F hello", HELLO),           # sit: 2 s in the Go2, new instruction after 0.8 s
@@ -597,14 +632,13 @@ def test_bug_c2_1_command_ignored_by_busy_go2_is_reported_done(tmp_path, first, 
     n = len(link.sim.accepted)
     sess.submit_text("二つ目の指示"); drive(sess, link, 15.0)
     snap = sess.snapshot()
-    assert snap["status"] != "done" or expected_api in link.sim.accepted[n:], (
-        f"status done ({snap['message']}) but the Go2 never accepted {expected_api}: "
+    assert snap["status"] == "done" and expected_api in link.sim.accepted[n:], (
+        f"status {snap['status']} ({snap['message']}); the Go2 should have accepted {expected_api}: "
         f"accepted after the instruction {link.sim.accepted[n:]}, posture {link.sim.posture}")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="BUG-C2-2: after a stop during stand the Go2 is in Standing Lock (1002, "
-                          "UNKNOWN); the session plans it as lying, so F lying is done at once")
+# BUG-C2-2 (fixed, R27): after a stop during stand the Go2 is in Standing Lock (1002, UNKNOWN);
+# the session sends BalanceStand, plans from standing, and F lying really lies down.
 def test_bug_c2_2_standing_lock_is_taken_as_lying(tmp_path):
     sess, link = make(tmp_path, "F hello", "F lying")
     sess.submit_text("挨拶して"); drive(sess, link, 1.0)          # StandUp accepted at 0.1 s
@@ -613,6 +647,6 @@ def test_bug_c2_2_standing_lock_is_taken_as_lying(tmp_path):
             f"Standing Lock reached: error_code {link.sim.error_code}")
     sess.submit_text("伏せて"); drive(sess, link, 10.0)
     snap = sess.snapshot()
-    assert snap["status"] != "done" or link.sim.posture == LYING, (
-        f"status done ({snap['message']}) but the Go2 is {link.sim.posture} "
+    assert snap["status"] == "done" and link.sim.posture == LYING, (
+        f"status {snap['status']} ({snap['message']}); the Go2 is {link.sim.posture} "
         f"(error_code {link.sim.error_code}); accepted {link.sim.accepted}")
