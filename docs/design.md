@@ -85,7 +85,11 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
   - LLM の呼び出し部分を1つの窓口にまとめ、`env.txt` の設定1つ（例：`LLM_BACKEND=claude` / `codex`）で切り替える。
   - プロンプト（講義の4パート）、出力の形（§7.4.1 の JSON Schema）、`check()`、聞き直しの流れは同じにする。
   - コンテナの中にどちらの CLI も入れる。
-- **道具は使わせない：** どちらの LLM にも、ファイル操作などの道具を使わせない（使えても読むだけにする）。翻訳だけをさせる。
+- **道具は使わせない：** どちらの LLM にも、ファイル操作などの道具を使わせない。翻訳だけをさせる。トークンのファイルにも届かないようにする（最後の見直しの SEC-3、Ruling R37）。
+  - Claude は `--tools ""`。Codex は `--sandbox read-only` に加えて、`--disable shell_tool --disable unified_exec --disable view_image`（シェルと画像の読み込みを外す）、`-c web_search="disabled"`、`--ignore-user-config`（`config.toml` の MCP サーバーなどを読まない）。codex-cli 0.166.0 の `codex features list` と `codex debug prompt-input` で確かめた。
+  - CLI は、空の一時フォルダ（`/work` の外）を作業場所にして起動する。Codex は `-C` も同じフォルダにし、schema と答えのファイルはその外に置く。
+  - 子のプロセスに渡す環境変数から、もう一方の LLM の秘密を除く。Codex には `CLAUDE_CODE_OAUTH_TOKEN`・`ANTHROPIC_*` を、Claude には `OPENAI_*`・`CODEX_*` を渡さない。
+  - compose は、コンテナの中の `/work/env.txt` を `/dev/null` で覆う（`- /dev/null:/work/env.txt:ro`）。`env.txt` は、compose がホストで `env_file` として読むだけにする。
 - **トークンの扱い：**
   - トークンや認証のファイルは `env.txt` か Docker のボリュームに置き、git や他人に渡さない。
   - 作る側は最初に、`go2/.gitignore` に `env.txt` と `.env` を入れる。
@@ -113,6 +117,7 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
 - **認証：**
   - ふつうは `codex login` で保存したログイン（`~/.codex/auth.json`）を使う。
   - コンテナの中で一度ログインし、`~/.codex` を Docker のボリュームに残す方法を README に書く。具体的なやり方は作る側が公式ドキュメントで確認する。
+  - コンテナにはブラウザが無く、`docker compose run` はポートを出さないので、ふつうの `codex login`（localhost に戻ってくる）は終わらない。`codex login --device-auth`（端末に出るコードを、Mac のブラウザで入れる）にする（`codex login --help` で確認）。
   - API キーを使う場合は `CODEX_API_KEY` を使う。
 
 ### 安全（実機に移したとき）
@@ -180,7 +185,7 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
   - オートマトンの上では「1回分の前進」を、途中で止まっても1つのイベントとして数える。完了したときに `moved_forward` が真になる。
 - **判定の距離：** zip の `perception.py` と同じく、止まる距離と動き出す距離を分ける。0.5 m より近いと「あり」、0.7 m より遠いと「なし」に戻る。値がばたつかないようにするため。
 - **後方の判定についての注意：** 実機の Go2 の LiDAR は頭の下についているので、真後ろは胴体の陰になって見えにくい可能性がある。
-  - 実機に移したら、`rviz2` で後方の物が見えるか確かめる。
+  - 実機に移したら、`python3 -m voice_ltl.sensor_check` で後方の物が見えるか確かめる（README §6 の手順 8）。この道具はアプリと同じ判定と一番近い距離を 0.5 秒ごとに出し、Go2 には何も送らない。前方も同じく確かめる（LiDAR の取り付けの値 `lidar_x`・`lidar_z`・`lidar_pitch` は仮の値のため）。rviz2 はイメージに入っていないので、使うなら Linux PC に入れる。
   - 見えない場合は、後退を語彙から外すか、ごく短い距離に限る。この判断は README に手順として書く。
 
 ### 7.2 単語帳（命題）
@@ -314,42 +319,57 @@ ROS 2 のノードとしてコンテナ内で動かす。実機と同じトピ�
 
 ## 9.1 Gazebo の Go2（ユーザーの指定：ROS 2 + Gazebo）
 
-### 使うもの（私の判断）
+今のコードの形（`docker/Dockerfile.gazebo`、`gazebo/`）。経緯と測った値は [gazebo_feasibility_jazzy.md](reference/gazebo_feasibility_jazzy.md)（Task 15b）と [gazebo_turn_fix.md](reference/gazebo_turn_fix.md)（Task 16fix）。
 
-[legubiao/quadruped_ros2_control](https://github.com/legubiao/quadruped_ros2_control) の `humble` ブランチを使う。
+### 使うもの
 
-- **選んだ理由：**
-  - ROS 2 Humble と Gazebo Classic 11 に対応しており、実機用 PC と同じ Humble にそろえられる。
-  - ライセンスは Apache-2.0。
-  - 制御のしくみ（unitree_guide controller）が「脱力 → 伏せ → 立つ → 歩く（速度）」の状態の切り替えを持っている。
-- **比べたもの：**
-  - CHAMP を使う `anujjain-dev/unitree-go2-ros2`：Humble 対応だが、立ち・伏せの切り替えがない。
-  - `khaledgabr77/unitree_go2_ros2`：ROS 2 Jazzy で、Humble と合わない。
-- **固定：** ビルド時点の commit で固定する。
-- **既知の注意：** その README には「KDL を使っているので動きが不安定なことがある」とある。Gazebo Classic は 2025 年 1 月で保守が終わっているが、Ubuntu 22.04 では入る。
+- **ROS 2 Jazzy（Ubuntu 24.04）+ Gazebo Harmonic（Gazebo Sim 8）：** gazebo のコンテナだけ。土台は `ros:jazzy-ros-base-noble`。app のコンテナは Humble のまま（§5）。
+  - 最初は legubiao の `humble` ブランチ（Humble + Gazebo Classic 11）を選んだ。しかし Gazebo Classic は Ubuntu 22.04 の arm64 に無く、この Mac では動かない（Task 15、[gazebo_feasibility.md](reference/gazebo_feasibility.md)）。そこで Jazzy + Harmonic に移した（Ruling R10）。どちらも arm64 の公式パッケージがあり、エミュレーションが要らない。Harmonic は今も保守されている。
+- **[legubiao/quadruped_ros2_control](https://github.com/legubiao/quadruped_ros2_control) の `main` ブランチ：** commit `5434c5810d1a7fe223bcfd04550e9d3bfdd4b458`（2025-06-24、2026-11-04 時点の先頭）に固定する（`Dockerfile.gazebo` の `QUADRUPED_ROS2_CONTROL_COMMIT`）。
+  - 使う部分：unitree_guide controller、`go2_description`、`gz_quadruped_playground`（Gazebo Harmonic 用の ros2_control のハードウェア `gz_quadruped_hardware` と world）。
+  - 選んだ理由：ライセンスは Apache-2.0。unitree_guide controller が「脱力 → 伏せ → 立つ → 歩く（速度）」の状態の切り替えを持っている（`/control_input` の `command` で切り替える）。
+  - 比べたもの：CHAMP を使う `anujjain-dev/unitree-go2-ros2` は立ち・伏せの切り替えがない。
+- **`docker/patches/` の 2 つのパッチ：** 固定した commit に、ビルドの前に名前の順で `git apply` する（upstream は書き換えない）。これが無いと、その場で 90 度回った後に転ぶ。
+  - `0001-estimator-world-frame-leg-odometry.patch`：状態推定（Estimator）が、脚の測定値を胴の座標のまま世界の座標のカルマンフィルタに入れていた。世界の座標に直してから入れる（元の unitree_guide と同じ式）。
+  - `0002-feet-end-calc-body-frame-stance-angle.patch`：歩くに入るときの足の角度（`FeetEndCalc::init`）を胴の座標で測る。回った後に伏せて立ち直すと、最初の数歩でよろけていた。
+  - 結果：その場の ±90 度、回った向きでの立ち直しとも 3/3 合格（[gazebo_turn_fix.md](reference/gazebo_turn_fix.md)）。
+- **既知の注意：**
+  - legubiao の README には「KDL を使っているので動きが不安定なことがある」とある。
+  - 歩き方の周期は実際の時間で数える（`WaveGenerator`）。Gazebo が CPU 不足で止まったり進んだりすると傾くので、CPU に余裕を残す。
+  - 前進して止めた直後に回ると、揺れが大きくなることがある（roll が 0.5 rad を越えることがある。倒れたことはない）。
 
 ### 作り
 
-- **Gazebo のコンテナ：** app と同じイメージを土台にした別のイメージ。Gazebo と unitree_guide controller と、下の「橋渡し」を動かす。
-- **画面：** コンテナの中の仮想の画面（Xvfb）で Gazebo の画面を動かし、noVNC でブラウザ（`http://localhost:6080`）から見る。Mac の Docker には GPU がないので、ソフトウェアで描く。カクついてもよい。
-- **橋渡し（Go2 のふりをするノード）：** アプリ側は実機と同じ窓口のまま、何も変えずに Gazebo を使える。
+- **Gazebo のコンテナ：** app とは別のイメージ（`go2-voice-ltl-gazebo:dev`）。`unitree_go`・`unitree_api` は app と同じ unitree_ros2 の commit から Jazzy の上でビルドする。起動は `docker compose --profile gazebo up gazebo`。
+- **画面：** コンテナの中の仮想の画面（Xvfb）で Gazebo の画面を動かし、noVNC でブラウザ（`http://localhost:6080/vnc.html`）から見る。Mac の Docker には GPU がないので、ソフトウェアで描く（llvmpipe）。
+- **launch（構成 B）：** `gazebo/launch/go2_gazebo.launch.py`。upstream の playground の launch は、カメラ 2 台と rviz2 で CPU が足りず、real-time factor が 0.13 になる（NO-GO）ので使わない。
+  - Gazebo の画面あり（`gui:=false` でサーバーだけ）、センサーは LiDAR だけ（カメラなし）、rviz2 なし。
+  - Go2 は `gazebo/go2_sensors.urdf.xacro`。LiDAR（`gpu_lidar`）は base から x 0.28 m・z 0.10 m・傾きなしで、`perception.py` の既定値（`lidar_x`・`lidar_z`・`lidar_pitch`）と同じ。水平 360 度・垂直 −30〜+30 度、10 Hz。本当の位置は OdometryPublisher（50 Hz）。
+  - `ros_gz_bridge` で、時計（`/clock`）、LiDAR の点群、位置（`/model/robot/odometry`）、箱を出し入れするサービス（`/world/empty/create`・`/world/empty/remove`）をつなぐ。
+  - 測った値：real-time factor 0.64〜0.77、実際の 5 秒の前進で 1.40 m、前進の間の roll / pitch は 0.063 / 0.031 rad 以下。
+- **橋渡し（Go2 のふりをするノード、`gazebo/gazebo_bridge.py`。中身は `gazebo/bridge_core.py`）：** アプリ側は実機と同じ窓口のまま、何も変えずに Gazebo を使える。
 
 | 受けるもの / 出すもの | 中身 |
 |---|---|
-| `/api/sport/request` を受ける | unitree_guide controller の操作（状態の切り替えと速度）に変える |
-| `/sportmodestate` を出す | Gazebo の位置・向き・制御の状態から作る。`error_code` は `actions.py` の対応表に合わせる |
-| `/utlidar/cloud` を出す | Go2 の頭の位置に付けた Gazebo の 3D LiDAR の点群。取り付けの位置・角度は `perception.py` の設定と合わせる |
-| `/sim/obstacles` を受け、`/sim/world` を出す | にせ Go2 と同じ。箱は Gazebo の中に本物の物体として出し入れする |
+| `/api/sport/request` を受ける | unitree_guide controller の `/control_input`（`command` と速度 `lx`・`ly`・`rx`・`ry`）に変える |
+| `/sportmodestate` を出す | 位置と向きは Gazebo の本当の値（odometry）。`error_code` は、送った指令から橋渡しが持つ状態で決め、`actions.py` の対応表に合わせる |
+| `/utlidar/cloud` を出す | Gazebo の LiDAR の点群（frame `utlidar_lidar`）から、自分の体の箱の中の点と、地面の点（世界の z < 0.05 m）を除いて出し直す（Ruling R23）。高さ 5 cm 未満の物は、シミュレーションでは見えない |
+| `/sim/obstacles` を受け、`/sim/world` を出す | にせ Go2 と同じ。箱は Gazebo の中に本当の物体（動かない 0.3 × 0.3 × 0.4 m）として出し入れする |
+
+- **時計：** 窓口の時間（`error_code` が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間で数える。controller へ `command` を送る間隔はシミュレーションの時間で数える。Gazebo が実時間より遅いと、`error_code` が先に変わり、体は後から追いつく。
+- **Humble（app）↔ Jazzy（gazebo）の通信：** 同じ compose のネットワークで、どちらも CycloneDDS。`/api/sport/request`・`/sportmodestate`・`/utlidar/cloud`・`/sim/*` は、どちらの向きにも届く。
+  - ただし、ノードの名前を伝える `ros_discovery_info` の型（`rmw_dds_common/msg/Gid`）が Humble と Jazzy で違うので、相手を見つけたときに標準エラーに `string data is not null-terminated` / `invalid data size` が出る（データは届く）。
+  - Humble 側の `ros2 node list` は失敗し、`ros2 topic info -v` の相手は `_NODE_NAME_UNKNOWN_` になる。アプリと橋渡しは相手のノードの名前に頼らない（送り手・受け手の数だけを使う）。
 
 ### 指令ごとの扱い
 
 | 指令 | Gazebo での扱い |
 |---|---|
-| StandUp → BalanceStand | 本当に立つ |
+| StandUp → BalanceStand | 本当に立つ（伏せ → 立つ → 歩く） |
 | StandDown | 本当に伏せる |
-| Move・StopMove | 本当に歩く・止まる（Move は 1 秒送り直しが無ければ止まる。実機と同じ） |
-| Sit・RiseSit | 伏せの姿勢で代用する（`error_code` はおすわりとして返す）。ログに「（Gazebo では伏せで代用）」 |
-| Hello・Stretch・Content・Heart・Scrape・Dance | 立ったまま、その動作の時間だけ待つ「ふり」。ログに「（Gazebo では再現なし）」 |
+| Move・StopMove | 本当に歩く・回る・止まる。Move は 1 秒送り直しが無ければ止まる（実機と同じ）。controller が「歩く」に入ってから 0.5 秒（シミュレーションの時間）は、速度を 0 のまま待たせてから入れる。歩き出しでよろけないため（Ruling R22）。「歩くに入った」時刻は、controller の `/rosout` の知らせで知る。回る速さは 0.5 rad/s まで（controller の `rx` の最大） |
+| Sit・RiseSit | 伏せの姿勢で代用する（`error_code` はおすわりとして返す）。ログに「（Gazebo では伏せで代用）」「（Gazebo では伏せからの立ち上がりで代用）」 |
+| Hello・Stretch・Content・Heart・Scrape・Dance | 立ったまま、3 秒待つ「ふり」。ログに「（Gazebo では再現なし）」 |
 
 ### 最初に試すこと（作り込む前）
 
@@ -360,6 +380,8 @@ ROS 2 のノードとしてコンテナ内で動かす。実機と同じトピ�
 - その様子がブラウザから見える
 
 あわせて、実時間に対する速さ（real-time factor）を測る。使えなさそうなら（立てない、すぐ転ぶ、極端に遅い）、作り込む前にユーザーに報告して相談する。
+
+結果（Task 15b）：Jazzy + Harmonic の構成 B（LiDAR だけ、rviz2 なし）で GO（条件つき）。[gazebo_feasibility_jazzy.md](reference/gazebo_feasibility_jazzy.md)。
 
 ### 基本動作の確認（ユーザーの希望）
 
