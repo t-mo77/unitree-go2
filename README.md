@@ -65,9 +65,66 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
 
 `--profile fake` を付けずに `docker compose up` だけだと、偽の Go2 は起動しません。
 
-### Gazebo で動かす（Task 17 で書き足す）
+### Gazebo で動かす
 
-（Task 17 で、`docker compose --profile gazebo up`、<http://localhost:6080>、Gazebo でできること・できないこと（設計書 §9.1 の表）をここに書きます。）
+物理シミュレーション（Gazebo Harmonic）の中の Go2 を、実機と同じ窓口（`/api/sport/request`・`/sportmodestate`・`/utlidar/cloud`）で動かします（設計書 §9.1）。app は今までどおり ROS 2 Humble、gazebo のコンテナは ROS 2 Jazzy です。確かめた記録は [docs/reference/gazebo_e2e.md](docs/reference/gazebo_e2e.md) にあります。
+
+**起動と止め方**
+
+```bash
+docker compose --profile gazebo build gazebo             # 初回だけ（Gazebo と controller のビルドで時間がかかります）
+docker compose --profile gazebo up -d gazebo             # 先に Gazebo だけ。Go2 と controller が用意できるまで 40 秒ほど待つ
+SIM_KIND=gazebo docker compose --profile gazebo up -d    # 続けて app（Web のページ）
+docker compose --profile gazebo down                     # 全部止める
+```
+
+- 操作画面：<http://localhost:8810>（右上に「シミュレーション · Gazebo」と出ます）。話し方・箱のボタンは上と同じです。
+- Gazebo の画面：<http://localhost:6080/vnc.html?autoconnect=1>（noVNC）。GPU が無いのでソフトウェアで描き、カクつきます。右下の % が実時間に対する速さ（real-time factor。この Mac で 76〜90 %）です。
+- app と gazebo を同時に起動すると、app は 5 秒待っても Go2 が見つからず「Go2 が見つかりません」で止まります。そのときは Gazebo が用意できてから、もう一度 `SIM_KIND=gazebo docker compose --profile gazebo up -d` を実行してください。
+- app の標準エラーに `serdata.cpp:384` のエラーが出続けますが、データは届いています（Humble と Jazzy で、ノードの名前を伝える型が違うため）。
+- `SIM_KIND=gazebo` は、ページの表示を「Gazebo」にするだけです。動かし方は偽の Go2 と同じです。
+
+**式から直接動かす（`run_formula`）**
+
+LLM も音声も使わずに、LTLf の式から Go2 を動かします。LLM にログインしていなくても試せます。翻訳の代わりにその式を使うだけで、あとはページから話したときと同じ道（`check()`・合成・監督器・実行器・センサー）を通ります。
+
+```bash
+docker compose --profile gazebo up -d gazebo     # Gazebo だけ（app は起動しない）。40 秒ほど待つ
+docker compose run --rm app python3 -m voice_ltl.run_formula "F(moved_forward & X F(turned_left & X F lying))"
+echo "exit=$?"
+```
+
+- 標準出力に、計画・各動作の開始と完了・最後の結果（例：`結果：done（終わりました）`）を出します。終了コードは `done` なら 0、それ以外（中止、時間切れ、式が単語帳に合わない、Go2 が見つからない）は 1 です。
+- `--timeout 秒`（既定 120）：それまでに終わらなければ、止めて終わります。Ctrl+C でも止めます（どちらも StopMove を 3 回送ります）。
+- app（Web のページ）と同時には使えません。`/api/sport/request` の送り手が 2 つになるので、後から起動したほうが断ります。偽の Go2（`docker compose --profile fake up -d sim`）や実機にも使えます。
+- 箱を置く・どける（ページのボタンと同じ。`front`・`back`・`clear`）：
+
+  ```bash
+  docker compose run --rm app ros2 topic pub --once /sim/obstacles std_msgs/msg/String '{data: "{\"cmd\":\"front\"}"}'
+  ```
+
+  箱は Go2 の今の位置から 1.2 m 前（後ろ）に出ます。
+
+**Gazebo で本当に動くものと、ふりのもの**
+
+| 指令 | Gazebo での扱い |
+|---|---|
+| 立つ（StandUp → BalanceStand）・伏せる（StandDown） | 本当に立つ・伏せる |
+| 前進・後退・旋回（Move・StopMove） | 本当に歩く・回る。前の箱は LiDAR で見て、体の中心から 0.5 m より近くなると止まる（確かめたときは 0.44〜0.46 m で止まった） |
+| おすわり・立ち上がる（Sit・RiseSit） | ふり：伏せの姿勢で代用する（窓口の `error_code` はおすわりとして返す） |
+| 挨拶・伸び・喜ぶ・ハート・おじぎ・ダンス | ふり：立ったまま、その動作の時間だけ待つ |
+
+Gazebo のログには、ふりのとき「（Gazebo では伏せで代用）」「（Gazebo では再現なし）」と出ます。
+
+**回ると転ぶ件**
+
+そのままの unitree_guide controller（[legubiao/quadruped_ros2_control](https://github.com/legubiao/quadruped_ros2_control)）では、その場で 90 度回ると数秒で横に倒れていました。controller の状態推定（Estimator）が胴の座標と世界の座標を混ぜていたのが原因で、ビルドのときに `docker/patches/` の 2 つのパッチを当てて直しています（記録は [docs/reference/gazebo_turn_fix.md](docs/reference/gazebo_turn_fix.md)）。
+
+それでも、歩いて止めた直後に次の動作（前進・旋回）を始めると、横の揺れ（roll）が 0.5〜0.7 rad まで育つことがあります。確かめた範囲では転んでいません。
+
+**Gazebo の結果は、実機の保証になりません**
+
+脚を動かす中身が違います。実機の Go2 は本体の中の Unitree のソフトが歩かせますが、Gazebo では別のオープンソースの制御（unitree_guide controller）が歩かせます。窓口（トピック・`api_id`・`error_code`）は同じでも、歩き方・揺れ・止まるまでに進む距離・回る速さは違います。Gazebo で確かめられるのは、指示 → 式 → 監督器 → 指令の流れと、LiDAR で箱を見て止まることです。実機では §6 の手順で、立つ・止まるから確かめてください。
 
 ## 4. 話せること
 
