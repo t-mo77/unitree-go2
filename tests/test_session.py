@@ -179,3 +179,42 @@ def test_posture_mismatch_aborts(tmp_path):
     assert snap["status"] == "error" and "姿勢が計画と違います" in snap["message"]
     assert DANCE1 not in link.sim.accepted
     assert any("完了: hello" in line for line in snap["log"])
+
+
+def test_diagrams_are_made_and_sup_follows_the_supervisor(tmp_path):
+    session, link = make(tmp_path, llm_for("F hello"))
+    assert session.diagrams == {}
+    session.submit_text("手を振って")
+    v0 = session.diagram_version
+    drive(session, link, 0.1)
+    assert set(session.diagrams) == {"PLANT", "SPEC", "TRIMMED", "SUP"}
+    assert all("<svg" in svg for svg in session.diagrams.values())
+    assert session.diagram_version > v0
+    sup0, v1 = session.diagrams["SUP"], session.diagram_version
+    drive(session, link, 20)
+    assert session.snapshot()["status"] == "done"
+    assert session.diagrams["SUP"] != sup0 and session.diagram_version > v1
+    assert session.diagrams["PLANT"] and "hl" in session.diagrams["SUP"]
+
+
+def test_sup_drawing_does_not_block_tick(tmp_path):
+    session, link = make(tmp_path, llm_for("F hello"), background=True)
+    session.submit_text("手を振って")
+    t0 = time.monotonic()
+    while session.snapshot()["status"] == "thinking" and time.monotonic() - t0 < 30:
+        time.sleep(0.05)
+        link.advance(round(link.now + 0.1, 6))
+        session.tick(link.now)
+    slowest = 0.0
+    for _ in range(150):
+        link.advance(round(link.now + 0.1, 6))
+        t = time.monotonic()
+        session.tick(link.now)
+        slowest = max(slowest, time.monotonic() - t)
+        if session.snapshot()["status"] == "done":
+            break
+    assert session.snapshot()["status"] == "done"
+    assert slowest < 0.1
+    deadline = time.monotonic() + 10
+    while "hl" not in session.diagrams["SUP"] and time.monotonic() < deadline:
+        time.sleep(0.05)

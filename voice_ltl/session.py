@@ -16,7 +16,7 @@ import logging
 import queue
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
@@ -27,6 +27,7 @@ from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 from go2_nl_control.translator import is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
+from voice_ltl.diagrams import render_svg
 from voice_ltl.llm import LLM, LLMError
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
@@ -97,11 +98,22 @@ class _Outcome:
     synthesis: Optional[Synthesis] = None
     initial: Optional[PlantState] = None
     error: str = ""
+    diagrams: dict = field(default_factory=dict)
 
 
 def _plan_posture(posture: str) -> str:
     # StandUp -> BalanceStand works from anywhere, so an unknown posture plans as lying.
     return LYING if posture == UNKNOWN else posture
+
+
+def _sup_highlight(rt: Runtime) -> tuple[int, list[tuple[int, str]]]:
+    """The runtime's state and the (state, event) arrows of its remaining plan."""
+    state, events = rt.state, []
+    out: dict[tuple[int, str], int] = {(s, e): d for s, e, d in rt.sup.trans}
+    for event in rt.plan() or []:
+        events.append((state, event))
+        state = out[(state, event)]
+    return rt.state, events
 
 
 class Session:
@@ -115,7 +127,14 @@ class Session:
         self.executor = Executor(EXEC_ACTIONS, ExecConfig())
         self.synthesis: Synthesis | None = None
         self.runtime: Runtime | None = None
-        self.diagram_version = 0  # bumped whenever self.synthesis changes
+        # SVG strings keyed PLANT / SPEC / TRIMMED / SUP; PLANT, SPEC and TRIMMED are drawn
+        # once per synthesis, SUP again whenever the supervisor moves. Drawing never runs
+        # inside tick() when background=True (design §7.8).
+        self.diagrams: dict[str, str] = {}
+        self.diagram_version = 0  # bumped whenever self.diagrams changes
+        self._syn_id = 0          # which synthesis self.diagrams belong to
+        self._sup_slot: tuple | None = None  # newest SUP drawing request (latest wins)
+        self._sup_wake = threading.Event()
 
         self._lock = threading.RLock()
         self._gen = 0
@@ -142,6 +161,7 @@ class Session:
 
         if background:
             threading.Thread(target=self._work, name="session-worker", daemon=True).start()
+            threading.Thread(target=self._draw_loop, name="session-diagrams", daemon=True).start()
 
     # ---------------- input ----------------
     def submit_text(self, text: str) -> None:
@@ -191,6 +211,8 @@ class Session:
             self._translation = None
             self.synthesis = None
             self.runtime = None
+            self._syn_id += 1
+            self._set_diagrams({})
             self._message = ""
             self._status = "thinking"
             self._note(f"指示: {text}")
@@ -272,9 +294,25 @@ class Session:
             syn = synthesize(tr.formula, go2_world(initial), self.workdir / f"{gen:04d}")
         except SpecError as exc:
             return _Outcome(tr, error=str(exc))
+        diagrams = self._draw_all(syn)
         if syn.empty:
-            return _Outcome(tr, syn, initial, MSG_UNSATISFIABLE)
-        return _Outcome(tr, syn, initial)
+            return _Outcome(tr, syn, initial, MSG_UNSATISFIABLE, diagrams)
+        return _Outcome(tr, syn, initial, diagrams=diagrams)
+
+    @staticmethod
+    def _draw_all(syn: Synthesis) -> dict[str, str]:
+        """The four diagrams of a new synthesis (on the worker thread). {} if drawing fails."""
+        try:
+            state, events = _sup_highlight(Runtime(syn.sup)) if not syn.empty else (None, [])
+            return {
+                "PLANT": render_svg(syn.plant, "PLANT"),
+                "SPEC": render_svg(syn.spec, "SPEC"),
+                "TRIMMED": render_svg(syn.trimmed, "TRIMMED"),
+                "SUP": render_svg(syn.sup, "SUP", state, events),
+            }
+        except Exception:  # a missing `dot` must not stop the robot from following the plan
+            _logger.exception("drawing diagrams failed")
+            return {}
 
     def _initial_state(self) -> PlantState:
         with self._lock:
@@ -309,7 +347,8 @@ class Session:
             self._note(f"式: {tr.formula}")
         if outcome.synthesis is not None:
             self.synthesis = outcome.synthesis
-            self.diagram_version += 1
+            self._syn_id += 1
+            self._set_diagrams(outcome.diagrams)
         if outcome.error:
             self._finish("error", outcome.error)
             return
@@ -355,6 +394,7 @@ class Session:
         self._sensed = (reading.front_blocked, reading.back_blocked)
         if events:
             self._refresh_plan()
+            self._redraw_sup()
         return True
 
     def _load_next(self, now: float) -> bool:
@@ -406,6 +446,7 @@ class Session:
         self._plan_posture = ACTIONS[action].transitions[self._plan_posture]
         self._note(f"イベント: {event}")
         self._refresh_plan()
+        self._redraw_sup()
 
     # ---------------- helpers ----------------
     def _discard_plan(self, reason: str) -> None:
@@ -437,6 +478,41 @@ class Session:
     def _refresh_plan(self) -> None:
         path = self.runtime.plan() if self.runtime is not None else None
         self._plan = [event_action(e) for e in path] if path else []
+
+    def _set_diagrams(self, diagrams: dict[str, str]) -> None:
+        self.diagrams = diagrams
+        self.diagram_version += 1
+
+    def _redraw_sup(self) -> None:
+        """The supervisor moved: draw SUP again with the state and the rest of the plan.
+        With a background thread the control loop only hands over the request."""
+        if self.runtime is None or self.synthesis is None or not self.diagrams:
+            return
+        state, events = _sup_highlight(self.runtime)
+        request = (self._syn_id, self.runtime.sup, state, events)
+        if not self.background:
+            self._draw_sup(request)
+            return
+        self._sup_slot = request  # a newer request replaces one not yet drawn
+        self._sup_wake.set()
+
+    def _draw_loop(self) -> None:
+        while True:
+            self._sup_wake.wait()
+            self._sup_wake.clear()
+            request, self._sup_slot = self._sup_slot, None
+            if request is not None:
+                try:
+                    self._draw_sup(request)
+                except Exception:
+                    _logger.exception("drawing SUP failed")
+
+    def _draw_sup(self, request: tuple) -> None:
+        syn_id, sup, state, events = request
+        svg = render_svg(sup, "SUP", state, events)
+        with self._lock:
+            if syn_id == self._syn_id and self.diagrams:  # not for an older instruction
+                self._set_diagrams({**self.diagrams, "SUP": svg})
 
     def _take_executor_events(self) -> None:
         while self.executor.events:
