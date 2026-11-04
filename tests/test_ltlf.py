@@ -125,3 +125,16 @@ def test_six_repeats_fast(tmp_path):
     s = synthesize(f, go2_world(PlantState(LYING, False, False)), tmp_path)
     assert time.monotonic() - t0 < 5.0
     assert not s.empty
+
+
+def test_deadline_and_clause_limit_raise():
+    labels = all_labels(["a", "b"])
+    with pytest.raises(ValueError, match="式が大きすぎます"):
+        build_dfa("F a", frozenset(), labels, deadline=time.monotonic() - 1.0)
+    big = " & ".join(f"(a{i} | b{i})" for i in range(14))  # 2**14 clauses in DNF
+    with pytest.raises(ValueError, match="式が大きすぎます"):
+        build_dfa(big, frozenset(), labels)
+    with pytest.raises(ValueError, match="式が大きすぎます"):
+        build_dfa("(a | b) & (c | d)", frozenset(), labels, max_clauses=3)
+    states, _, _ = build_dfa("(a | b) & (c | d)", frozenset(), labels, max_clauses=4)
+    assert states

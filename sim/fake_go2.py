@@ -30,25 +30,18 @@ from unitree_go.msg import SportModeState
 from go2_nl_control import actions as A
 from go2_nl_control.perception import PerceptionConfig
 from sim.sim_core import SimGo2
+# トピック名は voice_ltl.ros_link を正とする（実機・にせ Go2 でずれないように）
+from voice_ltl.ros_link import LIDAR_TOPIC, OBSTACLES_TOPIC, REQUEST_TOPIC, STATE_TOPIC, WORLD_TOPIC
 
-# 実機と同じトピック
-REQUEST_TOPIC = "/api/sport/request"
-STATE_TOPIC = "/sportmodestate"
-LIDAR_TOPIC = "/utlidar/cloud"
 LIDAR_FRAME = "utlidar_lidar"
-# シミュレーションだけのトピック
-OBSTACLES_TOPIC = "/sim/obstacles"
-WORLD_TOPIC = "/sim/world"
 
 STATE_HZ = 50.0
 CLOUD_HZ = 10.0
 
-_API_NAMES = {
-    A.BALANCE_STAND: "BalanceStand", A.STOP_MOVE: "StopMove", A.STAND_UP: "StandUp",
-    A.STAND_DOWN: "StandDown", A.MOVE: "Move", A.SIT: "Sit", A.RISE_SIT: "RiseSit",
-    A.HELLO: "Hello", A.STRETCH: "Stretch", A.CONTENT: "Content", A.DANCE1: "Dance1",
-    A.SCRAPE: "Scrape", A.HEART: "Heart",
-}
+# 動作名は go2_nl_control.actions の api_id 定数（BALANCE_STAND = 1002 など）から作る
+_API_NAMES = {v: "".join(w.capitalize() for w in k.split("_"))
+              for k, v in vars(A).items()
+              if k.isupper() and isinstance(v, int) and not isinstance(v, bool) and v >= 1000}
 
 
 def _api_name(api_id: int) -> str:

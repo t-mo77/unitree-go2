@@ -34,3 +34,16 @@ def test_stale_is_lost_and_counts_as_blocked():
     s = Sensing(PerceptionConfig()); s.update(np.zeros((0, 3)), 0.0)
     r = s.current(0.6)
     assert r.front == SENSOR_LOST and r.front_blocked and r.back_blocked
+
+
+def test_back_hysteresis():
+    cfg = PerceptionConfig(); s = Sensing(cfg)
+    assert s.update(box_points(-0.45, cfg), 0.0).back == BLOCKED
+    assert s.update(box_points(-0.60, cfg), 0.1).back == BLOCKED      # 0.7 m までは戻らない
+    assert s.update(box_points(-0.75, cfg), 0.2).back == CLEAR
+
+
+def test_back_sensor_lost():
+    s = Sensing(PerceptionConfig()); s.update(np.zeros((0, 3)), 0.0)
+    r = s.current(0.6)
+    assert r.back == SENSOR_LOST and r.back_blocked

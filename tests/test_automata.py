@@ -114,7 +114,7 @@ def test_too_many_spec_states_raises(tmp_path, monkeypatch):
 
 def test_out_of_time_raises(tmp_path):
     with pytest.raises(SpecError, match="式が大きすぎます"):
-        synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path, timeout_s=0.0)
+        synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path, timeout_s=-1.0)  # already past on the first check
 
 
 def test_pitct_failure_is_spec_error(tmp_path, monkeypatch):
@@ -132,11 +132,33 @@ def test_bad_formula_raises(tmp_path):
 
 
 def test_parallel_calls_are_serialised(tmp_path):
-    """Each call gets its own folder and pitct state, even from several threads."""
+    """Each call gets its own (temporary) folder and pitct state, even from several threads."""
     w = go2_world(PlantState(LYING, False, False))
     formulas = ["F hello", "F danced", "F sitting & G !sitting", "F(hello & X F hello)"] * 2
     expected = [synthesize(f, w, tmp_path / "seq").sup for f in formulas]
     with ThreadPoolExecutor(max_workers=4) as pool:
         got = list(pool.map(lambda f: synthesize(f, w, tmp_path / "par").sup, formulas))
     assert got == expected
-    assert len(list((tmp_path / "par").iterdir())) == len(formulas)
+    assert list((tmp_path / "par").glob("synth-*")) == []
+
+
+def test_huge_formula_is_spec_error_within_time(tmp_path):
+    # The DNF of this conjunction of 20 disjunctions has 2**20 clauses.
+    f = " & ".join(f"(p{i} | q{i})" for i in range(20))
+    t0 = time.monotonic()
+    with pytest.raises(SpecError, match="式が大きすぎます"):
+        synthesize(f, go2_world(PlantState(LYING, False, False)), tmp_path, timeout_s=5.0)
+    assert time.monotonic() - t0 < 6.0
+
+
+@pytest.mark.parametrize("formula", ["F hello", "F (hello & G !hello)"])
+def test_synth_folders_are_removed(tmp_path, formula):
+    synthesize(formula, go2_world(PlantState(LYING, False, False)), tmp_path)
+    assert list(tmp_path.glob("synth-*")) == []
+
+
+def test_synth_folder_removed_on_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(automata, "trim", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(SpecError):
+        synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path)
+    assert list(tmp_path.glob("synth-*")) == []

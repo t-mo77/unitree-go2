@@ -69,16 +69,21 @@ class RosLink:
             self._lock.close()
             raise RuntimeError("go2_voice_ltl はすでに動いています。2つ同時には起動できません")
 
-        # Ctrl+C で ROS 2 が先に終わると止める指令を送れなくなるので、ROS 2 には Ctrl+C を扱わせない
-        self._owns_rclpy = not rclpy.ok()
-        if self._owns_rclpy:
-            rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-        self.node = rclpy.create_node(node_name)
-        self._pub = self.node.create_publisher(Request, REQUEST_TOPIC, 10)
-        self.node.create_subscription(SportModeState, STATE_TOPIC, self._on_state, qos_profile_sensor_data)
-        self.node.create_subscription(PointCloud2, LIDAR_TOPIC, self._on_cloud, qos_profile_sensor_data)
-        self._executor = SingleThreadedExecutor()
-        self._executor.add_node(self.node)
+        try:
+            # Ctrl+C で ROS 2 が先に終わると止める指令を送れなくなるので、ROS 2 には Ctrl+C を扱わせない
+            self._owns_rclpy = not rclpy.ok()
+            if self._owns_rclpy:
+                rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+            self.node = rclpy.create_node(node_name)
+            self._pub = self.node.create_publisher(Request, REQUEST_TOPIC, 10)
+            self.node.create_subscription(SportModeState, STATE_TOPIC, self._on_state, qos_profile_sensor_data)
+            self.node.create_subscription(PointCloud2, LIDAR_TOPIC, self._on_cloud, qos_profile_sensor_data)
+            self._executor = SingleThreadedExecutor()
+            self._executor.add_node(self.node)
+        except BaseException:
+            # 失敗したらロックを離す（開いたまま残さない）
+            self._lock.close()
+            raise
 
         self._sensing = Sensing(perception)
         self._pose: Optional[Pose] = None
@@ -219,6 +224,8 @@ class SimControl:
 
     def _on_world(self, msg: String) -> None:
         try:
-            self._world = json.loads(msg.data)
+            world = json.loads(msg.data)
         except ValueError:
-            pass
+            return
+        if isinstance(world, dict):   # list など dict 以外は保存しない
+            self._world = world

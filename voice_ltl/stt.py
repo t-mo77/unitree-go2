@@ -31,6 +31,8 @@ class Transcriber:
                         if frame.sample_rate:
                             seconds += frame.samples / frame.sample_rate
         except Exception:
+            # 意図: PyAV が読めない音声（壊れた・未対応の形式）は、無音と同じに扱う。
+            # 呼び出し側は "" を受け取り、文字起こしをせずに次の入力を待つ。
             return True
         return seconds < MIN_SECONDS
 

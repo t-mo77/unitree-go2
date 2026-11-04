@@ -2,9 +2,9 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable
 
 from voice_ltl.grammar import check
+from voice_ltl.llm import LLM
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 
@@ -12,8 +12,6 @@ from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 # Digits without one (2階, 3番目の部屋) are a word that is not in the vocabulary.
 _NUMBER = re.compile(r"(?:\d+(?:[.．]\d+)?|[〇一二三四五六七八九十百千]+)\s*"
                      r"(?:メートル|センチ|ミリ|cm|mm|m|ｍ|度|°|回|歩|周)(?![A-Za-z])")
-
-LLM = Callable[[str, dict], dict]
 
 
 @dataclass
@@ -53,7 +51,17 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3) -> Translation:
     for _ in range(max_tries):
         reply = llm(build_prompt(instruction, rejected, error), SCHEMA)
         formula = reply.get("formula")
-        unsupported = [str(u) for u in (reply.get("unsupported") or [])]
+        raw = reply.get("unsupported")
+        if raw is None or raw == "":
+            raw = []
+        elif isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            errors = [f"unsupported は文字列の配列で渡してください（{type(raw).__name__} が渡されました）。"]
+            attempts.append(Attempt(formula if isinstance(formula, str) else None, [], errors))
+            rejected, error = str(formula), " ".join(errors)
+            continue
+        unsupported = [str(u) for u in raw]
         if unsupported or formula is None:
             attempts.append(Attempt(formula, unsupported, []))
             return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported))

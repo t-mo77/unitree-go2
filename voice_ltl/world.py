@@ -110,7 +110,7 @@ def step_value(action: str) -> float:
         return STEP_DISTANCE
     if action in ("turn_left", "turn_right"):
         return STEP_ANGLE
-    return 0
+    return 0.0
 
 
 def go2_world(initial: PlantState) -> World:

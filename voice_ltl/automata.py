@@ -1,6 +1,7 @@
 """Shared types for the plant (World) and the automata built from LTLf formulas,
 and the synthesis: formula -> SPEC -> product -> trim -> supcon (as in nl2fl_grid.ipynb)."""
 
+import shutil
 import tempfile
 import threading
 import time
@@ -69,7 +70,9 @@ class SpecError(Exception):
 MAX_SPEC_STATES = 2000  # a SPEC larger than this is refused as too large
 
 
-def spec_from_formula(formula: str, world: World) -> Automaton:
+def spec_from_formula(
+    formula: str, world: World, deadline: float | None = None
+) -> Automaton:
     """The DFA of `formula` (by formula progression) as a TCT automaton over the events of `world`.
 
     State 0 is the formula after reading the initial label. A controllable event moves
@@ -79,7 +82,7 @@ def spec_from_formula(formula: str, world: World) -> Automaton:
     events = sorted({(ev, kind) for _, ev, _, kind in world.transitions})
     labels = [world.event_label[ev] for ev, kind in events if kind == "c"]
     try:
-        states, step, accepting = build_dfa(formula, world.initial_label, labels, MAX_SPEC_STATES)
+        states, step, accepting = build_dfa(formula, world.initial_label, labels, MAX_SPEC_STATES, deadline)
     except ValueError as exc:  # cannot be read, or too many states
         raise SpecError(str(exc)) from exc
     spec_trans = [
@@ -154,18 +157,26 @@ def synthesize(formula: str, world: World, workdir: Path, timeout_s: float = 20.
 
 
 def _synthesize(formula: str, world: World, workdir: Path, timeout_s: float) -> Synthesis:
-    started = time.monotonic()
+    deadline = time.monotonic() + timeout_s
 
     def check_time() -> None:
-        if time.monotonic() - started > timeout_s:
+        if time.monotonic() > deadline:
             raise SpecError("式が大きすぎます")
 
-    spec = spec_from_formula(formula, world)
+    spec = spec_from_formula(formula, world, deadline)
     check_time()
     plant = plant_from_world(world)
     workdir.mkdir(parents=True, exist_ok=True)
     # init() sets SAVE_FOLDER to a Path (a str fails) and forgets earlier event names.
-    pitct.init(Path(tempfile.mkdtemp(prefix="synth-", dir=workdir)).resolve(), overwrite=True)
+    folder = Path(tempfile.mkdtemp(prefix="synth-", dir=workdir)).resolve()
+    try:
+        return _run_pitct(formula, world, folder, plant, spec, check_time)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)  # the results are already read into memory
+
+
+def _run_pitct(formula, world, folder, plant, spec, check_time) -> Synthesis:
+    pitct.init(folder, overwrite=True)
     _create(plant)
     _create(spec)
     if world.forbidden:

@@ -21,7 +21,9 @@ the tests compare against.
 """
 
 import threading
+import time
 from collections import deque
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Iterable, Sequence
 
@@ -39,6 +41,36 @@ _HOLDS_ON_EMPTY = frozenset({"true", "WX", "weak", "G", "R", "last"})
 
 _parser_lock = threading.Lock()
 _parser: LTLfParser | None = None
+
+
+TOO_BIG = "式が大きすぎます"
+DEFAULT_MAX_CLAUSES = 5000
+
+
+class _Limits(threading.local):
+    """Per-thread budget for the DNF conversion (set by build_dfa, see _limited)."""
+    deadline: float | None = None
+    max_clauses: int = DEFAULT_MAX_CLAUSES
+
+
+_limits = _Limits()
+
+
+@contextmanager
+def _limited(deadline: float | None, max_clauses: int):
+    saved = (_limits.deadline, _limits.max_clauses)
+    _limits.deadline, _limits.max_clauses = deadline, max_clauses
+    try:
+        yield
+    finally:
+        _limits.deadline, _limits.max_clauses = saved
+
+
+def _check_budget(count: int = 0) -> None:
+    """ValueError when `count` clauses exceed the limit or the deadline has passed."""
+    if count > _limits.max_clauses or (
+            _limits.deadline is not None and time.monotonic() > _limits.deadline):
+        raise ValueError(TOO_BIG)
 
 
 @lru_cache(maxsize=256)
@@ -91,7 +123,9 @@ def _from_clauses(clauses: set[Clause]) -> Node:
 def conj(parts: Iterable[Node]) -> Node:
     clauses: set[Clause] = {frozenset()}
     for part in parts:
-        clauses = _absorb({c | d for c in clauses for d in _clauses(part)})
+        theirs = _clauses(part)
+        _check_budget(len(clauses) * len(theirs))  # before the product is built
+        clauses = _absorb({c | d for c in clauses for d in theirs})
         if not clauses:
             return FALSE
     return _from_clauses(clauses)
@@ -101,6 +135,7 @@ def disj(parts: Iterable[Node]) -> Node:
     clauses: set[Clause] = set()
     for part in parts:
         clauses |= _clauses(part)
+        _check_budget(len(clauses))
     return _from_clauses(_absorb(clauses))
 
 
@@ -218,13 +253,21 @@ def build_dfa(
     initial_label: frozenset[str],
     labels: Iterable[frozenset[str]],
     max_states: int = 2000,
+    deadline: float | None = None,
+    max_clauses: int = DEFAULT_MAX_CLAUSES,
 ) -> tuple[list[Node], dict[tuple[int, frozenset[str]], int], set[int]]:
     """The DFA of `formula` over `labels`, by progression from the initial label.
 
     State 0 is progress(parse(formula), initial_label). Returns (states, transitions,
     accepting): transitions maps (state, label) -> state for every given label.
-    ValueError("式が大きすぎます") when there would be more than max_states states.
+    ValueError("式が大きすぎます") when there would be more than max_states states, a DNF
+    would have more than max_clauses clauses, or time.monotonic() passes `deadline`.
     """
+    with _limited(deadline, max_clauses):
+        return _build_dfa(formula, initial_label, labels, max_states)
+
+
+def _build_dfa(formula, initial_label, labels, max_states):
     root = parse(formula)
     atoms = _atoms(root)
     labels = list(dict.fromkeys(frozenset(lab) for lab in labels))
@@ -234,6 +277,7 @@ def build_dfa(
     trans: dict[tuple[int, frozenset[str]], int] = {}
     queue = deque([0])
     while queue:
+        _check_budget()
         q = queue.popleft()
         by_atoms: dict[frozenset[str], int] = {}  # only the formula's atoms change the result
         for lab in labels:
@@ -242,7 +286,7 @@ def build_dfa(
                 nxt = progress(states[q], key)
                 if nxt not in index:
                     if len(states) >= max_states:
-                        raise ValueError("式が大きすぎます")
+                        raise ValueError(TOO_BIG)
                     index[nxt] = len(states)
                     states.append(nxt)
                     queue.append(index[nxt])
