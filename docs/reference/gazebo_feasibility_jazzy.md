@@ -381,6 +381,7 @@ Task 16 の `gazebo/launch/go2_gazebo.launch.py`（`compose.yaml` の `gazebo` �
   - 立っているとき：3 点（9.3〜10 m 先の床。止まる 0.5 m・動き出す 0.7 m には関係しない）。
   - 1.2 m 前に箱（`/sim/obstacles` の front）：126 点・133 点、いちばん近い点 1.062 m・1.039 m（箱の面は 1.05 m）。箱を消すと 3 点に戻る。
   - **伏せている（脱力）とき：410 点、いちばん近い点 0.20 m。** 胴体の高さが 0.068 m なので、床が機体の座標で z ≈ −0.07 になり `z_min`（−0.25）より上に入る（伏せて開いた脚の点も入る）。伏せている間は前方「あり」と判定される。立つと消える。
+    → Task 16fix（Ruling R23）で、橋渡しが世界の z < 0.05 m の点も除くようにした。伏せていても前方は「なし」（`gazebo_turn_fix.md`）。
 - 箱：`/world/empty/create` で 0.3 × 0.3 m・高さ 0.4 m（にせ Go2 の `BOX_HEIGHT` と同じ）の動かない箱を出す。`/sim/world` は `{"boxes": [[2.567, -0.058, 0.3]], "collided": false}` の形。
   - 箱に向かって歩かせると、中心から箱の面までが 0.33 m になったところで箱に止められ、`collided` が true になった。`clear` で消え、`{"boxes": [], "collided": false}`。
 
@@ -414,6 +415,7 @@ Task 16 の `gazebo/launch/go2_gazebo.launch.py`（`compose.yaml` の `gazebo` �
 - IMU（`/imu_sensor_broadcaster/imu`）の yaw と角速度は、Gazebo の本当の値と符号も大きさも合っていた。
 - 0.5 rad/s を指令しても、実際に回る速さは約 0.24 rad/s（90 度にシミュレーションで 6.2〜6.7 秒）。controller の目標の向き（`yaw_cmd_`）は指令の速さで積分され、実際の向きとの差は切られない（位置の目標 `pcd_` は ±0.05 m に切られる）。止めた後もこの差を戻そうとして回り続け、倒れる様子だった（demo の 1 回目の画面では、StopMove の 2〜3 秒後もまだ向きが変わり続け、その 2 秒後に倒れていた）。
 - Task 16 では直していない（controller の中の話）。Task 17 の「旋回」の確認はこのままでは通らない。
+- **→ Task 16fix で直した**（`gazebo_turn_fix.md`）。原因は `yaw_cmd_` ではなく、状態推定（Estimator）が脚の測定値を胴の座標のまま世界の座標のカルマンフィルタに入れていたこと。`docker/patches/` の 2 つのパッチで、その場の ±90 度が 3/3 になった。回る速さは、turn_check.py でシミュレーションの時間で測ると 0.44〜0.48 rad/s だった（上の「約 0.24 rad/s」とは違う）。
 
 ### 橋渡しの時計（Task 16 で決めたこと）
 
@@ -430,5 +432,6 @@ Task 16 の `gazebo/launch/go2_gazebo.launch.py`（`compose.yaml` の `gazebo` �
 |---|---|
 | `gazebo_demo_stand.png` | demo_script の「立つ」の後（歩き出す前） |
 | `gazebo_demo_forward.png` | demo_script の「前進 0.5 m」の後 |
-| `gazebo_demo_turn_fall.png` | demo_script の「左に 90°」の後、倒れたところ |
-| `gazebo_demo_sit.png` | 伏せ（座るの代用）。demo_script では倒れていたので、同じ窓口・同じ待ち時間で「立つ → 前進 0.5 m → 座る（5 秒）→ 立ち上がる」だけを流した別の回 |
+| `gazebo_demo_turn_fall.png` | demo_script の「左に 90°」の後、倒れたところ（Task 16fix で直す前） |
+| `gazebo_demo_turn.png` | Task 16fix の後、demo_script の「左に 90°」の後（「挨拶」の 1 秒後）。立っている |
+| `gazebo_demo_sit.png` | Task 16fix の後、demo_script の「左に 90°」→「挨拶」→「座る」の 3.7 秒後。伏せ（座るの代用） |
