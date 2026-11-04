@@ -17,8 +17,11 @@ from voice_ltl.automata import Automaton
 from voice_ltl.world import event_action
 
 MAX_LABELS = 4
-HL_COLOR = "#e8590c"
-HL_FILL = "#ffd8a8"
+HL_COLOR = "#0A66D6"
+HL_FILL = "#D6E6FB"
+GREY = "#86868B"
+FONT = "-apple-system, 'Hiragino Sans', sans-serif"
+DONE_TEXT = "完了"
 _HL_GROUP = re.compile(r'(<g id="(?:edge|node)\d+" class="(?:edge|node)(?: dashed)? hl">.*?</g>)', re.S)
 EMPTY_TEXT = "（空：この指示は満たせません）"
 
@@ -75,3 +78,68 @@ def render_svg(a: Automaton, title: str, highlight_state: int | None = None,
     svg = g.pipe(encoding="utf-8")
     # graphviz writes class="edge hl"; the page looks for class="hl", so wrap those groups.
     return _HL_GROUP.sub(lambda m: f'<g class="hl">{m.group(1)}</g>', svg)
+
+
+def render_focus_svg(a: Automaton, title: str, current: int, path: Sequence[tuple[int, str]],
+                     max_side_edges: int = 6) -> str:
+    """Small readable view: the current state, the states on the remaining plan path (thick
+    blue arrows, class="hl"), and the other arrows leaving the current state (thin grey;
+    sensor events dotted). Targets not drawn collapse into one 「…」 node."""
+    if a.size == 0:
+        return _empty_svg(title)
+    nxt = {(src, ev): dst for src, ev, dst in a.trans}
+    path_edges: dict[tuple[int, int], list[str]] = defaultdict(list)
+    drawn = [current]
+    for src, ev in path:
+        dst = nxt.get((src, ev))
+        if dst is None:
+            continue
+        path_edges[(src, dst)].append(ev)
+        for st in (src, dst):
+            if st not in drawn:
+                drawn.append(st)
+    g = graphviz.Digraph(name="G", format="svg")
+    g.attr(rankdir="LR", label=title, labelloc="t", fontname=FONT, fontcolor=GREY)
+    g.attr("node", fontname=FONT, shape="circle", fontsize="12", color=GREY, fontcolor="#1D1D1F")
+    g.attr("edge", fontname=FONT, fontsize="11", color=GREY, fontcolor=GREY)
+    for st in drawn:
+        attrs = {"shape": "doublecircle" if st in a.marked else "circle"}
+        if st == current:
+            attrs.update(style="filled", fillcolor=HL_COLOR, color=HL_COLOR, fontcolor="white",
+                         **{"class": "hl"})
+        g.node(str(st), **attrs)
+    if not path_edges:
+        g.node("__done", label=DONE_TEXT, shape="plaintext", fontcolor=HL_COLOR)
+        g.edge(str(current), "__done", style="invis")
+    else:
+        for (src, dst), events in path_edges.items():
+            g.edge(str(src), str(dst), label=_label(events), color=HL_COLOR, fontcolor=HL_COLOR,
+                   penwidth="3.0", **{"class": "hl"})
+        path_here = {ev for src, ev in path if src == current}
+        side = []  # (dst, events, dotted); the path's own arrows are already drawn thick
+        for (_, dst), events in sorted(_group_from(a, current).items(), key=lambda kv: kv[0][1]):
+            for dotted in (False, True):
+                evs = [e for e in events if (e in a.uncontrollable) == dotted and (dotted or e not in path_here)]
+                if evs:
+                    side.append((dst, evs, dotted))
+        shown, rest = side[:max_side_edges], side[max_side_edges:]
+        need_dots = bool(rest) or any(d not in drawn for d, _, _ in shown)
+        if need_dots:
+            g.node("__more", label="…", shape="circle", width="0.3", fontsize="12")
+        for dst, evs, dotted in shown:
+            tgt = str(dst) if dst in drawn else "__more"
+            g.edge(str(current), tgt, label=_label(evs), penwidth="1.0",
+                   **({"style": "dotted"} if dotted else {}))
+        if rest:
+            n = sum(len(set(_name(e) for e in evs)) for _, evs, _ in rest)
+            g.edge(str(current), "__more", label=f"ほか {n} 件", penwidth="1.0")
+    svg = g.pipe(encoding="utf-8")
+    return _HL_GROUP.sub(lambda m: f'<g class="hl">{m.group(1)}</g>', svg)
+
+
+def _group_from(a: Automaton, src: int) -> dict[tuple[int, int], list[str]]:
+    groups: dict[tuple[int, int], list[str]] = defaultdict(list)
+    for s, ev, dst in a.trans:
+        if s == src:
+            groups[(s, dst)].append(ev)
+    return groups
