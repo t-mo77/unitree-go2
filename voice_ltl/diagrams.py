@@ -22,6 +22,7 @@ HL_FILL = "#D6E6FB"
 GREY = "#86868B"
 FONT = "-apple-system, 'Hiragino Sans', sans-serif"
 DONE_TEXT = "完了"
+WAITING_TEXT = "待っています"
 _HL_GROUP = re.compile(r'(<g id="(?:edge|node)\d+" class="(?:edge|node)(?: dashed)? hl">.*?</g>)', re.S)
 EMPTY_TEXT = "（空：この指示は満たせません）"
 
@@ -33,6 +34,12 @@ def _empty_svg(title: str) -> str:
         f'<title>{xml.escape(title)}</title>'
         '<text x="180" y="45" text-anchor="middle" font-family="sans-serif" font-size="16">'
         f'{xml.escape(EMPTY_TEXT)}</text></svg>')
+
+
+def _pipe_svg(g: graphviz.Digraph) -> str:
+    """Render to SVG. graphviz writes class="edge hl"; the page looks for class="hl", so wrap
+    those groups."""
+    return _HL_GROUP.sub(lambda m: f'<g class="hl">{m.group(1)}</g>', g.pipe(encoding="utf-8"))
 
 
 def _name(event: str) -> str:
@@ -75,16 +82,16 @@ def render_svg(a: Automaton, title: str, highlight_state: int | None = None,
             attrs.update(color=HL_COLOR, fontcolor=HL_COLOR, penwidth="3.0")
             attrs["class_"] = (attrs.get("class_", "") + " hl").strip()
         g.edge(str(src), str(dst), **{k.rstrip("_"): v for k, v in attrs.items()})
-    svg = g.pipe(encoding="utf-8")
-    # graphviz writes class="edge hl"; the page looks for class="hl", so wrap those groups.
-    return _HL_GROUP.sub(lambda m: f'<g class="hl">{m.group(1)}</g>', svg)
+    return _pipe_svg(g)
 
 
 def render_focus_svg(a: Automaton, title: str, current: int, path: Sequence[tuple[int, str]],
                      max_side_edges: int = 6) -> str:
     """Small readable view: the current state, the states on the remaining plan path (thick
     blue arrows, class="hl"), and the other arrows leaving the current state (thin grey;
-    sensor events dotted). Targets not drawn collapse into one 「…」 node."""
+    sensor events dotted). Targets not drawn collapse into one 「…」 node. 「完了」 is shown
+    only when nothing remains of the path and the current state is marked; an empty path in an
+    unmarked state means waiting (title gets 「待っています」 and the outgoing arrows are drawn)."""
     if a.size == 0:
         return _empty_svg(title)
     nxt = {(src, ev): dst for src, ev, dst in a.trans}
@@ -98,6 +105,9 @@ def render_focus_svg(a: Automaton, title: str, current: int, path: Sequence[tupl
         for st in (src, dst):
             if st not in drawn:
                 drawn.append(st)
+    done = not path_edges and current in a.marked
+    if not path_edges and not done:
+        title = f"{title}（{WAITING_TEXT}）"
     g = graphviz.Digraph(name="G", format="svg")
     g.attr(rankdir="LR", label=title, labelloc="t", fontname=FONT, fontcolor=GREY)
     g.attr("node", fontname=FONT, shape="circle", fontsize="12", color=GREY, fontcolor="#1D1D1F")
@@ -108,7 +118,7 @@ def render_focus_svg(a: Automaton, title: str, current: int, path: Sequence[tupl
             attrs.update(style="filled", fillcolor=HL_COLOR, color=HL_COLOR, fontcolor="white",
                          **{"class": "hl"})
         g.node(str(st), **attrs)
-    if not path_edges:
+    if done:
         g.node("__done", label=DONE_TEXT, shape="plaintext", fontcolor=HL_COLOR)
         g.edge(str(current), "__done", style="invis")
     else:
@@ -133,8 +143,7 @@ def render_focus_svg(a: Automaton, title: str, current: int, path: Sequence[tupl
         if rest:
             n = sum(len(set(_name(e) for e in evs)) for _, evs, _ in rest)
             g.edge(str(current), "__more", label=f"ほか {n} 件", penwidth="1.0")
-    svg = g.pipe(encoding="utf-8")
-    return _HL_GROUP.sub(lambda m: f'<g class="hl">{m.group(1)}</g>', svg)
+    return _pipe_svg(g)
 
 
 def _group_from(a: Automaton, src: int) -> dict[tuple[int, int], list[str]]:

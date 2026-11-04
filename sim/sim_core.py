@@ -162,20 +162,29 @@ class SimGo2:
         c, s = math.cos(self.yaw), math.sin(self.yaw)
         nx = self.x + (vx * c - vy * s) * dt
         ny = self.y + (vx * s + vy * c) * dt
-        old = self._nearest_box_dist(self.x, self.y)
-        new = self._nearest_box_dist(nx, ny)
-        if new < CONTACT_MARGIN and new < old:       # 箱に近づく動きは打ち切る（離れる動きは許す）
+        nyaw = self.yaw + wz * dt
+        old = self._nearest_box_dist(self.x, self.y, self.yaw)
+        new = self._nearest_box_dist(nx, ny, nyaw)   # 回った後の向きで判定する（その場回転でもめり込まない）
+        # 隙間が狭いときは、離れる動き（隙間が広がる）以外を止める。すでに重なっていても同じ。
+        if new < CONTACT_MARGIN and new <= old and not self._moving_out_of_overlap(nx, ny, old, new):
             self.collided = True
             self._stop_walking(self._last_step if self._last_step is not None else 0.0)
             return
         self.x, self.y = nx, ny
-        self.yaw += wz * dt
+        self.yaw = nyaw
         if new > old:                           # 箱から離れる動きが実際に進んだときだけ解除
             self.collided = False
 
-    def _nearest_box_dist(self, px: float, py: float) -> float:
-        """体（向き self.yaw の長方形）と箱の隙間の最小値 [m]。重なっていれば 0。"""
-        c, s = math.cos(self.yaw), math.sin(self.yaw)
+    def _moving_out_of_overlap(self, nx: float, ny: float, old: float, new: float) -> bool:
+        """すでに重なっている（隙間 0）とき、いちばん近い箱の中心から遠ざかる動きか。"""
+        if old > 0.0 or new > 0.0 or not self.boxes:
+            return False
+        b = min(self.boxes, key=lambda k: math.hypot(k.x - self.x, k.y - self.y))
+        return math.hypot(b.x - nx, b.y - ny) > math.hypot(b.x - self.x, b.y - self.y)
+
+    def _nearest_box_dist(self, px: float, py: float, yaw: float) -> float:
+        """体（位置 px, py・向き yaw の長方形）と箱の隙間の最小値 [m]。重なっていれば 0。"""
+        c, s = math.cos(yaw), math.sin(yaw)
         body = [(px + c * u - s * v, py + s * u + c * v)
                 for u, v in ((FOOTPRINT, FOOTPRINT_HALF_WIDTH), (FOOTPRINT, -FOOTPRINT_HALF_WIDTH),
                              (-FOOTPRINT, -FOOTPRINT_HALF_WIDTH), (-FOOTPRINT, FOOTPRINT_HALF_WIDTH))]
