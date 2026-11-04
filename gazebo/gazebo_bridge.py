@@ -6,6 +6,8 @@
   （control_input_msgs/Inputs）に変えて送る。
 - Gazebo の本当の位置（/model/robot/odometry、nav_msgs/Odometry）から /sportmodestate
   （unitree_go/SportModeState）を作る。position・imu_state.rpy・error_code などを入れる。
+  立っているつもりで転んだら（|roll|・|pitch| > 1.0 rad か胴の高さ < 0.15 m）、error_code を 1001
+  （伏せ扱い）にして止める（BridgeCore.observe、Ruling R38）。起き上がらせないので、Gazebo を起動し直す。
 - Gazebo の LiDAR の点群（/gazebo/lidar/points）から自分の体の点と地面の点（世界の z < 0.05 m）を除き、
   /utlidar/cloud（frame utlidar_lidar）に出し直す。
 - /sim/obstacles（std_msgs/String、{"cmd": "front" | "back" | "clear"}）で Gazebo に箱を出し入れし
@@ -162,6 +164,7 @@ class GazeboBridge(Node):
         c, s = math.cos(yaw), math.sin(yaw)
         self._pose = (p.x, p.y, p.z, roll, pitch, yaw, c * v.x - s * v.y, s * v.x + c * v.y, v.z, w.z)
         self._quat = (q.w, q.x, q.y, q.z)
+        self.core.observe(roll, pitch, p.z, *self._now())   # 転んだら 1001（Ruling R38）
 
         st = SportModeState()
         st.stamp.sec, st.stamp.nanosec = msg.header.stamp.sec, msg.header.stamp.nanosec
