@@ -29,6 +29,14 @@ def _example_line(instruction: str, formula: str | None, unsupported: list[str])
     return f"指示: {instruction}\n答え: {answer}"
 
 
+MAX_ECHO_LEN = 300
+
+
+def _clip(text: object) -> str:
+    text = str(text)
+    return text if len(text) <= MAX_ECHO_LEN else text[:MAX_ECHO_LEN] + "…（以下略）"
+
+
 def build_prompt(instruction: str, rejected: str | None = None, error: str | None = None) -> str:
     vocab = "\n".join(f"- {p}: {PROP_DESCRIPTION_JA[p]}" for p in PROPOSITIONS)
     examples = "\n\n".join(_example_line(*e) for e in _EXAMPLES)
@@ -60,7 +68,7 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
 答え:"""
     if rejected is not None:
         text += (
-            f"\n\n前の答えは {rejected} で、{error} という理由で却下されました。"
+            f"\n\n前の答えは {_clip(rejected)} で、{_clip(error)} という理由で却下されました。"
             "直した式だけを返してください。"
         )
     return text

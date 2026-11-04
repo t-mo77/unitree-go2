@@ -1,6 +1,7 @@
 """LLM の窓口。Claude CLI / Codex CLI / テスト用の偽物。"""
 import json
 import logging
+import re
 import subprocess
 import tempfile
 import time
@@ -24,12 +25,22 @@ def _msg_timeout(timeout_s: float) -> str:
     return f"LLM の返事が {t} 秒で返ってきませんでした"
 
 
+_SECRET_WORDS = ("sk-", "oauth", "token", "api_key", "api-key", "apikey",
+                 "secret", "password", "bearer ", "authorization")
+_LONG_VALUE = re.compile(r"=\s*\S{20,}")
+MSG_REDACTED = "[伏せました]"
+
+
+def _is_secretish(line: str) -> bool:
+    low = line.lower()
+    return any(w in low for w in _SECRET_WORDS) or bool(_LONG_VALUE.search(line))
+
+
 def _redacted_head(text: str | None) -> str:
-    """先頭 300 文字だけ返す（トークンらしき行は除く）。"""
+    """先頭 300 文字だけ返す（資格情報らしき行は伏せる）。"""
     if not text:
         return ""
-    lines = [l for l in text.splitlines()
-             if "sk-" not in l and "oauth" not in l.lower() and "token" not in l.lower()]
+    lines = [MSG_REDACTED if _is_secretish(l) else l for l in text.splitlines()]
     return "\n".join(lines)[:300]
 
 
@@ -175,7 +186,7 @@ class FakeLLM:
 
 
 def make_llm(env: Mapping[str, str]) -> LLM:
-    backend = (env.get("LLM_BACKEND") or "claude").strip().lower()
+    backend = (env.get("LLM_BACKEND") or "").strip().lower() or "claude"
     model = (env.get("LLM_MODEL") or "").strip() or None
     if backend == "claude":
         return ClaudeCLI(model=model)

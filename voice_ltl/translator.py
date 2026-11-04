@@ -49,7 +49,17 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3) -> Translation:
     for _ in range(max_tries):
         reply = llm(build_prompt(instruction, rejected, error), SCHEMA)
         formula = reply.get("formula")
-        unsupported = [str(u) for u in (reply.get("unsupported") or [])]
+        raw = reply.get("unsupported")
+        if raw is None or raw == "":
+            raw = []
+        elif isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            errors = [f"unsupported は文字列の配列で渡してください（{type(raw).__name__} が渡されました）。"]
+            attempts.append(Attempt(formula if isinstance(formula, str) else None, [], errors))
+            rejected, error = str(formula), " ".join(errors)
+            continue
+        unsupported = [str(u) for u in raw]
         if unsupported or formula is None:
             attempts.append(Attempt(formula, unsupported, []))
             return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported))

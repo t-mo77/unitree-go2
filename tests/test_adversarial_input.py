@@ -1,6 +1,6 @@
 """Adversarial tests (C3): bad LLM replies, bad user input, CLI argument hygiene, secrets.
 
-Product code is not changed here. Genuine bugs are kept as strict xfail with BUG-C3-<n>.
+Genuine bugs found here were fixed (BUG-C3-1..5); BUG-C3-6 (Session) stays strict xfail.
 All CLI runners are fakes; the real claude / codex are never called. Token strings are fake.
 """
 import json
@@ -23,37 +23,12 @@ FAKE_SK = "sk-ant-TESTONLY0000"
 FAKE_OAUTH = "CLAUDE_CODE_OAUTH_TOKEN=TESTONLY1111"
 
 
-class _Cap(logging.Handler):
-    def __init__(self):
-        super().__init__(logging.DEBUG)
-        self.records = []
-
-    def emit(self, record):
-        self.records.append(record)
-
-    def set_level(self, level):  # kept for readability at call sites
-        pass
-
-    @property
-    def text(self):
-        return "\n".join(r.getMessage() for r in self.records)
-
-
 @pytest.fixture
-def logcap():
-    """Capture voice_ltl logs directly. pytest's caplog is blind here: under pytest
-    'voice_ltl.llm' has propagate=False (set by something in the container's pytest
-    plugins), so records never reach the root handler. Attach to the logger itself."""
-    cap = _Cap()
-    lg = llm_module.log
-    old = lg.level
-    lg.addHandler(cap)
-    lg.setLevel(logging.DEBUG)
-    try:
-        yield cap
-    finally:
-        lg.removeHandler(cap)
-        lg.setLevel(old)
+def logcap(caplog):
+    """caplog at DEBUG for voice_ltl. (Needs pytest.ini's -p no:launch_testing -p no:launch_ros:
+    those ROS plugins make loggers propagate=False and caplog would see nothing.)"""
+    caplog.set_level(logging.DEBUG, logger="voice_ltl")
+    return caplog
 
 
 def reply(formula, unsupported=None):
@@ -167,9 +142,6 @@ def test_translate_falsy_non_string_formula_is_rejected(value):
 
 
 @pytest.mark.parametrize("value", [5, 3.14, True, ["F hello"], {"a": 1}])
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-1: translate() passes a truthy non-string formula (int/float/True/list/dict) to "
-    "check(), which raises AttributeError instead of returning a rejection reason"))
 def test_translate_non_string_formula_does_not_raise(value):
     """formula が数値・list・dict のとき、例外ではなく却下理由になる。"""
     t = translate("x", FakeLLM([reply(value)] * 3))
@@ -177,9 +149,6 @@ def test_translate_non_string_formula_does_not_raise(value):
 
 
 @pytest.mark.parametrize("value", [5, ["F hello"], {"a": 1}])
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-1: grammar.check() calls formula.strip() on a non-string and raises AttributeError "
-    "(truthy int / non-empty list / dict); translate() does not guard the type"))
 def test_check_non_string_formula_returns_reasons(value):
     errors = check(value, P)
     assert errors
@@ -190,13 +159,17 @@ def test_unsupported_as_string_does_not_raise():
     assert not t.ok and len(t.attempts) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-2: unsupported given as a string is iterated per character, "
-    "so the user message becomes 「キ、ッ、チ、ン」 and unsupported is split"))
 def test_unsupported_as_string_is_kept_whole():
     t = translate("x", FakeLLM([reply(None, "キッチン")]))
     assert "キッチン" in t.message
     assert t.unsupported in (["キッチン"], [])
+
+
+@pytest.mark.parametrize("bad", [5, 1.5, True, {"a": 1}])
+def test_unsupported_of_wrong_type_is_a_reask_reason_not_a_crash(bad):
+    llm = FakeLLM([reply("F hello", bad), reply("F hello")])
+    t = translate("x", llm)
+    assert t.ok and len(llm.prompts) == 2 and "unsupported" in llm.prompts[1]
 
 
 def test_unsupported_with_non_string_items():
@@ -237,13 +210,16 @@ def test_translate_unsupported_none_value():
     assert t.ok
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-3: a rejected formula is pasted verbatim into the next prompt, so a 100k-char "
-    "reply makes the re-ask prompt 100k+ chars longer (unbounded prompt growth)"))
 def test_reprompt_does_not_embed_unbounded_rejected_formula():
     llm = FakeLLM([reply("F hello " * 12500)] * 3)
     translate("x", llm)
     assert len(llm.prompts[1]) < 20_000
+
+
+def test_reprompt_clips_rejected_formula_with_marker():
+    llm = FakeLLM([reply("F hello " * 12500)] * 2)
+    translate("x", llm, max_tries=2)
+    assert "…（以下略）" in llm.prompts[1] and "F hello " * 50 not in llm.prompts[1][600:]
 
 
 def test_reprompt_contains_reason_for_odd_formula():
@@ -501,7 +477,6 @@ def _all_text(exc, logcap):
 
 @pytest.mark.parametrize("returncode", [1, 2, 127])
 def test_claude_failure_does_not_leak_tokens_in_error_or_logs(returncode, logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(returncode=returncode, stderr=STDERR_WITH_TOKENS)
     with pytest.raises(LLMError) as exc:
         ClaudeCLI(runner=run)("p", SCHEMA)
@@ -511,7 +486,6 @@ def test_claude_failure_does_not_leak_tokens_in_error_or_logs(returncode, logcap
 
 
 def test_claude_failure_log_keeps_harmless_stderr_lines(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(returncode=1, stderr=STDERR_WITH_TOKENS)
     with pytest.raises(LLMError):
         ClaudeCLI(runner=run)("p", SCHEMA)
@@ -519,7 +493,6 @@ def test_claude_failure_log_keeps_harmless_stderr_lines(logcap):
 
 
 def test_token_in_stdout_of_failed_run_is_not_leaked(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(stdout=f"token {FAKE_SK}", returncode=1)
     with pytest.raises(LLMError) as exc:
         ClaudeCLI(runner=run)("p", SCHEMA)
@@ -527,7 +500,6 @@ def test_token_in_stdout_of_failed_run_is_not_leaked(logcap):
 
 
 def test_token_in_is_error_result_is_not_leaked(logcap):
-    logcap.set_level(logging.DEBUG)
     out = json.dumps({"is_error": True, "result": f"bad key {FAKE_SK} {FAKE_OAUTH}"})
     run, _ = _recording_runner(out, stderr=STDERR_WITH_TOKENS)
     with pytest.raises(LLMError) as exc:
@@ -537,7 +509,6 @@ def test_token_in_is_error_result_is_not_leaked(logcap):
 
 
 def test_token_in_unparsable_stdout_is_not_leaked(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(stdout=f"oops {FAKE_SK}", stderr=STDERR_WITH_TOKENS)
     with pytest.raises(LLMError) as exc:
         ClaudeCLI(runner=run)("p", SCHEMA)
@@ -545,15 +516,12 @@ def test_token_in_unparsable_stdout_is_not_leaked(logcap):
 
 
 def test_token_on_success_path_is_not_logged(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(GOOD_CLAUDE_OUT, stderr=STDERR_WITH_TOKENS)
     ClaudeCLI(runner=run)("p", SCHEMA)
     assert "TESTONLY" not in logcap.text
 
 
 def test_token_in_timeout_error_is_not_leaked(logcap):
-    logcap.set_level(logging.DEBUG)
-
     def run(argv, **kw):
         raise subprocess.TimeoutExpired(argv, 5, output=FAKE_SK, stderr=FAKE_OAUTH)
     with pytest.raises(LLMError) as exc:
@@ -562,7 +530,6 @@ def test_token_in_timeout_error_is_not_leaked(logcap):
 
 
 def test_token_as_prompt_is_not_logged_on_failure(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(returncode=1, stderr="boom")
     with pytest.raises(LLMError) as exc:
         ClaudeCLI(runner=run)(f"my key is {FAKE_SK}", SCHEMA)
@@ -570,7 +537,6 @@ def test_token_as_prompt_is_not_logged_on_failure(logcap):
 
 
 def test_codex_failure_does_not_leak_tokens(logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(returncode=1, stderr=STDERR_WITH_TOKENS)
     with pytest.raises(LLMError) as exc:
         CodexCLI(runner=run)("p", SCHEMA)
@@ -606,12 +572,12 @@ def test_stderr_log_is_capped():
     "ANTHROPIC_API_KEY=TESTONLY2222",
     "ANTHROPIC_AUTH_TOKEN=TESTONLY2222",
     "Authorization: Bearer TESTONLY2222",
+    "client_secret: TESTONLY2222",
+    "PASSWORD is TESTONLY2222",
+    "X-Api-Key: TESTONLY2222",
+    "export FOO=TESTONLY2222abcdefghijklmnop",
 ])
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-4: _log_stderr drops only lines containing 'sk-' or 'oauth'; other credential "
-    "shapes (ANTHROPIC_API_KEY=..., ANTHROPIC_AUTH_TOKEN=..., Bearer ...) are logged verbatim"))
 def test_other_credential_shapes_in_stderr_are_not_logged(line, logcap):
-    logcap.set_level(logging.DEBUG)
     run, _ = _recording_runner(returncode=1, stderr=f"failed\n{line}\n")
     with pytest.raises(LLMError):
         ClaudeCLI(runner=run)("p", SCHEMA)
@@ -663,9 +629,6 @@ def test_unknown_backend_error_does_not_leak_the_model_value():
 
 
 @pytest.mark.parametrize("backend", ["   ", "\t", "\n"])
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-5: LLM_BACKEND='' falls back to claude but LLM_BACKEND=' ' (whitespace only, e.g. "
-    "'LLM_BACKEND= ' in env.txt) raises ValueError, because the empty check runs before strip()"))
 def test_whitespace_only_backend_means_default_like_empty(backend):
     assert isinstance(make_llm({"LLM_BACKEND": backend}), ClaudeCLI)
 
