@@ -38,3 +38,16 @@ def test_box_appears_in_cloud_and_blocks_motion():
     t = 0.0
     while t < 10: sim.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t); t = run(sim, t, t + 0.1)
     assert sim.collided and sim.x < 1.2 - 0.15 - FOOTPRINT + 0.05
+
+
+def test_collided_is_stable_while_move_is_resent_into_box():
+    sim = standing_sim(); sim.place_box("front", 1.2)
+    t = 0.0
+    seen = []
+    while t < 10:
+        sim.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t); t = run(sim, t, t + 0.1)
+        if t > 6: seen.append(sim.collided)
+    assert seen and all(seen)                             # 最後の step の位相に依らず True のまま
+    sim.handle(MOVE, '{"x":-0.3,"y":0,"z":0}', t); t = run(sim, t, t + 0.3)
+    assert not sim.collided                               # 離れる動きで解除される
+    sim.clear_boxes(); assert not sim.collided

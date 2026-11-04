@@ -93,7 +93,6 @@ class SimGo2:
             self._vel = vel
             self._move_until = now + MOVE_HOLD_S
             self.error_code = 1015
-            self.collided = False
             self.accepted.append(api_id)
 
     def _start(self, api_id: int, now: float, duration: float, to_code: int) -> None:
@@ -138,6 +137,8 @@ class SimGo2:
             return
         self.x, self.y = nx, ny
         self.yaw += wz * dt
+        if new > old:                           # 箱から離れる動きが実際に進んだときだけ解除
+            self.collided = False
 
     def _nearest_box_dist(self, px: float, py: float) -> float:
         best = math.inf
