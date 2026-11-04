@@ -289,7 +289,7 @@ def _short(arg) -> str:
 
 
 def _new_lines(prev: list[str], cur: list[str]) -> list[str]:
-    """Lines added to the session's log (a bounded deque) since the previous snapshot."""
+    """Lines added to the session's debug_log (a bounded deque) since the previous snapshot."""
     for k in range(min(len(prev), len(cur)), -1, -1):
         if prev[len(prev) - k:] == cur[:k]:
             return cur[k:]
@@ -415,8 +415,8 @@ class Runner:
         before = self.status
         snap = self.snapshot()
         status = snap["status"]
-        new = _new_lines(self.log, snap["log"])
-        self.log = snap["log"]
+        new = _new_lines(self.log, snap["debug_log"])   # the session's own lines (event names)
+        self.log = snap["debug_log"]
         if status != before and status in ("done", "error", "waiting"):
             self.stats[status] += 1
         self.stats["held_moves"] += sum(line.startswith("一時停止") for line in new)

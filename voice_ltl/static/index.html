@@ -71,7 +71,7 @@
       <article class="card">
         <h2 class="label">あなたの指示</h2>
         <p id="transcript" class="transcript" data-empty="true">まだ指示はありません</p>
-        <span class="caption">書き起こした文</span>
+        <span id="transcript-caption" class="caption">書き起こした文</span>
         <details class="text-entry">
           <summary>文字で指示する（試験用）</summary>
           <form id="text-form" class="text-form">
@@ -110,13 +110,14 @@
         <div class="card-head">
           <h2 class="label">状態遷移図</h2>
           <div class="segmented" role="tablist" aria-label="図の種類">
-            <button id="tab-SUP" type="button" role="tab" data-name="SUP" aria-selected="true" aria-controls="diagram-panel">監督器</button>
+            <button id="tab-FOCUS" type="button" role="tab" data-name="FOCUS" aria-selected="true" aria-controls="diagram-panel">計画の道</button>
+            <button id="tab-SUP" type="button" role="tab" data-name="SUP" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">監督器</button>
             <button id="tab-TRIMMED" type="button" role="tab" data-name="TRIMMED" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">trim 後</button>
             <button id="tab-SPEC" type="button" role="tab" data-name="SPEC" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">要求</button>
             <button id="tab-PLANT" type="button" role="tab" data-name="PLANT" aria-selected="false" aria-controls="diagram-panel" tabindex="-1">環境</button>
           </div>
         </div>
-        <div id="diagram-panel" class="diagram-box" role="tabpanel" aria-labelledby="tab-SUP" tabindex="0">
+        <div id="diagram-panel" class="diagram-box" role="tabpanel" aria-labelledby="tab-FOCUS" tabindex="0">
           <img id="diagram" alt="" hidden>
           <p id="diagram-empty" class="diagram-empty">まだ図はありません</p>
         </div>
@@ -167,6 +168,10 @@
     <details class="card log-card">
       <summary>記録</summary>
       <ol id="log" class="log"></ol>
+      <details class="debug-log">
+        <summary>詳しく<span class="summary-meta"> · イベント名と実行器の報告</span></summary>
+        <ol id="debug-log" class="log"></ol>
+      </details>
     </details>
   </main>
 

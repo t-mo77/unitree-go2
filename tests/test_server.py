@@ -23,7 +23,8 @@ def test_text_endpoint_runs_pipeline(tmp_path):
     c, sess = make_client(tmp_path)
     assert c.post("/api/text", json={"text": "立って挨拶して"}).status_code == 202
     sess.tick(0.0); assert sess.snapshot()["formula"] == "F hello"
-    assert c.get("/api/diagram/SUP.svg").headers["content-type"].startswith("image/svg")
+    for name in ("FOCUS", "SUP", "TRIMMED", "SPEC", "PLANT"):
+        assert c.get(f"/api/diagram/{name}.svg").headers["content-type"].startswith("image/svg")
 
 
 def test_audio_and_stop_and_obstacle_404(tmp_path):
@@ -43,7 +44,9 @@ def test_empty_audio_is_refused(tmp_path):
 def test_ws_sends_snapshot(tmp_path):
     c, _ = make_client(tmp_path)
     with c.websocket_connect("/ws") as ws:
-        assert "status" in ws.receive_json()
+        snap = ws.receive_json()
+    assert {"status", "log", "debug_log", "steps", "link_kind", "stt", "llm_backend",
+            "waiting_since", "block_timeout", "stop_word"} <= set(snap)
 
 
 def test_index_has_push_to_talk(tmp_path):
@@ -60,10 +63,10 @@ def test_index_has_the_designed_parts(tmp_path):
         "/static/style.css", "Go2 Voice", "止める", "マイクを使う",       # top bar, talk band
         "あなたの指示", "ロジック（LTLf）", "LLM の試行", "計画",        # the cards
         "状態遷移図", 'role="tablist"', 'role="tab"', 'aria-selected="true"',
-        ">監督器<", ">trim 後<", ">要求<", ">環境<",                    # the diagram tabs
+        ">計画の道<", ">監督器<", ">trim 後<", ">要求<", ">環境<",      # the diagram tabs
         "姿勢", "前方", "後方", "上から見た図",                           # the Go2 card
         "前に箱を置く", "後ろに箱を置く", "箱を全部どける",
-        "<details", "記録",                                                # the log
+        "<details", "記録", "詳しく",                                      # the log
         'role="status"', 'role="alert"',                                   # the messages
     ]:
         assert text in html, text
@@ -79,6 +82,33 @@ def test_index_has_the_designed_parts(tmp_path):
 ])
 def test_listen_address(env, address):
     assert server.listen_address(env) == address
+
+
+def test_the_focus_tab_comes_first_and_is_selected(tmp_path):
+    c, _ = make_client(tmp_path)
+    html = c.get("/").text
+    names = [html.index(f'data-name="{n}"') for n in ("FOCUS", "SUP", "TRIMMED", "SPEC", "PLANT")]
+    assert names == sorted(names)
+    tab = html[html.rindex("<button", 0, names[0]):html.index(">", names[0])]
+    assert 'aria-selected="true"' in tab
+
+
+@pytest.mark.parametrize("env,kind", [
+    ({"SIM": "1"}, "fake"),                                    # compose's default (SIM_KIND=fake)
+    ({"SIM": "1", "SIM_KIND": ""}, "fake"),
+    ({"SIM": "1", "SIM_KIND": "fake"}, "fake"),
+    ({"SIM": "1", "SIM_KIND": " Gazebo "}, "gazebo"),
+    ({"SIM": "0"}, "robot"),
+    ({"SIM": "0", "SIM_KIND": "gazebo"}, "robot"),             # SIM=0 is a real Go2, whatever SIM_KIND says
+    ({}, "robot"),
+])
+def test_link_kind(env, kind):
+    assert server.link_kind(env) == kind
+
+
+def test_bad_sim_kind_is_refused():
+    with pytest.raises(ValueError, match="SIM_KIND"):
+        server.link_kind({"SIM": "1", "SIM_KIND": "real"})
 
 
 @pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "80.5"])
@@ -155,6 +185,9 @@ def test_refusing_to_start(monkeypatch, tmp_path, others, stop_times):
     monkeypatch.setattr(server, "WORKDIR", tmp_path)
     monkeypatch.setenv("SIM", "0")
     monkeypatch.delenv("GO2_UI_PORT", raising=False)
+    sessions = []
+    monkeypatch.setattr(server, "Session", lambda *a, **kw: sessions.append(kw) or Session(*a, **kw))
     with pytest.raises(SystemExit):
         server._serve()
     assert [link.closed_with for link in made] == [stop_times]
+    assert [kw.get("link_kind") for kw in sessions] == ["robot"]   # SIM=0: the page says 実機

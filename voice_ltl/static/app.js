@@ -6,7 +6,6 @@
 const MIME = "audio/webm;codecs=opus";
 const STOP_DISTANCE = 0.5;   // [m] perception.py stop_distance
 const HALF_WIDTH = 0.3;      // [m] perception.py half_width
-const BLOCK_TIMEOUT = 15;    // [s] executor.py block_timeout: waiting longer ends the plan
 const BODY = { length: 0.7, width: 0.31 };  // Go2 [m]
 const GRID = 0.2;            // [m] one square of the top view
 const VIEW_HALF = 1.6;       // [m] the top view shows this far to the left and right of the Go2
@@ -19,19 +18,16 @@ const STATUS = {  // Session status -> the pill under the talk button
   thinking: ["考えています", "accent"], executing: ["実行中", "accent"],
   waiting: ["待っています", "warn"], done: ["終わりました", "ok"], error: ["できませんでした", "stop"],
 };
-const ACTION_JA = {
-  stand: "立つ", lie_down: "伏せる", sit: "おすわり", rise_sit: "立ち上がる",
-  hello: "挨拶", stretch: "伸び", content: "喜ぶ", heart: "ハート", scrape: "おじぎ",
-  dance: "ダンス", forward: "前進", backward: "後退", turn_left: "左に回る", turn_right: "右に回る",
-};
-const TAB_JA = { SUP: "監督器", TRIMMED: "trim 後", SPEC: "要求", PLANT: "環境" };
+const TAB_JA = { FOCUS: "計画の道", SUP: "監督器", TRIMMED: "trim 後", SPEC: "要求", PLANT: "環境" };
+// snapshot link_kind -> [the mode (hidden on a phone), what the page drives]
+const LINK_JA = { fake: ["シミュレーション", "にせ Go2"], gazebo: ["シミュレーション", "Gazebo"], robot: [null, "実機"] };
+const LLM_JA = { claude: "Claude", codex: "Codex" };  // snapshot llm_backend
+const STEP_STATE = { done: "done", current: "now", pending: "todo" };  // snapshot steps -> CSS
 // Session's messages (session.py MSG_*, llm.py MSG_LOGIN) that choose the kind of notice.
 const MSG = {
   done: "終わりました", stopped: "止めました", unsat: "この指示は満たせません",
   login: "LLM にログインできていません",
 };
-// Session's log lines (session.py _note) the page reads: the steps done and the stop word.
-const LOG = { instruction: "指示: ", event: "イベント: ", started: "監督器: ", stopWord: "止める言葉: " };
 
 const ICON = {  // static markup only; texts always go in with textContent
   check: '<svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5l3 3 6-7"/></svg>',
@@ -66,7 +62,6 @@ function el(tag, className, text) {
   return node;
 }
 
-const actionJa = (name) => ACTION_JA[name] ?? name;
 const meters = (d) => (d === null || d === undefined ? "—" : `${d.toFixed(2)} m`);
 
 // ---------------- push to talk ----------------
@@ -263,13 +258,13 @@ $("text-form").addEventListener("submit", (e) => {
 });
 
 // ---------------- diagrams ----------------
-let diagramTab = "SUP";
+let diagramTab = "FOCUS";
 let diagramVersion = null;
 let diagramNames = [];  // the diagrams the session has drawn
 const tabs = [...document.querySelectorAll('[role="tab"]')];
 
 // The SVG is fetched as text and shown from a blob: URL, so that the same text tells where
-// the current state (SUP) or the start state is: the box scrolls there, because a big
+// the current state (FOCUS, SUP) or the start state is: the box scrolls there, because a big
 // diagram at full size would otherwise open on an empty corner.
 let diagramTicket = 0;     // the newest request; an older answer is dropped
 let diagramUrl = null;     // the blob: URL shown now
@@ -365,29 +360,6 @@ onClick("fit", () => {
   $("diagram-panel").classList.toggle("fit", on);
 });
 
-// ---------------- the log, read ----------------
-// What the log says about the newest instruction: the actions done, whether its plan started,
-// and the stop word heard before the last 「止めました」.
-function readLog(log) {
-  let from = 0;
-  for (let i = log.length - 1; i >= 0; i--) {
-    if (log[i].startsWith(LOG.instruction)) { from = i + 1; break; }
-  }
-  const done = [];
-  let started = false;
-  for (const line of log.slice(from)) {
-    if (line.startsWith(LOG.event)) done.push(line.slice(LOG.event.length).split("_to_")[0]);
-    if (line.startsWith(LOG.started)) started = true;
-  }
-  let stopWord = null;
-  const last = log.lastIndexOf(MSG.stopped);
-  for (let i = last - 1; i >= 0 && i >= last - 4; i--) {
-    if (log[i].startsWith(LOG.stopWord)) { stopWord = log[i].slice(LOG.stopWord.length); break; }
-    if (log[i].startsWith(LOG.instruction) || log[i] === MSG.stopped) break;
-  }
-  return { done, started, stopWord };
-}
-
 // ---------------- view ----------------
 function renderStatus(text, tone) {
   setText("status-text", text);
@@ -399,10 +371,27 @@ function setData(id, key, value) {
   if (node.dataset[key] !== value) node.dataset[key] = value;
 }
 
-function renderInstruction(transcript) {
-  const empty = !transcript;
+function renderLink(kind) {
+  const [mode, name] = LINK_JA[kind] ?? [null, String(kind)];
+  if (changed("link", [mode, name])) {
+    const node = $("link-text");
+    node.replaceChildren();
+    if (mode) node.append(el("span", "link-mode", `${mode} · `));
+    node.append(name);
+  }
+  setData("link", "tone", "ok");
+}
+
+function renderInstruction(s) {
+  const empty = !s.transcript;
   setData("transcript", "empty", String(empty));
-  setText("transcript", empty ? "まだ指示はありません" : `「${transcript}」`);
+  setText("transcript", empty ? "まだ指示はありません" : `「${s.transcript}」`);
+  // stt: the Whisper model and seconds of this transcript; null when it was typed
+  const caption = s.stt
+    ? ["書き起こし", s.stt.model && `Whisper ${s.stt.model}`, `${s.stt.seconds.toFixed(1)} 秒`]
+      .filter(Boolean).join(" · ")
+    : empty ? "書き起こした文" : "文字で入力した文";
+  setText("transcript-caption", caption);
 }
 
 function attemptOk(a) {
@@ -411,6 +400,7 @@ function attemptOk(a) {
 
 function renderLogic(s) {
   const attempts = s.attempts;
+  const llm = LLM_JA[s.llm_backend] ?? "LLM";
   setText("formula", s.formula ?? "—");
   const verdict = $("verdict");
   verdict.hidden = attempts.length === 0;
@@ -418,14 +408,14 @@ function renderLogic(s) {
     verdict.dataset.tone = "ok";
     verdict.innerHTML = ICON.check;
     verdict.append(`${attempts.length} 回目で合格`);
-    setText("formula-caption", "LLM が翻訳 · 単語帳と文法の検査に合格");
+    setText("formula-caption", `${llm} が翻訳 · 単語帳と文法の検査に合格`);
   } else if (attempts.length) {
     verdict.dataset.tone = "fail";
     verdict.innerHTML = ICON.cross;
     verdict.append("合格した式はありません");
-    setText("formula-caption", "LLM が翻訳 · 却下の理由は「LLM の試行」に");
+    setText("formula-caption", `${llm} が翻訳 · 却下の理由は「LLM の試行」に`);
   } else {
-    setText("formula-caption", "LLM が指示を式に翻訳します");
+    setText("formula-caption", `${llm} が指示を式に翻訳します`);
   }
 
   $("attempts-box").hidden = attempts.length === 0;
@@ -449,23 +439,19 @@ function renderLogic(s) {
   });
 }
 
-function renderPlan(plan, current, done) {
+// steps: the snapshot's whole plan of this instruction, each done, current or pending.
+function renderPlan(steps) {
   const ol = $("plan");
   ol.replaceChildren();
-  // The loaded action runs even when a sensor change left it off the new plan (a held move).
-  const ahead = current && plan[0] !== current ? [current, ...plan] : plan;
-  const steps = [
-    ...done.map((name) => [name, "done"]),
-    ...ahead.map((name, i) => [name, i === 0 && name === current ? "now" : "todo"]),
-  ];
-  for (const [name, state] of steps) {
+  for (const st of steps) {
+    const state = STEP_STATE[st.status] ?? "todo";
     const li = el("li");
     const step = el("span", "step");
     step.dataset.state = state;
-    step.title = name;
+    step.title = st.action;
     if (state === "done") step.insertAdjacentHTML("beforeend", ICON.stepDone);
     if (state === "now") step.insertAdjacentHTML("beforeend", ICON.stepNow);
-    step.append(actionJa(name));
+    step.append(st.label);
     if (state === "now") step.append(el("span", "step-note", "実行中"));
     if (state === "done") step.append(el("span", "visually-hidden", "（済み）"));
     if (state === "todo") step.append(el("span", "visually-hidden", "（まだ）"));
@@ -473,37 +459,40 @@ function renderPlan(plan, current, done) {
     ol.append(li);
   }
   $("plan-empty").hidden = steps.length > 0;
-  setText("plan-meta", plan.length ? `監督器の上の最短の道 · 残り ${plan.length} 手`
-    : done.length ? `実行した動作 · ${done.length} 手` : "");
+  const left = steps.filter((st) => st.status !== "done").length;
+  setText("plan-meta", left ? `監督器の上の最短の道 · 残り ${left} 手`
+    : steps.length ? `実行した動作 · ${steps.length} 手` : "");
 }
 
 // ---------------- messages ----------------
 // {kind, role, title, body, code, before, after}: before/after go around the body and change
 // every second (the distance, the time left); they are shown but kept out of the live region,
 // so a screen reader does not read the notice again each time.
-const held = { key: null, since: 0 };  // since when the page has seen the Go2 waiting
 
-function heldSeconds(key) {
-  if (held.key !== key) { held.key = key; held.since = Date.now(); }
-  return Math.max(0, Math.ceil(BLOCK_TIMEOUT - (Date.now() - held.since) / 1000));
+// The seconds left before the wait ends the plan: waiting_since (epoch s, the server's clock)
+// and block_timeout come from the snapshot.
+function secondsLeft(s) {
+  const waited = Date.now() / 1000 - s.waiting_since;
+  return Math.min(s.block_timeout, Math.max(0, Math.ceil(s.block_timeout - waited)));
 }
 
-// The side that keeps the Go2 waiting: a move held by the executor (status stays executing),
-// or, while the session waits, a side that is not clear. Only standing counts (R24).
+// The side that keeps the Go2 waiting: for a move the executor holds, the side it looks at
+// (a turn is held only while a sensor is lost); while the session waits, a side that is not
+// clear. Only standing counts (R24).
 function blockedSide(s) {
   if (s.posture !== "STANDING") return null;
-  if (s.current === "forward" && s.front !== "CLEAR") return "front";
-  if (s.current === "backward" && s.back !== "CLEAR") return "back";
-  if (s.status !== "waiting") return null;
+  if (s.current === "forward") return s.front !== "CLEAR" ? "front" : null;
+  if (s.current === "backward") return s.back !== "CLEAR" ? "back" : null;
+  if (s.current) return s.front === "SENSOR_LOST" ? "front" : s.back === "SENSOR_LOST" ? "back" : null;
   if (s.front !== "CLEAR") return "front";
   return s.back !== "CLEAR" ? "back" : null;
 }
 
-function noticeFor(s, story) {
+function noticeFor(s) {
   const m = s.message;
-  const side = s.status === "waiting" || s.status === "executing" ? blockedSide(s) : null;
-  if (s.status === "waiting" || side !== null) {
-    const left = heldSeconds(`${s.status}:${side}`);
+  if (s.waiting_since !== null) {  // the session waits, or the executor holds a move
+    const left = secondsLeft(s);
+    const side = blockedSide(s);
     if (side === null) {
       return { kind: "waiting", role: "status", title: m || "待っています",
         body: "進める動作ができれば続きを進みます", after: `（あと ${left} 秒で中止）。` };
@@ -519,15 +508,14 @@ function noticeFor(s, story) {
       after: `（あと ${left} 秒で中止）。`,
     };
   }
-  held.key = null;
   if (!m) return null;
   if (m === MSG.stopped) {
     return { kind: "stop", role: "alert", title: MSG.stopped,
-      body: story.stopWord ? `「${story.stopWord}」を聞いて、すぐに StopMove を送りました。`
+      body: s.stop_word ? `「${s.stop_word}」を聞いて、すぐに StopMove を送りました。`
         : "StopMove を送りました。" };
   }
   if (s.status === "done" && m === MSG.done) {
-    const did = story.done.map(actionJa).join(" → ");
+    const did = s.steps.filter((st) => st.status === "done").map((st) => st.label).join(" → ");
     return { kind: "done", role: "status", title: m,
       body: did ? `${did} を、計画どおりに実行しました。`
         : "指示はもう満たされていたので、動かずに終わりました。" };
@@ -542,7 +530,7 @@ function noticeFor(s, story) {
   }
   if (s.status === "error") {
     const sentence = /[。）)]$/.test(m) ? m : `${m}。`;
-    return story.started
+    return s.sup_state !== null  // a supervisor was made: the plan had started
       ? { kind: "cannot", role: "alert", title: "続けられませんでした", body: sentence }
       : { kind: "cannot", role: "alert", title: "この指示はできません",
         body: `${sentence}Go2 は動いていません。` };
@@ -591,16 +579,18 @@ function renderNotice(n) {
 }
 
 // ---------------- log ----------------
-// The snapshot's log has no times: each line gets the time this page first saw it
-// (lines from before the page opened get none).
-let logSeen = null;  // { lines, times } of the last render
+// Two lists: "log" (the snapshot's log, in words) and, under 詳しく, "debug-log" (debug_log,
+// the session's own lines). The snapshot has no times: each line gets the time this page
+// first saw it (lines from before the page opened get none).
+const logSeen = {};  // list id -> { lines, times } of its last render
 
-function stampLog(lines) {
-  if (logSeen === null) return lines.map(() => null);
-  const prev = logSeen.lines;
+function stampLog(id, lines) {
+  const seen = logSeen[id];
+  if (seen === undefined) return lines.map(() => null);
+  const prev = seen.lines;
   let shift = 0;  // lines that fell off the front of the server's log since the last render
   while (shift < prev.length && !prev.slice(shift).every((line, i) => line === lines[i])) shift++;
-  const kept = logSeen.times.slice(shift, shift + lines.length);
+  const kept = seen.times.slice(shift, shift + lines.length);
   const now = new Date();
   return lines.map((_, i) => (i < kept.length ? kept[i] : now));
 }
@@ -609,10 +599,10 @@ function clock(t) {
   return [t.getHours(), t.getMinutes(), t.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-function renderLog(lines) {
-  const times = stampLog(lines);
-  logSeen = { lines, times };
-  const ol = $("log");
+function renderLog(id, lines) {
+  const times = stampLog(id, lines);
+  logSeen[id] = { lines, times };
+  const ol = $(id);
   const atEnd = ol.scrollTop + ol.clientHeight >= ol.scrollHeight - 4;
   ol.replaceChildren(...lines.map((line, i) => {
     const li = el("li");
@@ -628,9 +618,11 @@ function renderLog(lines) {
   }));
   if (atEnd) ol.scrollTop = ol.scrollHeight;
 }
-$("log").closest("details").addEventListener("toggle", (e) => {  // opened: show the newest lines
-  if (e.currentTarget.open) $("log").scrollTop = $("log").scrollHeight;
-});
+for (const id of ["log", "debug-log"]) {  // opened: show the newest lines
+  $(id).closest("details").addEventListener("toggle", (e) => {
+    if (e.currentTarget.open) $(id).scrollTop = $(id).scrollHeight;
+  });
+}
 
 // ---------------- Go2 ----------------
 function renderSense(id, state, dist) {
@@ -643,7 +635,8 @@ function renderGo2(s) {
   setText("posture", POSTURE_JA[s.posture] ?? s.posture);
   renderSense("front", s.front, s.front_dist);
   renderSense("back", s.back, s.back_dist);
-  setText("current", s.current ? `${actionJa(s.current)}（${s.current}）` : "—");
+  const now = s.steps.find((st) => st.status === "current");
+  setText("current", now ? `${now.label}（${now.action}）` : "—");
   if (s.pose) {
     const [x, y, yaw] = s.pose;
     setText("position", `x ${x.toFixed(2)} m, y ${y.toFixed(2)} m`);
@@ -658,17 +651,15 @@ function render(s) {
   serverStatus = s.status;
   renderTalk();
   renderStatus(...(STATUS[s.status] ?? [s.status, "neutral"]));
-  const simulating = "world" in s;
-  setText("link-text", simulating ? "シミュレーション" : "実機");
-  setData("link", "tone", "ok");
-  $("box-buttons").hidden = !simulating;
+  renderLink(s.link_kind);
+  $("box-buttons").hidden = !("world" in s);  // the server sends the world only when simulating
 
-  const story = readLog(s.log);
-  renderInstruction(s.transcript);
-  if (changed("logic", [s.attempts, s.formula])) renderLogic(s);
-  if (changed("plan", [s.plan, s.current, story.done])) renderPlan(s.plan, s.current, story.done);
-  renderNotice(noticeFor(s, story));
-  if (changed("log", s.log)) renderLog(s.log);
+  renderInstruction(s);
+  if (changed("logic", [s.attempts, s.formula, s.llm_backend])) renderLogic(s);
+  if (changed("plan", s.steps)) renderPlan(s.steps);
+  renderNotice(noticeFor(s));
+  if (changed("log", s.log)) renderLog("log", s.log);
+  if (changed("debug-log", s.debug_log)) renderLog("debug-log", s.debug_log);
 
   if (s.diagram_version !== diagramVersion) {
     diagramVersion = s.diagram_version;
@@ -795,6 +786,7 @@ function connect() {
     renderTalk();
     renderStatus("サーバーとつながっていません", "neutral");
     setText("link-text", "つながっていません");
+    delete shown.link;  // draw the link again once connected
     setData("link", "tone", "off");
     setTimeout(connect, 1000);
   };

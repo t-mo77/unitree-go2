@@ -39,7 +39,7 @@
   --box-fill: #E8DCCB;
   --box-line: #B9A385;
   --diagram-bg: #FFFFFF;     /* graphviz draws black on white, in both themes */
-  --diagram-plan: #E8590C;   /* diagrams.py HL_COLOR */
+  --diagram-plan: #0A66D6;   /* diagrams.py HL_COLOR */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
   --shadow-tab: 0 1px 3px rgba(0, 0, 0, 0.10);
   --focus: 0 0 0 3px rgba(10, 102, 214, 0.45);
@@ -178,6 +178,8 @@ code { font-family: var(--mono); }
   color: var(--on-fill);
   font-size: 15px;
   font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
   cursor: pointer;
 }
 .stop-button:hover { filter: brightness(1.08); }
@@ -611,6 +613,9 @@ details > summary:focus-visible { border-radius: 8px; }
 .log time, .log .no-time { flex: 0 0 auto; font-family: var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .log .line { min-width: 0; overflow-wrap: anywhere; }
 .log:empty::after { content: "まだ記録はありません"; color: var(--muted); }
+.debug-log { margin-top: 18px; }
+.debug-log > summary { font-size: 13px; font-weight: 600; color: var(--accent-text); width: fit-content; }
+.debug-log .log { font-family: var(--mono); font-size: 12px; gap: 6px; }
 
 /* ---------------- narrow screens (a phone is 390 px) ---------------- */
 @media (max-width: 640px) {
@@ -621,6 +626,7 @@ details > summary:focus-visible { border-radius: 8px; }
   .brand-sub { display: none; }
   .topbar-right { flex-wrap: nowrap; gap: 8px; }
   .link { padding: 0 10px; gap: 6px; }
+  .link-mode { display: none; }  /* 「シミュレーション · 」: the simulator's name is enough here */
   .stop-button { height: 40px; padding: 0 16px; }
   .tiles { gap: 8px; }
   .tile { padding: 12px; }
