@@ -15,7 +15,7 @@ def test_check_accepts_and_rejects():
     assert check("(!sitting U hello) & F(last & sitting)", P) == []
     assert any("括弧" in e for e in check("F (hello", P))
     assert any("at_kitchen" in e for e in check("F at_kitchen", P))
-    assert check("", P) and check("F hello " + "& F hello " * 40, P)
+    assert check("", P) and check("F hello " + "& F hello " * 160, P)   # over MAX_FORMULA_LEN (1500)
 
 
 def test_check_never_repairs():
@@ -88,9 +88,11 @@ def test_prompt_keeps_the_refusals():
     assert "断るもの（代わりにせず unsupported に入れて、formula を null にします）" in p
     for case in ("ジャンプ", "宙返り", "二本足で立つ", "這う", "突っ込む", "伏せたまま進む",
                  "キッチン", "ボール", "障害物の周りを回る", "階段を上る", "おいで", "こっちに来て",
-                 "ちょっと動いて", "何か芸をして", "秒・分などの時間と、マイナスの数"):
+                 "ちょっと動いて", "何か芸をして", "秒・分などの時間と、マイナスの数",
+                 "お手", "握手", "ばんざい", "前に何かあるまで進む", "F や U の目標にはしません"):
         assert case in p, case
-    for refused in ("二本足で立って", "伏せたまま前に進んで", "こっちに来て", "0メートル進んで"):
+    for refused in ("二本足で立って", "伏せたまま前に進んで", "こっちに来て", "0メートル進んで",
+                    "前に何かあるまで進んで", "握手して"):
         assert f'指示: "{refused}"\n答え: {{"formula": null' in p, refused
 
 
@@ -98,8 +100,12 @@ def test_prompt_rules_found_by_the_real_llm_tests():
     # each line fixes a case where the real Claude went wrong (2026-11-05 review)
     p = build_prompt("x")
     assert "右・左が言われていれば、その向きの命題を使います" in p
-    assert example("回れ右して", "F(turned_right & X F turned_right)", [],
+    assert example("回れ右", "F(turned_right & X F turned_right)", [],
                    [{"said": "回れ右", "as": "右へ 90 度を 2 回"}]) in p
+    assert "回れ右 は turned_right を 2 回、回れ左 は turned_left を 2 回です" in p
+    assert "必ず F(a & X F(a & X F a)) の入れ子で書きます" in p and "言われた順に 1 本の入れ子にします" in p
+    assert "「何回か」「何度か」「数回」は 3 回にします" in p
+    assert "said には指示の中にある言葉をそのまま入れ" in p and "漢字・かなの違いだけ" in p
     assert "0（0回・0メートル・0度・ゼロ）は「その動作をしない」意味です。1 回に直さず" in p
     assert "違う動作は別々に数えます" in p and "「N回回って」「N回転」「N周」は 360 度 × N" in p
     assert "G moved_forward のようには書きません" in p
@@ -115,8 +121,9 @@ def test_prompt_rounds_numbers_to_the_nearest_count_and_caps_them():
     assert "いちばん近い回数（1 回以上）" in p
     assert example("0.7メートル進んで", "F moved_forward", [],
                    [{"said": "0.7メートル", "as": "0.5 m（1 回）"}]) in p
-    six = "F(hello & X F(hello & X F(hello & X F(hello & X F(hello & X F hello)))))"
-    assert example("10回挨拶して", six, [], [{"said": "10回", "as": "挨拶を 6 回（上限）"}]) in p
+    from voice_ltl.prompt import _repeat
+    assert example("20回挨拶して", _repeat("hello", 12), [], [{"said": "20回", "as": "挨拶を 12 回（上限）"}]) in p
+    assert "同じ動作が続けて並ぶのは 12 回までです" in p and "回る動作は 12 回（3 周）までです" in p
 
 
 def test_instruction_goes_in_as_one_json_string():
@@ -175,7 +182,7 @@ def test_missing_substitutions_key_is_fine():
 def test_substitutions_are_clipped_in_count():
     from voice_ltl.translator import MAX_SUBSTITUTIONS
     many = [{"said": "走って", "as": "前へ歩く"}] * (MAX_SUBSTITUTIONS + 5)
-    t = translate("x", FakeLLM([{"formula": "F hello", "unsupported": [], "substitutions": many}]))
+    t = translate("走って", FakeLLM([{"formula": "F hello", "unsupported": [], "substitutions": many}]))
     assert len(t.substitutions) == MAX_SUBSTITUTIONS
 
 
@@ -224,3 +231,64 @@ def test_translator_uses_llm_type_from_llm_module():
     from voice_ltl import llm as llm_module
     from voice_ltl import translator
     assert translator.LLM is llm_module.LLM
+
+
+def test_said_must_be_words_of_the_instruction():
+    # a said copied from the prompt's examples is dropped; a note the LLM added in brackets is cut off
+    llm = FakeLLM([{"formula": "F(turned_right & X F turned_right)", "unsupported": [], "substitutions": [
+        {"said": "しゃがんで", "as": "おすわり"},
+        {"said": "右後ろを向いて（右へ約135度）", "as": "右へ 90 度を 2 回"},
+        {"said": "１０回", "as": "x"}]}])
+    t = translate("右後ろを向いて 10回", llm)
+    assert t.substitutions == [{"said": "右後ろを向いて", "as": "右へ 90 度を 2 回"},
+                               {"said": "１０回", "as": "x"}]
+
+
+@pytest.mark.parametrize("item", ["マイナス1メートル", "-90度", "－2メートル", "3秒", "10秒間", "5分",
+                                  "ゼロ回", "0回", "零度"])
+def test_zero_minus_and_time_get_the_number_message(item):
+    t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]))
+    assert "この数は指定できません" in t.message and "0・マイナスの数と、秒・分などの時間は使えません" in t.message
+    assert "単語帳" not in t.message
+
+
+@pytest.mark.parametrize("formula,detail", [
+    ("F(hello & X F(hello & X F hello)))", "「)」が 1 個多すぎます"),
+    ("F(hello & X F(hello & X F hello", "「)」が 2 個足りません"),
+    (")F hello(", "「)」が、対応する「(」より前に来ています"),
+])
+def test_bracket_error_says_how_many(formula, detail):
+    # long chains often come back one ")" off: the count lets the re-ask fix it first time
+    errors = check(formula, PROPOSITIONS)
+    assert any(e.startswith("括弧の対応が取れていません") and detail in e for e in errors), errors
+
+
+def test_a_formula_too_long_three_times_gets_its_own_message():
+    from voice_ltl.grammar import MAX_FORMULA_LEN
+    from voice_ltl.prompt import _repeat
+    long = _repeat("hello", 120)
+    assert len(long) > MAX_FORMULA_LEN
+    t = translate("x", FakeLLM([{"formula": long, "unsupported": []}] * 3))
+    assert not t.ok and t.message == "指示が長すぎて式にできませんでした。いくつかに分けて言ってください。"
+
+
+def test_prompt_writes_out_repeated_blocks_and_caps_the_total():
+    from voice_ltl.prompt import _chain, _repeat
+    p = build_prompt("x")
+    assert "「A を N 回繰り返して」は、A を N 回、中身を変えずにすべて書き出します" in p
+    assert "合わせて 60 回までです。超えるときは N を減らし、A の中身は減らしません" in p
+    assert example("1メートル進んで右を向く、を4回繰り返して",
+                   _chain(*(["moved_forward", "moved_forward", "turned_right"] * 4)), [], []) in p
+    assert example("右に一周して", _repeat("turned_right", 4), [], []) in p
+    assert example("4周して", _repeat("turned_left", 12), [],
+                   [{"said": "4周", "as": "左へ 90 度を 12 回（上限）（向きは左）"}]) in p
+    assert "最後に「)」を N−1 個並べます" in p
+
+
+def test_longest_allowed_chain_fits_the_length_limit():
+    # MAX_TOTAL_STEPS actions with the longest proposition name still pass check()
+    from voice_ltl.grammar import MAX_FORMULA_LEN
+    from voice_ltl.prompt import _repeat
+    from voice_ltl.world import MAX_TOTAL_STEPS
+    longest = max(PROPOSITIONS, key=len)
+    assert len(_repeat(longest, MAX_TOTAL_STEPS)) <= MAX_FORMULA_LEN

@@ -57,7 +57,8 @@ UNSAFE_LABELS = (
 
 STEP_DISTANCE = 0.5  # [m] per forward/backward step
 STEP_ANGLE = 90.0    # [deg] per turn step
-MAX_REPEAT = 6       # repeats of one action in a formula (design §7.4.0)
+MAX_REPEAT = 12      # repeats of one action in a formula (design §7.4.0; the user's choice, 2026-11-05)
+MAX_TOTAL_STEPS = 60  # actions in one instruction, all together (design §7.4.0)
 
 
 @dataclass(frozen=True)

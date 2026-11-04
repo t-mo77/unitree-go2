@@ -1,6 +1,7 @@
 """Instruction -> LTLf formula, with up to max_tries re-asks on rejected formulas."""
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from voice_ltl.grammar import check
@@ -11,8 +12,8 @@ from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 # An unsupported part that is a number with a unit (0メートル, -2度): design §7.4.0. The prompt
 # rounds off-unit numbers and caps big ones, so this is for what is still left (0, minus) or for an
 # LLM that does not follow it. Digits without a unit (2階, 3番目の部屋) are a word not in the vocabulary.
-_NUMBER = re.compile(r"(?:\d+(?:[.．]\d+)?|[〇一二三四五六七八九十百千]+)\s*"
-                     r"(?:メートル|センチ|ミリ|cm|mm|m|ｍ|度|°|回|歩|周)(?![A-Za-z])")
+_NUMBER = re.compile(r"(?:マイナス|[-−－])?\s*(?:\d+(?:[.．]\d+)?|[〇一二三四五六七八九十百千]+|ゼロ|零)\s*"
+                     r"(?:メートル|センチ|ミリ|cm|mm|m|ｍ|度|°|回|歩|周|秒間|秒|分間|分|時間)(?![A-Za-z])")
 
 
 @dataclass
@@ -36,17 +37,27 @@ class Translation:
 MAX_SUBSTITUTIONS = 10
 
 
-def _substitutions(raw: object) -> list[dict[str, str]]:
+def _plain(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+
+
+_TRAILING_NOTE = re.compile(r"\s*[（(][^（()）]*[）)]\s*$")
+
+
+def _substitutions(raw: object, instruction: str) -> list[dict[str, str]]:
     """The reply's substitutions as {said, as} strings. The CLI's JSON Schema already requires
     them (a reply without the key is unreadable, design §7.4.1); this guards replies that come
-    another way (FakeLLM, run_formula). The page clips them after hiding secrets (session.py)."""
+    another way (FakeLLM, run_formula). `said` must be words of the instruction: a note the LLM
+    added in brackets is cut off, and a said copied from the prompt's examples is dropped.
+    The page clips them after hiding secrets (session.py)."""
     if not isinstance(raw, list):
         return []
+    words = _plain(instruction)
     out = []
     for item in raw[:MAX_SUBSTITUTIONS]:
         if isinstance(item, dict) and isinstance(item.get("said"), str) and isinstance(item.get("as"), str):
-            said, as_ = item["said"].strip(), item["as"].strip()
-            if said and as_:
+            said, as_ = _TRAILING_NOTE.sub("", item["said"]).strip(), item["as"].strip()
+            if said and as_ and _plain(said) in words:
                 out.append({"said": said, "as": as_})
     return out
 
@@ -66,7 +77,8 @@ def _unsupported_message(unsupported: list[str]) -> str:
         parts.append(f"「{what}」は単語帳にないので、まだできません。")
     if numbers:
         parts.append(f"「{'、'.join(numbers)}」：この数は指定できません"
-                     f"（{STEP_DISTANCE:g} m・{STEP_ANGLE:g} 度・1 回を単位に、{MAX_REPEAT} 回まで）。")
+                     f"（0・マイナスの数と、秒・分などの時間は使えません。"
+                     f"{STEP_DISTANCE:g} m・{STEP_ANGLE:g} 度・1 回を単位に、{MAX_REPEAT} 回まで）。")
     return "".join(parts)
 
 
@@ -95,11 +107,14 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3) -> Translation:
             return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported))
         errors = check(formula, PROPOSITIONS)
         attempts.append(Attempt(formula, [], errors))
-        subs = _substitutions(reply.get("substitutions"))
+        subs = _substitutions(reply.get("substitutions"), instruction)
         if not errors:
             return Translation(True, formula, [], attempts, "", subs or earlier_subs)
         earlier_subs = subs or earlier_subs
         rejected, error = formula, " ".join(errors)
+    if attempts and any("長すぎ" in e for e in attempts[-1].errors):
+        return Translation(False, None, [], attempts,
+                           "指示が長すぎて式にできませんでした。いくつかに分けて言ってください。")
     return Translation(
         False, None, [], attempts,
         f"指示を式に直せませんでした（{max_tries}回試しました）。言い方を変えてもう一度お願いします。",

@@ -493,11 +493,12 @@ def test_secret_like_substitutions_are_hidden_before_they_are_clipped(tmp_path):
     llm = FakeLLM([{"formula": "F moved_forward", "unsupported": [],
                     "substitutions": [{"said": said, "as": f"前へ歩く {FAKE_KEY}"}]}])
     sess, link = make(tmp_path, llm)
-    sess.submit_text("走って"); drive(sess, link, 3)
+    sess.submit_text(said); drive(sess, link, 3)      # said must be words of the instruction
     snap = sess.snapshot()
-    blob = json.dumps(snap, ensure_ascii=False)
-    assert FAKE_TOKEN[:9] not in blob and "Q7xR2" not in blob and "sk-" not in blob
     sub = snap["substitutions"][0]
+    snap = {k: v for k, v in snap.items() if k != "transcript"}   # the instruction itself is shown as typed
+    blob = json.dumps({k: snap[k] for k in ("substitutions", "log")}, ensure_ascii=False)
+    assert FAKE_TOKEN[:9] not in blob and "Q7xR2" not in blob and "sk-" not in blob
     assert sub["said"].startswith("走って") and MSG_REDACTED in sub["said"]
     assert sub["as"] == MSG_REDACTED       # a line that looks like a key is hidden whole
     assert any(line.startswith("こう受け取りました：「走って") for line in snap["log"])

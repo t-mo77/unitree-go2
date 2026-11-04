@@ -99,7 +99,7 @@ def repeated(prop: str, n: int) -> str:
 
 
 def test_max_repeats_within_budget(tmp_path):
-    assert MAX_REPEAT == 6
+    assert MAX_REPEAT == 12   # the user's choice (design §7.4.0)
     t0 = time.monotonic()
     s = synthesize(repeated("hello", MAX_REPEAT), go2_world(PlantState(LYING, False, False)), tmp_path)
     assert time.monotonic() - t0 < 5.0
