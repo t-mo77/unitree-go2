@@ -33,6 +33,17 @@
   </header>
 
   <main class="page">
+    <!-- Design §5: the README caution before motion. On a real Go2 it stays (it cannot be
+         closed); app.js hides it once the snapshot says the page drives a simulator, and shows
+         the small line #caution-sim instead. Shown until then: the safe side. -->
+    <aside id="caution" class="caution" aria-labelledby="caution-title">
+      <span class="caution-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.6l7.2 12.6H1.8z"/><path d="M9 7.4v3.4"/><path d="M9 13.3h.01"/></svg></span>
+      <div class="caution-text">
+        <h2 id="caution-title" class="caution-title">実機を動かす前に</h2>
+        <p class="caution-body">前方 1 m と周りを空けてください。リモコンを持った人が、必ずそばにいてください。</p>
+      </div>
+    </aside>
+
     <section id="talk" class="talk" data-state="idle" aria-label="話す">
       <div class="talk-button-wrap">
         <span class="talk-ring" aria-hidden="true"></span>
@@ -60,6 +71,7 @@
         </button>
       </div>
       <span id="hint" class="hint" role="status"></span>
+      <p id="caution-sim" class="caution-line" hidden>実機では、前方 1 m と周りを空け、リモコンを持った人がそばにいてください。</p>
     </section>
 
     <div class="notices">
