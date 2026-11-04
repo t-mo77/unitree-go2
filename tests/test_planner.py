@@ -1,9 +1,11 @@
+import time
+
 import pytest
 from test_automata import grid_world
 
 from voice_ltl.automata import synthesize
 from voice_ltl.planner import PlanError, Runtime
-from voice_ltl.world import LYING, SAFETY_FORMULA, STANDING, PlantState, event_action, go2_world
+from voice_ltl.world import LYING, STANDING, PlantState, event_action, go2_world
 
 
 def grid_action(event: str) -> str:
@@ -11,7 +13,7 @@ def grid_action(event: str) -> str:
 
 
 def go2_sup(tmp_path, formula, init):
-    return synthesize(f"({formula}) & {SAFETY_FORMULA}", go2_world(init), tmp_path).sup
+    return synthesize(formula, go2_world(init), tmp_path).sup
 
 
 def test_lecture_plan_and_reroute(tmp_path):
@@ -33,6 +35,13 @@ def test_lecture_plan_and_reroute(tmp_path):
 def test_go2_plans(tmp_path, formula, actions):
     rt = Runtime(go2_sup(tmp_path, formula, PlantState(LYING, False, False)))
     assert [event_action(e) for e in rt.plan()] == actions
+
+
+def test_three_step_instruction_fast(tmp_path):
+    t0 = time.monotonic()
+    sup = go2_sup(tmp_path, "F(hello & F(danced & F sitting))", PlantState(LYING, False, False))
+    assert time.monotonic() - t0 < 5.0
+    assert [event_action(e) for e in Runtime(sup).plan()] == ["stand", "hello", "dance", "sit"]
 
 
 def test_waits_when_front_blocked_then_resumes(tmp_path):

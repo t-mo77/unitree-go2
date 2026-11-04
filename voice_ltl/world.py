@@ -47,11 +47,17 @@ PROP_DESCRIPTION_JA = {
 }
 
 UNCONTROLLABLE = ("front_blocked", "front_clear", "back_blocked", "back_clear")
+# The safety rules (design §7.1). Synthesis does not add this formula: go2_world puts
+# every controllable event whose label breaks it into World.forbidden, which means the same.
 SAFETY_FORMULA = "G(!(obstacle_front & moved_forward)) & G(!(obstacle_back & moved_backward))"
+UNSAFE_LABELS = (
+    frozenset({"obstacle_front", "moved_forward"}),
+    frozenset({"obstacle_back", "moved_backward"}),
+)
 
 STEP_DISTANCE = 0.5  # [m] per forward/backward step
 STEP_ANGLE = 90.0    # [deg] per turn step
-MAX_REPEAT = 3       # 4 repeats with SAFETY_FORMULA take flloat > 60 s (design §7.4.0)
+MAX_REPEAT = 6       # repeats of one action in a formula (design §7.4.0)
 
 
 @dataclass(frozen=True)
@@ -135,4 +141,6 @@ def go2_world(initial: PlantState) -> World:
         event_label=event_label,
         initial_label=go2_label(initial, None),
         propositions=PROPOSITIONS,
+        forbidden=frozenset(ev for ev, label in event_label.items()
+                            if any(unsafe <= label for unsafe in UNSAFE_LABELS)),
     )

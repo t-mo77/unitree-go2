@@ -1,8 +1,13 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from go2_nl_control.actions import LYING
 
+from voice_ltl import automata
 from voice_ltl.automata import SpecError, World, synthesize
-from voice_ltl.world import MAX_REPEAT, SAFETY_FORMULA, PlantState, go2_world
+from voice_ltl.ltlf import holds
+from voice_ltl.world import MAX_REPEAT, SAFETY_FORMULA, PlantState, event_action, go2_world
 
 # The lecture's 3 x 3 room (docs/reference/nl2fl_grid.ipynb cells 3, 5, 19, 21)
 WIDTH, HEIGHT = 3, 3
@@ -55,16 +60,34 @@ def test_lecture_grid_numbers(tmp_path):
 
 def test_go2_unsatisfiable_is_empty(tmp_path):
     w = go2_world(PlantState(LYING, False, False))
-    assert synthesize(f"(F sitting & G !sitting) & {SAFETY_FORMULA}", w, tmp_path).empty
+    assert synthesize("F sitting & G !sitting", w, tmp_path).empty
 
 
 def test_go2_uncontrollable_kept(tmp_path):
     w = go2_world(PlantState(LYING, False, False))
-    s = synthesize(f"(F hello) & {SAFETY_FORMULA}", w, tmp_path)
+    s = synthesize("F hello", w, tmp_path)
     assert {"front_blocked", "front_clear"} <= {e for _, e, _ in s.sup.trans}
     assert not s.empty
-    unsafe = {e for e, label in w.event_label.items() if {"obstacle_front", "moved_forward"} <= label}
-    assert unsafe and not unsafe & {e for _, e, _ in s.sup.trans}
+
+
+def test_forbidden_is_the_safety_formula():
+    """An event is forbidden exactly when its label breaks SAFETY_FORMULA."""
+    w = go2_world(PlantState(LYING, False, False))
+    assert w.forbidden
+    for event, label in w.event_label.items():
+        assert (event in w.forbidden) == (not holds(SAFETY_FORMULA, [label])), event
+
+
+@pytest.mark.parametrize("formula", ["F moved_forward", "F moved_backward"])
+def test_safety_events_never_in_sup(tmp_path, formula):
+    w = go2_world(PlantState(LYING, False, False))
+    s = synthesize(formula, w, tmp_path)
+    assert not s.empty
+    sup_events = {e for _, e, _ in s.sup.trans}
+    assert not sup_events & w.forbidden
+    assert not {e for _, e, _ in s.spec.trans} & w.forbidden
+    moves = {e for e in w.event_label if e not in w.forbidden and event_action(e) in ("forward", "backward")}
+    assert moves & sup_events  # the safe moves are still allowed
 
 
 def repeated(prop: str, n: int) -> str:
@@ -76,19 +99,44 @@ def repeated(prop: str, n: int) -> str:
 
 
 def test_max_repeats_within_budget(tmp_path):
-    # The plan asked for 6 repeats; flloat needs > 20 s from 4 on, so MAX_REPEAT is the largest that fits.
-    f = repeated("hello", MAX_REPEAT)
-    s = synthesize(f"({f}) & {SAFETY_FORMULA}", go2_world(PlantState(LYING, False, False)), tmp_path)
+    assert MAX_REPEAT == 6
+    t0 = time.monotonic()
+    s = synthesize(repeated("hello", MAX_REPEAT), go2_world(PlantState(LYING, False, False)), tmp_path)
+    assert time.monotonic() - t0 < 5.0
     assert not s.empty
 
 
-def test_too_large_formula_times_out(tmp_path):
-    f = repeated("hello", MAX_REPEAT + 1)
+def test_too_many_spec_states_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(automata, "MAX_SPEC_STATES", 3)
     with pytest.raises(SpecError, match="式が大きすぎます"):
-        synthesize(f"({f}) & {SAFETY_FORMULA}", go2_world(PlantState(LYING, False, False)), tmp_path,
-                   timeout_s=1.0)
+        synthesize(repeated("hello", 3), go2_world(PlantState(LYING, False, False)), tmp_path)
+
+
+def test_out_of_time_raises(tmp_path):
+    with pytest.raises(SpecError, match="式が大きすぎます"):
+        synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path, timeout_s=0.0)
+
+
+def test_pitct_failure_is_spec_error(tmp_path, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(automata, "trim", broken)
+    with pytest.raises(SpecError, match="boom"):
+        synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path)
 
 
 def test_bad_formula_raises(tmp_path):
     with pytest.raises(SpecError):
         synthesize("F (hello", go2_world(PlantState(LYING, False, False)), tmp_path)
+
+
+def test_parallel_calls_are_serialised(tmp_path):
+    """Each call gets its own folder and pitct state, even from several threads."""
+    w = go2_world(PlantState(LYING, False, False))
+    formulas = ["F hello", "F danced", "F sitting & G !sitting", "F(hello & X F hello)"] * 2
+    expected = [synthesize(f, w, tmp_path / "seq").sup for f in formulas]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        got = list(pool.map(lambda f: synthesize(f, w, tmp_path / "par").sup, formulas))
+    assert got == expected
+    assert len(list((tmp_path / "par").iterdir())) == len(formulas)
