@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>お知らせの表示</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F5F5F7}
+</style>
+</helmet>
+<div style="width: 1440px; height: 600px; box-sizing: border-box; padding: 64px; background: #F5F5F7; color: #1D1D1F; font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-content: start">
+
+<div role="status" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(30,142,62,0.12); display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="#1E7A36" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5l3 3 6-7"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 17px; font-weight: 600">終わりました</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">立つ → 挨拶 → ダンス を、計画どおりに実行しました。</span>
+</div>
+</div>
+
+<div role="status" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(178,80,0,0.12); display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#9A4400" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="9" r="7"></circle><path d="M9 5v4.5l3 1.5"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 17px; font-weight: 600">前に物があるので待っています</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">前方 0.46 m。物がなくなれば続きを進みます（あと 12 秒で中止）。</span>
+</div>
+</div>
+
+<div role="alert" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: #F0F0F2; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#515154" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="9" r="7"></circle><path d="M9 5.5v4"></path><path d="M9 12.5h.01"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 17px; font-weight: 600">この指示はできません</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">「キッチン」は単語帳にありません。Go2 は動いていません。</span>
+</div>
+</div>
+
+<div role="alert" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: #F0F0F2; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#515154" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="9" r="7"></circle><path d="M6 6l6 6"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+<span style="font-size: 17px; font-weight: 600">この指示は満たせません</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">監督器が空になりました。Go2 は動いていません。</span>
+<code style="align-self: flex-start; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #1D1D1F; background: #F5F5F7; border-radius: 8px; padding: 4px 8px">F sitting &amp; G !sitting</code>
+</div>
+</div>
+
+<div role="alert" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(196,41,28,0.10); display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 14 14" aria-hidden="true"><rect x="2" y="2" width="10" height="10" rx="2" fill="#C4291C"></rect></svg></span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 17px; font-weight: 600">止めました</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">「止まって」を聞いて、すぐに StopMove を送りました。</span>
+</div>
+</div>
+
+<div role="alert" style="display: flex; align-items: flex-start; gap: 16px; padding: 22px 24px; border-radius: 18px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04)">
+<span aria-hidden="true" style="flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: #F0F0F2; display: flex; align-items: center; justify-content: center"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#515154" stroke-width="1.8" stroke-linecap="round"><path d="M4 9h10"></path><path d="M9 4v10"></path></svg></span>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<span style="font-size: 17px; font-weight: 600">LLM にログインできていません</span>
+<span style="font-size: 14px; color: #515154; line-height: 1.5">README の手順でログインしてください。Go2 は動いていません。</span>
+</div>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>
