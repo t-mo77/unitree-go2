@@ -23,11 +23,11 @@ const TAB_JA = { FOCUS: "計画の道", SUP: "監督器", TRIMMED: "trim 後", S
 const LINK_JA = { fake: ["シミュレーション", "にせ Go2"], gazebo: ["シミュレーション", "Gazebo"], robot: [null, "実機"] };
 const LLM_JA = { claude: "Claude", codex: "Codex" };  // snapshot llm_backend
 const STEP_STATE = { done: "done", current: "now", pending: "todo" };  // snapshot steps -> CSS
-// Session's messages (session.py MSG_*, llm.py MSG_LOGIN) that choose the kind of notice.
-const MSG = {
-  done: "終わりました", stopped: "止めました", unsat: "この指示は満たせません",
-  login: "LLM にログインできていません",
-};
+const LOGIN_TITLE = "LLM にログインできていません";  // the notice's title (its message is longer)
+// A recording shorter than this, or a smaller one (a webm of its header alone), holds no
+// instruction: it is not sent, so a tap leaves what the session does as it was (UI-3).
+const MIN_SECONDS = 0.3;
+const MIN_BYTES = 2048;
 
 const ICON = {  // static markup only; texts always go in with textContent
   check: '<svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.5l3 3 6-7"/></svg>',
@@ -65,8 +65,9 @@ function el(tag, className, text) {
 const meters = (d) => (d === null || d === undefined ? "—" : `${d.toFixed(2)} m`);
 
 // ---------------- push to talk ----------------
-// ptt.recording is true while a recording runs; ptt.starts counts the recordings started.
-const ptt = { recording: false, starts: 0, stream: null, recorder: null, asking: false, since: 0 };
+// ptt.recording is true while a recording runs; ptt.starts counts the recordings started;
+// ptt.take is the latest recording: { seconds } it lasted, set when it stops.
+const ptt = { recording: false, starts: 0, stream: null, recorder: null, asking: false, since: 0, take: null };
 window.ptt = ptt;
 
 let serverStatus = "idle";  // the last snapshot's status
@@ -151,16 +152,18 @@ function startRecording() {
     return;
   }
   const chunks = [];
+  const take = { seconds: 0 };
   rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   rec.onstop = () => {
     const blob = new Blob(chunks, { type: rec.mimeType || MIME });
-    if (!blob.size) {  // a short tap records nothing: say so instead of sending it
-      showHint("聞き取れませんでした");
+    if (take.seconds < MIN_SECONDS || blob.size < MIN_BYTES) {  // a tap: say so, send nothing
+      showHint("短すぎて聞き取れませんでした");
       return;
     }
     sendAudio(blob);
   };
   ptt.recorder = rec;
+  ptt.take = take;
   ptt.recording = true;
   ptt.starts += 1;
   ptt.since = Date.now();
@@ -171,6 +174,7 @@ function startRecording() {
 function stopRecording() {
   if (!ptt.recording) return;
   ptt.recording = false;
+  ptt.take.seconds = (Date.now() - ptt.since) / 1000;
   ptt.recorder.stop();  // onstop sends what was recorded
   ptt.recorder = null;
   clearInterval(recordTimer);
@@ -380,6 +384,11 @@ function renderLink(kind) {
     node.append(name);
   }
   setData("link", "tone", "ok");
+  // Design §5: on a real Go2 (or anything but a known simulator) the caution stays; a
+  // simulator gets the one small line.
+  const simulating = kind === "fake" || kind === "gazebo";
+  $("caution").hidden = simulating;
+  $("caution-sim").hidden = !simulating;
 }
 
 function renderInstruction(s) {
@@ -489,6 +498,8 @@ function blockedSide(s) {
   return s.back !== "CLEAR" ? "back" : null;
 }
 
+// The kind comes from the server (snapshot message_kind: server.py message_kind compares the
+// message with Session's own MSG_*), so no message text is matched here.
 function noticeFor(s) {
   const m = s.message;
   if (s.waiting_since !== null) {  // the session waits, or the executor holds a move
@@ -510,39 +521,45 @@ function noticeFor(s) {
     };
   }
   if (!m) return null;
-  if (m === MSG.stopped) {
-    return { kind: "stop", role: "alert", title: MSG.stopped,
-      body: s.stop_word ? `「${s.stop_word}」を聞いて、すぐに StopMove を送りました。`
-        : "StopMove を送りました。" };
+  switch (s.message_kind) {
+    case "stopped":
+      return { kind: "stop", role: "alert", title: m,
+        body: s.stop_word ? `「${s.stop_word}」を聞いて、すぐに StopMove を送りました。`
+          : "StopMove を送りました。" };
+    case "done": {
+      const did = s.steps.filter((st) => st.status === "done").map((st) => st.label).join(" → ");
+      return { kind: "done", role: "status", title: m,
+        body: did ? `${did} を、計画どおりに実行しました。`
+          : "指示はもう満たされていたので、動かずに終わりました。" };
+    }
+    case "unsat":
+      return { kind: "unsat", role: "alert", title: m,
+        body: "監督器が空になりました。Go2 は動いていません。", code: s.formula };
+    case "login":
+      return { kind: "login", role: "alert", title: LOGIN_TITLE,
+        body: "README の手順でログインしてください。Go2 は動いていません。" };
+    case "unheard":  // 「聞き取れませんでした」「音声を文字にできませんでした」: the plan, if any, goes on
+      return { kind: "heard", role: "status", title: m, body: "もう一度、スペースを押しながら話してください。" };
+    case "busy":  // R27/R28: a gesture or posture change ends first; nothing to say again
+      return { kind: "waiting", role: "status", title: m,
+        body: "そのあと、この指示を始めます。もう一度話す必要はありません。" };
+    case "waiting":
+      return { kind: "waiting", role: "status", title: m, body: "進める動作ができれば続きを進みます。" };
+    case "error": {
+      const sentence = /[。）)]$/.test(m) ? m : `${m}。`;
+      return s.sup_state !== null  // a supervisor was made: the plan had started
+        ? { kind: "cannot", role: "alert", title: "続けられませんでした", body: sentence }
+        : { kind: "cannot", role: "alert", title: "この指示はできません",
+          body: `${sentence}Go2 は動いていません。` };
+    }
+    default:  // "info": a message of no kind above
+      return { kind: "info", role: "status", title: m, body: "" };
   }
-  if (s.status === "done" && m === MSG.done) {
-    const did = s.steps.filter((st) => st.status === "done").map((st) => st.label).join(" → ");
-    return { kind: "done", role: "status", title: m,
-      body: did ? `${did} を、計画どおりに実行しました。`
-        : "指示はもう満たされていたので、動かずに終わりました。" };
-  }
-  if (m === MSG.unsat) {
-    return { kind: "unsat", role: "alert", title: m,
-      body: "監督器が空になりました。Go2 は動いていません。", code: s.formula };
-  }
-  if (m.startsWith(MSG.login)) {
-    return { kind: "login", role: "alert", title: MSG.login,
-      body: "README の手順でログインしてください。Go2 は動いていません。" };
-  }
-  if (s.status === "error") {
-    const sentence = /[。）)]$/.test(m) ? m : `${m}。`;
-    return s.sup_state !== null  // a supervisor was made: the plan had started
-      ? { kind: "cannot", role: "alert", title: "続けられませんでした", body: sentence }
-      : { kind: "cannot", role: "alert", title: "この指示はできません",
-        body: `${sentence}Go2 は動いていません。` };
-  }
-  // 「聞き取れませんでした」「音声を文字にできませんでした」: the plan, if any, goes on.
-  return { kind: "heard", role: "status", title: m, body: "もう一度、スペースを押しながら話してください。" };
 }
 
 const NOTICE_ICON = {
   done: ICON.check, waiting: ICON.clock, cannot: ICON.bang, unsat: ICON.cross,
-  stop: ICON.square, login: ICON.plus, heard: ICON.bang,
+  stop: ICON.square, login: ICON.plus, heard: ICON.bang, info: ICON.bang,
 };
 
 function renderNotice(n) {

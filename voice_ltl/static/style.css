@@ -351,6 +351,36 @@ code { font-family: var(--mono); }
 .mic-button:disabled { cursor: default; color: var(--ok); border-color: transparent; background: linear-gradient(var(--ok-soft), var(--ok-soft)) var(--surface); }
 .hint { font-size: 14px; color: var(--stop-text); }
 .hint:empty { margin-top: -18px; }   /* no gap for it; it stays a live region all the same */
+.caution-line { margin: 0; font-size: 12px; color: var(--muted); }   /* simulating: one small line */
+
+/* ---------------- safety caution (design §5; a real Go2) ---------------- */
+/* Shaped like a notice, tinted over the card colour (text stays at 4.5:1 or more), no close button. */
+.caution {
+  align-self: center;
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background: linear-gradient(var(--warn-soft), var(--warn-soft)) var(--surface);
+  box-shadow: var(--shadow);
+}
+.caution-icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.caution-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.caution-title { font-size: 17px; font-weight: 600; color: var(--warn); }
+.caution-body { margin: 0; font-size: 14px; color: var(--text); line-height: 1.5; }
 
 /* ---------------- messages ---------------- */
 /* The two live regions are always there (empty ones take no room), so they are announced. */
@@ -639,7 +669,7 @@ details > summary:focus-visible { border-radius: 8px; }
   .transcript { font-size: 22px; }
   .formula { font-size: 19px; padding: 14px 16px; }
   .step { height: 46px; padding: 0 16px; font-size: 16px; }
-  .notice { padding: 18px; gap: 14px; }
+  .notice, .caution { padding: 18px; gap: 14px; }
   .toggle { margin-left: 0; }
   .pair, .duo { gap: 16px; }
 }
