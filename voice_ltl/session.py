@@ -258,6 +258,7 @@ class Session:
         self._plan_posture = LYING       # posture the supervisor believes in
         self._sensed = (True, True)      # (front, back) blocked, as told to the supervisor
         self._waiting_since: float | None = None
+        self._clock: float | None = None  # `now` of the latest tick(): the clock waiting_since is on
         self._unknown_since: float | None = None  # since when a check saw the posture UNKNOWN
 
         self._reading: Reading | None = None
@@ -371,8 +372,13 @@ class Session:
                 raise RuntimeError("no transcriber")
             started = time.monotonic()
             text = self.transcribe(audio)
-            stt = {"model": getattr(self.transcribe, "model_size", None),   # stt.Transcriber's
-                   "seconds": round(time.monotonic() - started, 1)}
+            total = time.monotonic() - started
+            load = getattr(self.transcribe, "last_load_seconds", None)   # stt.Transcriber's
+            # "seconds" is the transcription alone; the one-time model load is reported apart
+            stt = {"model": getattr(self.transcribe, "model_size", None),
+                   "seconds": round(max(0.0, total - (load or 0.0)), 1)}
+            if load:
+                stt["load_seconds"] = round(load, 1)
         except Exception:  # faster-whisper and PyAV raise many types
             _logger.exception("transcription failed")
             with self._lock:
@@ -442,6 +448,7 @@ class Session:
 
     # ---------------- control loop ----------------
     def tick(self, now: float) -> None:
+        self._clock = now
         """One control period (10 Hz): read the Go2, take finished translations and supervisors,
         get the Go2 ready for a new plan, run the plan."""
         with self._lock:
@@ -833,6 +840,7 @@ class Session:
                 "stt": dict(self._stt) if self._stt is not None else None,
                 "llm_backend": self.llm_backend,
                 "waiting_since": self._wait_start(),
+                "server_now": self._clock,   # same clock as waiting_since: the page needs no clock of its own
                 "block_timeout": self.executor.cfg.block_timeout,
                 "stop_word": self._stop_word,
                 "log": list(self._log),

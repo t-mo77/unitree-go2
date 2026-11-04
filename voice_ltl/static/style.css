@@ -39,7 +39,7 @@
   --box-fill: #E8DCCB;
   --box-line: #B9A385;
   --diagram-bg: #FFFFFF;     /* graphviz draws black on white, in both themes */
-  --diagram-plan: #0A66D6;   /* diagrams.py HL_COLOR */
+  --diagram-plan: #0A66D6;   /* = HL_COLOR in diagrams.py (#0A66D6) and --accent: change all three together */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
   --shadow-tab: 0 1px 3px rgba(0, 0, 0, 0.10);
   --focus: 0 0 0 3px rgba(10, 102, 214, 0.45);

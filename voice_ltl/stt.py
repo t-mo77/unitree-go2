@@ -1,6 +1,7 @@
 """Speech to text with faster-whisper (Japanese)."""
 
 import io
+import time
 
 import av
 
@@ -12,6 +13,7 @@ class Transcriber:
         self.model_size = model_size
         self.compute_type = compute_type
         self._model = None  # loaded on first real use
+        self.last_load_seconds: float | None = None  # model load of the latest call; None if none
 
     @staticmethod
     def is_silent(audio: bytes) -> bool:
@@ -37,12 +39,15 @@ class Transcriber:
         return seconds < MIN_SECONDS
 
     def __call__(self, audio: bytes) -> str:
+        self.last_load_seconds = None
         if self.is_silent(audio):
             return ""
         if self._model is None:
             from faster_whisper import WhisperModel
 
+            loading = time.monotonic()
             self._model = WhisperModel(self.model_size, compute_type=self.compute_type)
+            self.last_load_seconds = time.monotonic() - loading
         segments, _ = self._model.transcribe(
             io.BytesIO(audio), language="ja", vad_filter=False, beam_size=5
         )

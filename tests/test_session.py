@@ -582,6 +582,32 @@ def test_stt_is_the_model_and_seconds_of_the_transcript(tmp_path):
     assert sess.snapshot()["stt"] is None
 
 
+class LoadingWhisper(Whisper):
+    """Like the first Transcriber call: 0.25 s of it is the one-time model load."""
+
+    last_load_seconds = 0.2
+
+
+def test_stt_seconds_leave_out_the_model_load(tmp_path):
+    sess, _ = make(tmp_path, llm_for("F hello"), transcribe=LoadingWhisper())
+    sess.submit_audio(b"RIFF....")
+    stt = sess.snapshot()["stt"]
+    assert stt["load_seconds"] == 0.2 and stt["seconds"] == 0.1      # 0.25 s total - 0.2 s load
+    sess, _ = make(tmp_path, llm_for("F hello"), transcribe=Whisper())
+    sess.submit_audio(b"RIFF....")
+    assert "load_seconds" not in sess.snapshot()["stt"]
+
+
+def test_server_now_is_the_clock_of_waiting_since(tmp_path):
+    sess, link = make(tmp_path, llm_for("F moved_forward", "F(moved_forward & X F moved_forward)"))
+    assert sess.snapshot()["server_now"] is None
+    link.sim.place_box("front", 0.6)
+    sess.submit_text("前に進んで")
+    snap = drive_until(sess, link, lambda s: s["status"] == "waiting")
+    assert snap["server_now"] == pytest.approx(link.now)
+    assert snap["server_now"] - snap["waiting_since"] < 0.5
+
+
 def test_link_kind_llm_backend_and_block_timeout(tmp_path):
     from voice_ltl.llm import ClaudeCLI, CodexCLI
 
