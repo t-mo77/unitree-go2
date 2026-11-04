@@ -1,6 +1,6 @@
 # docker compose --profile fake up        : app (Web + brain) and the fake Go2
 # docker compose run --rm --no-deps app <cmd> : run a command in /work (= this folder)
-# docker compose --profile gazebo up      : Go2 in Gazebo Harmonic (screen: http://localhost:6080/vnc.html)
+# docker compose --profile gazebo up gazebo : Go2 in Gazebo Harmonic (screen: http://localhost:6080/vnc.html)
 #   the gazebo image is ROS 2 Jazzy (Ubuntu 24.04); app stays on Humble and talks to it over DDS
 x-go2: &go2
   build:
@@ -48,7 +48,8 @@ services:
       - ./:/work
     ports:
       - "127.0.0.1:6080:6080"
-    command: ros2 launch gz_quadruped_playground gazebo.launch.py pkg_description:=go2_description
+    # Go2 + unitree_guide controller + our bridge (gazebo/gazebo_bridge.py); LiDAR only, no rviz2
+    command: ros2 launch /work/gazebo/launch/go2_gazebo.launch.py
 
 volumes:
   hf-cache:

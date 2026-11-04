@@ -1,0 +1,60 @@
+unitree_guide_controller: 状態推定（Estimator）の脚の測定値を世界の座標に直す
+
+legubiao/quadruped_ros2_control 5434c5810d1a7fe223bcfd04550e9d3bfdd4b458 に当てる
+（docker/Dockerfile.gazebo がビルドの前に git apply する）。
+
+直すこと：Estimator のカルマンフィルタの状態（胴の位置・速度、足の位置）は世界（IMU の基準）の
+座標なのに、脚の運動学の測定値（足の位置 p_b と速度 J*qd）を胴の座標のまま入れている。
+元の unitree_guide は FrameType::GLOBAL で R*p_b と R*(J*qd + w x p_b) を入れる。
+このままだと推定した胴の位置・速度は「向き ψ だけ回った」値になり、ψ = 0 では正しいが、
+回った後は StateTrotting の位置・速度の PD と足の置き場所が ψ だけ回ってしまう。
+|ψ| が約 59 度を越えると不安定になり、その場で 90 度回った後に転ぶ（docs/reference/gazebo_turn_fix.md）。
+getFeetVel()（振り出す足の PD に使う）も同じく胴の座標の J*qd に世界の速度を足していたので直す。
+diff --git a/controllers/unitree_guide_controller/include/unitree_guide_controller/control/Estimator.h b/controllers/unitree_guide_controller/include/unitree_guide_controller/control/Estimator.h
+index 60112df..20a2049 100644
+--- a/controllers/unitree_guide_controller/include/unitree_guide_controller/control/Estimator.h
++++ b/controllers/unitree_guide_controller/include/unitree_guide_controller/control/Estimator.h
+@@ -66,7 +66,9 @@ public:
+         const std::vector<KDL::Vector> feet_vel = robot_model_->getFeet2BVelocities();
+         Vec34 result;
+         for (int i(0); i < 4; ++i) {
+-            result.col(i) = Vec3(feet_vel[i].data) + getVelocity();
++            // world-frame foot velocity: v_body + R * (J*qd + w_b x p_b)
++            const Vec3 p_b(foot_poses_[i].p.data);
++            result.col(i) = rotation_ * (Vec3(feet_vel[i].data) + gyro_.cross(p_b)) + getVelocity();
+         }
+         return result;
+     }
+diff --git a/controllers/unitree_guide_controller/src/control/Estimator.cpp b/controllers/unitree_guide_controller/src/control/Estimator.cpp
+index 8c9ffea..8c65d00 100644
+--- a/controllers/unitree_guide_controller/src/control/Estimator.cpp
++++ b/controllers/unitree_guide_controller/src/control/Estimator.cpp
+@@ -177,8 +177,6 @@ void Estimator::update() {
+             R(24 + i, 24 + i) =
+                     (1 + (1 - trust) * large_variance_) * RInit_(24 + i, 24 + i);
+         }
+-        feet_pos_body_.segment(3 * i, 3) = Vec3(foot_poses_[i].p.data);
+-        feet_vel_body_.segment(3 * i, 3) = Vec3(foot_vels_[i].data);
+     }
+ 
+     Quat quat;
+@@ -196,6 +194,19 @@ void Estimator::update() {
+             ctrl_interfaces_.imu_state_interface_[8].get().get_optional().value(),
+             ctrl_interfaces_.imu_state_interface_[9].get().get_optional().value();
+ 
++    // x_hat_ (body position/velocity, foot positions) lives in the world (IMU reference) frame,
++    // so the leg-kinematics measurements must be expressed in that frame too, as in the
++    // original unitree_guide (getFeet2BPositions/getFeet2BVelocities with FrameType::GLOBAL):
++    //   p_rel = R * p_b,   v_rel = R * (J*qd + w_b x p_b)
++    // Feeding the body-frame vectors makes the estimate a heading-frame odometry: right at yaw 0,
++    // rotated by -yaw after the robot has turned.
++    for (int i(0); i < 4; ++i) {
++        const Vec3 p_b(foot_poses_[i].p.data);
++        const Vec3 v_b(foot_vels_[i].data);
++        feet_pos_body_.segment(3 * i, 3) = rotation_ * p_b;
++        feet_vel_body_.segment(3 * i, 3) = rotation_ * (v_b + skew(gyro_) * p_b);
++    }
++
+     u_ = rotation_ * acceleration_ + g_;
+     x_hat_ = A * x_hat_ + B * u_;
+     y_hat_ = C * x_hat_;

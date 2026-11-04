@@ -346,3 +346,92 @@ world の名前は `empty`。3 つとも確かめた（どれも 1 秒以内に�
 4. **止めた後の揺れ。** B で、前進を止めた 2 秒後に roll が 0.241 rad になったことが 1 回あった。転んではいない。
 5. 起動は `docker compose --profile gazebo up gazebo`。`up` だけだと `app` も起動する（`app` の `python3 -m voice_ltl.server` は、そのモジュールができるまで失敗して止まる）。
 6. 位置の真値は Gazebo のもの（odometry）を使い、`/sportmodestate` の `position` に入れる。
+
+## Task 16 の launch での値
+
+Task 16 の `gazebo/launch/go2_gazebo.launch.py`（`compose.yaml` の `gazebo` の command）で、上の 4 つの目安を測り直した（2026-11-04）。
+
+- 構成：Gazebo の画面あり、センサーは LiDAR だけ（`go2_sensors.urdf.xacro` の `gpu_lidar`。水平 360 度 × 垂直 −30〜+30 度、360 × 16 本、10 Hz）、カメラなし、rviz2 なし、OdometryPublisher（50 Hz）、橋渡し（`gazebo/gazebo_bridge.py`）。
+- 指令は 15b と違い、**橋渡しの窓口（`/api/sport/request`）から**送った：StandUp → 実際の 3 秒 → BalanceStand → シミュレーションで StandUp から 6 秒たつまで待つ → Move（`x` 0.3、10 Hz）を実際の 5 秒 → StopMove。
+- 位置と傾きは `/sportmodestate`（中身は OdometryPublisher の本当の位置）。real-time factor は `/clock` の進み ÷ 実際の時間。
+- 測った python は一時的なもので、コミットしていない。
+
+| 合格の目安 | 1 回目 | 2 回目（コミットした橋渡し） |
+|---|---|---|
+| 立った後の胴体の高さが、立つ前より 0.1 m 以上高い | **合格**：0.068 → 0.332 m（+0.264 m） | **合格**：0.068 → 0.330 m（+0.262 m） |
+| 5 秒の前進で 0.3 m 以上進む | **合格**：1.402 m（シミュレーション 3.83 秒） | **合格**：1.398 m（シミュレーション 3.89 秒） |
+| 前進の間、roll と pitch の絶対値が 0.5 rad 未満 | **合格**：最大 0.063 / 0.031 rad | **合格**：最大 0.060 / 0.023 rad |
+| real-time factor が 0.3 以上 | **合格**：止まっている 10 秒 0.773、前進の間 0.753 | **合格**：起動の直後 10 秒 0.642、前進の間 0.766 |
+
+- gazebo のコンテナの CPU：397〜413 %。1 回目は他のコンテナ無し、2 回目は別の担当の `go2-app-1`・`go2-sim-1`（どちらも 10 % 未満）が動いていた。
+- 1 回目は橋渡しの時計がシミュレーションの時間だけだったころ。体の動きの値は同じ。
+- noVNC の画面をブラウザで開いている間（Playwright で 1 秒ごとにスクリーンショット）は、Gazebo の画面の表示で 58〜85 %。
+
+### 窓口の確認（Humble ↔ Jazzy）
+
+- gazebo の中：`ros2 topic list` に `/api/sport/request`・`/sportmodestate`・`/utlidar/cloud`。起動直後の `error_code` は 1001。`/utlidar/cloud` は 7.5 Hz。
+- app のコンテナ（Humble）から：`ros2 topic info` で `/api/sport/request` の受け手 1、`/sportmodestate`・`/utlidar/cloud`・`/sim/world` の出し手 1、`/sim/obstacles` の受け手 1。`ros2 topic echo --once /sportmodestate --field error_code` で値が読め、`/utlidar/cloud` は 7.96 Hz。
+- gazebo の中の `/control_input`：出し手 1（橋渡し）、受け手 1（unitree_guide controller）。
+- 相手のノードの名前は使っていない（数だけ）。
+
+### LiDAR と箱
+
+- `/utlidar/cloud`：1 回の走査 5760 本のうち、当たらなかった本と自分の体（中心から前後 0.40 m・左右 0.20 m・高さ −0.35〜0.15 m）の点を除いて約 2030 点。
+- `perception.py` の前方の箱（x > 0、|y| ≤ 0.3、−0.25 ≤ z ≤ 0.40）の中の点：
+  - 立っているとき：3 点（9.3〜10 m 先の床。止まる 0.5 m・動き出す 0.7 m には関係しない）。
+  - 1.2 m 前に箱（`/sim/obstacles` の front）：126 点・133 点、いちばん近い点 1.062 m・1.039 m（箱の面は 1.05 m）。箱を消すと 3 点に戻る。
+  - **伏せている（脱力）とき：410 点、いちばん近い点 0.20 m。** 胴体の高さが 0.068 m なので、床が機体の座標で z ≈ −0.07 になり `z_min`（−0.25）より上に入る（伏せて開いた脚の点も入る）。伏せている間は前方「あり」と判定される。立つと消える。
+    → Task 16fix（Ruling R23）で、橋渡しが世界の z < 0.05 m の点も除くようにした。伏せていても前方は「なし」（`gazebo_turn_fix.md`）。
+- 箱：`/world/empty/create` で 0.3 × 0.3 m・高さ 0.4 m（にせ Go2 の `BOX_HEIGHT` と同じ）の動かない箱を出す。`/sim/world` は `{"boxes": [[2.567, -0.058, 0.3]], "collided": false}` の形。
+  - 箱に向かって歩かせると、中心から箱の面までが 0.33 m になったところで箱に止められ、`collided` が true になった。`clear` で消え、`{"boxes": [], "collided": false}`。
+
+### demo_script.py（Step 6）と、その場の旋回で転ぶこと
+
+`printf "\n" | timeout 120 python3 demo_script.py` は「立つ → 前進 0.5 m → 左に 90° → 挨拶 → 座る → 立ち上がる → 終わりました」まで止まらずに流れた（2 回）。橋渡しのログ（1 回目、実際の時間）：
+
+```text
+31.10 受信: StandUp 1004 → command 2（31.12）、command 2（31.37）→ 33.12 error_code 1001 → 1002
+34.10 受信: BalanceStand 1002 → command 4（34.12）→ 34.62 error_code 1002 → 1013
+35.12 command 4, ly 0.75（前進）→ 38.61 StopMove → command 4, 速度 0
+39.62 command 4, rx −1.00（左回り。0.8 rad/s は上限 0.5 rad/s に切られる）→ 43.75 StopMove
+44.76 Hello 1016（Gazebo では再現なし）
+49.77 Sit 1009（Gazebo では伏せで代用）→ command 2、command 2（50.02）→ 51.77 error_code 1013 → 1007
+54.77 RiseSit 1010 → command 2（54.82）→ 56.82 error_code 1007 → 1013 → command 4（57.17）
+```
+
+**ただし、その場で 90 度回った後、Go2 は数秒で横に倒れる（2 回とも）。** 「挨拶」の間に倒れ、「座る」「立ち上がる」は倒れたまま送られた（`gazebo_demo_turn_fall.png`）。
+橋渡しをはさまずに `/control_input` を直接送っても同じなので、unitree_guide controller の、この Gazebo の上でのその場の旋回の問題。試したこと（どれも 90 度回った後、3〜4 秒以内に roll が 3 rad 前後になって倒れた。前進だけなら倒れない）：
+
+| 試したこと | 回っている間の最大 \|roll\| |
+|---|---|
+| 窓口から `z` 0.8（rx −1、0.5 rad/s）、画面あり | 0.37〜0.69 rad |
+| 窓口から `z` 0.4・0.35（0.4・0.35 rad/s） | 0.74・0.69 rad |
+| Gazebo の目標の速さを 0.5 に固定（`set_physics`）、`z` 0.8 | 0.17 rad（止めた後 0.80 rad、0.8 m 流れた） |
+| 画面なし（`gz sim -s`、real-time factor 約 0.95）、`z` 0.8 | 0.55 rad |
+| `/control_input` を直接：rx −1／1 秒かけて増減／前へ `ly` 0.25 を足す／回った直後に fixed stand（command 2）に入れる | 0.77／1.13／0.32／0.41 rad |
+| 足の摩擦を 0.6 → 1.0（一時的に xacro を変更） | 1.22 rad |
+| upstream の `robot.xacro` そのまま（LiDAR・odometry を足さない） | 0.31 rad（その後倒れた） |
+
+- IMU（`/imu_sensor_broadcaster/imu`）の yaw と角速度は、Gazebo の本当の値と符号も大きさも合っていた。
+- 0.5 rad/s を指令しても、実際に回る速さは約 0.24 rad/s（90 度にシミュレーションで 6.2〜6.7 秒）。controller の目標の向き（`yaw_cmd_`）は指令の速さで積分され、実際の向きとの差は切られない（位置の目標 `pcd_` は ±0.05 m に切られる）。止めた後もこの差を戻そうとして回り続け、倒れる様子だった（demo の 1 回目の画面では、StopMove の 2〜3 秒後もまだ向きが変わり続け、その 2 秒後に倒れていた）。
+- Task 16 では直していない（controller の中の話）。Task 17 の「旋回」の確認はこのままでは通らない。
+- **→ Task 16fix で直した**（`gazebo_turn_fix.md`）。原因は `yaw_cmd_` ではなく、状態推定（Estimator）が脚の測定値を胴の座標のまま世界の座標のカルマンフィルタに入れていたこと。`docker/patches/` の 2 つのパッチで、その場の ±90 度が 3/3 になった。回る速さは、turn_check.py でシミュレーションの時間で測ると 0.44〜0.48 rad/s だった（上の「約 0.24 rad/s」とは違う）。
+
+### 橋渡しの時計（Task 16 で決めたこと）
+
+- アプリ（`demo_script.py`・executor）は実際の時間で待つ（例：StandUp の 3 秒後に BalanceStand）。一方、controller の伏せ・立つの 1.8 秒はシミュレーションの時間。
+- 窓口の時間（error_code が変わるまでの 2.0 秒・0.5 秒、ジェスチャーの 3.0 秒、Move の 1.0 秒の期限）をシミュレーションの時間で数えると、real-time factor が 0.67 より低いとき、StandUp の 3 秒後の BalanceStand が「動作の途中」で捨てられる（noVNC を開いていると 0.6 前後まで落ちる）。
+- そこで、窓口の時間は実際の時間で数え、controller へ command を送る間隔（前の command が効くまで待つ）はシミュレーションの時間で数える。error_code が先に変わり、体は後から追いつく（command は controller の中で待つ）。
+- 例：上のログで、StandUp から 1002 までは実際の 2.0 秒、BalanceStand の 4 が効いて歩くに入るのは、2 通目の 2 が効いて（伏せの 1.8 秒の後）、さらに立つの 1.8 秒の後。
+
+### 画面
+
+`http://localhost:6080/vnc.html?autoconnect=1` を Playwright で撮った（launch がカメラを Go2 の右前 (1.3, −1.1, 0.7) に向ける）。
+
+| ファイル | 中身 |
+|---|---|
+| `gazebo_demo_stand.png` | demo_script の「立つ」の後（歩き出す前） |
+| `gazebo_demo_forward.png` | demo_script の「前進 0.5 m」の後 |
+| `gazebo_demo_turn_fall.png` | demo_script の「左に 90°」の後、倒れたところ（Task 16fix で直す前） |
+| `gazebo_demo_turn.png` | Task 16fix の後、demo_script の「左に 90°」の後（「挨拶」の 1 秒後）。立っている |
+| `gazebo_demo_sit.png` | Task 16fix の後、demo_script の「左に 90°」→「挨拶」→「座る」の 3.7 秒後。伏せ（座るの代用） |

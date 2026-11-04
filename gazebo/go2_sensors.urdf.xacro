@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo Harmonic に出す Go2。go2_description の robot.xacro（GAZEBO=true）に、橋渡しが使う 2 つを足す。
+  - LiDAR（gpu_lidar）：base から x=0.28、z=0.10、傾きなし（perception.py の既定 lidar_x・lidar_z・lidar_pitch と同じ）。
+    水平 360 度・垂直 −30〜+30 度、10 Hz、0.05〜10 m。Gazebo のトピック gazebo/lidar/points（frame utlidar_lidar）。
+    橋渡しが自分の体の点を除いて /utlidar/cloud に出し直す。
+  - OdometryPublisher：base の本当の位置と向き（50 Hz、/model/robot/odometry）。/sportmodestate の position・rpy にする。
+  D435 と前のカメラは付けない（EXTERNAL_SENSORS は false のまま）。カメラがあると RTF が 0.13 まで落ちる
+  （docs/reference/gazebo_feasibility_jazzy.md）。
+-->
+<robot name="go2" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- robot.xacro より先に決めた値が使われる -->
+  <xacro:arg name="GAZEBO" default="true"/>
+  <xacro:include filename="$(find go2_description)/xacro/robot.xacro"/>
+
+  <joint name="utlidar_joint" type="fixed">
+    <parent link="base"/>
+    <child link="utlidar_lidar"/>
+    <origin xyz="0.28 0 0.10" rpy="0 0 0"/>
+  </joint>
+
+  <link name="utlidar_lidar">
+  </link>
+
+  <gazebo reference="utlidar_lidar">
+    <sensor name="utlidar" type="gpu_lidar">
+      <topic>gazebo/lidar</topic>
+      <update_rate>10</update_rate>
+      <gz_frame_id>utlidar_lidar</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <!-- 1 度ごと。−180 度と +180 度が重ならないように、最後は 179 度 -->
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.141593</min_angle>
+            <max_angle>3.124139</max_angle>
+          </horizontal>
+          <vertical>
+            <!-- 4 度ごと -->
+            <samples>16</samples>
+            <resolution>1</resolution>
+            <min_angle>-0.523599</min_angle>
+            <max_angle>0.523599</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.05</min>
+          <max>10.0</max>
+          <resolution>0.01</resolution>
+        </range>
+      </lidar>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+    </sensor>
+  </gazebo>
+
+  <gazebo>
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>base</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>3</dimensions>
+    </plugin>
+  </gazebo>
+</robot>
