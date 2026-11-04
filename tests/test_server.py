@@ -515,7 +515,8 @@ needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 # app.js runs in a vm context with stand-ins for the browser: `any` answers every property
 # and call with itself (so drawing and listeners do nothing); getElementById keeps what the
 # page writes to an element; fetch is recorded in `sent`; MediaRecorder hands over one chunk
-# of Recorder.size bytes when it stops. Timers never fire.
+# of Recorder.size bytes when it stops. Timers never fire. replaceChildren keeps the children
+# in `kids` (created elements keep their className and textContent).
 HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const [appJs, testJs] = process.argv.slice(1);
@@ -524,7 +525,8 @@ const any = new Proxy(function () {}, {
     : k === "then" ? undefined : any,
   set: () => true, apply: () => any, construct: () => any,
 });
-const element = () => new Proxy({ dataset: {}, hidden: false, textContent: "" }, {
+const element = () => new Proxy({ dataset: {}, hidden: false, textContent: "", kids: [],
+    replaceChildren(...k) { this.kids = k; } }, {
   get: (t, k) => (k in t ? t[k] : any), set: (t, k, v) => { t[k] = v; return true; },
 });
 const byId = {}, sent = [];
@@ -634,3 +636,33 @@ def test_page_does_not_send_a_too_short_recording(tmp_path, status):
         assert r["transcript"] == "「立って挨拶して」"
         assert r["status"] == {"idle": "指示を待っています", "thinking": "考えています",
                                "executing": "実行中"}[status]
+
+
+@needs_node
+def test_page_shows_substitutions_only_with_a_formula(tmp_path):
+    subs = [{"said": "走って", "as": "前へ歩く（0.5 m）"}, {"said": "45度", "as": "左へ 90 度（1 回）"}]
+    with_formula = page_snapshot(tmp_path, formula="F moved_forward", substitutions=subs)
+    without = page_snapshot(tmp_path, formula=None, substitutions=subs)
+    none = page_snapshot(tmp_path, formula="F hello", substitutions=[])
+    r = run_page("[with_formula, without, none].map((s) => { renderLogic(s); const b = byId['substitutions'];"
+                 " return [b.kids.map((k) => [k.className, k.textContent, k.innerHTML === undefined || typeof k.innerHTML === 'function']),"
+                 " byId['substitutions-box'].hidden]; })",
+                 with_formula=with_formula, without=without, none=none)
+    assert r[0] == [[["substitution", "「走って」→ 前へ歩く（0.5 m）", True],
+                     ["substitution", "「45度」→ 左へ 90 度（1 回）", True]], False]
+    assert r[1] == [[], True] and r[2] == [[], True]
+
+
+@needs_node
+def test_page_redraws_when_only_the_substitutions_change(tmp_path):
+    a = page_snapshot(tmp_path, formula="F moved_forward", substitutions=[{"said": "走って", "as": "前へ歩く"}])
+    b = {**a, "substitutions": [{"said": "急いで進んで", "as": "前へ歩く"}]}
+    r = run_page("render(a); const first = byId['substitutions'].kids.map((k) => k.textContent);"
+                 " render(b); [first, byId['substitutions'].kids.map((k) => k.textContent)]", a=a, b=b)
+    assert r == [["「走って」→ 前へ歩く"], ["「急いで進んで」→ 前へ歩く"]]
+
+
+def test_page_has_the_substitutions_box(tmp_path):
+    c, _ = make_client(tmp_path)
+    html = c.get("/").text
+    assert 'id="substitutions-box"' in html and 'id="substitutions"' in html and "こう受け取りました" in html

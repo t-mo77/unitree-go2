@@ -446,6 +446,17 @@ code { font-family: var(--mono); }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.substitutions-box { display: flex; flex-direction: column; gap: 8px; }
+.substitutions { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.substitution {
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
 .verdict { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--ok); }
 .verdict[data-tone="fail"] { color: var(--muted); }
 .verdict svg { width: 14px; height: 14px; }

@@ -125,6 +125,17 @@ def _redact(text: str | None) -> str | None:
                      for line in text.split("\n"))
 
 
+MAX_SUBSTITUTION_LEN = 60
+
+
+def _shown_substitutions(tr: Translation) -> list[dict[str, str]]:
+    """tr.substitutions for the page and the log: secrets hidden first, then each part clipped."""
+    def show(text: str) -> str:
+        text = _redact(text)
+        return text if len(text) <= MAX_SUBSTITUTION_LEN else text[:MAX_SUBSTITUTION_LEN] + "…"
+    return [{"said": show(s["said"]), "as": show(s["as"])} for s in tr.substitutions]
+
+
 def _redacted(value):
     """_redact() on a string, and on each string of a list."""
     if isinstance(value, str):
@@ -593,6 +604,9 @@ class Session:
     def _show_translation(self, tr: Translation | None) -> None:
         if tr is not None and tr is not self._translation and tr.formula:
             self._note(f"式: {tr.formula}", f"式：{tr.formula}")
+            if tr.substitutions:
+                read_as = "、".join(f"「{s['said']}」→ {s['as']}" for s in _shown_substitutions(tr))
+                self._note(f"置き換え: {read_as}", f"こう受け取りました：{read_as}")
         self._translation = tr
 
     def _start(self, outcome: _Outcome) -> None:
@@ -922,6 +936,7 @@ class Session:
                              for a in tr.attempts] if tr else [],
                 "formula": _redact(tr.formula) if tr else None,
                 "unsupported": _redacted(list(tr.unsupported)) if tr else [],
+                "substitutions": _shown_substitutions(tr) if tr else [],
                 "message": _redact(self._message),
                 "plan": list(self._plan),
                 "current": self._action,

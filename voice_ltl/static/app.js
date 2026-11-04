@@ -408,10 +408,18 @@ function attemptOk(a) {
   return a.formula !== null && a.unsupported.length === 0 && a.errors.length === 0;
 }
 
+// What the LLM read as a nearby vocabulary action or number (design §7.4.1): 「走って」→ 前へ歩く（0.5 m）
+function substitutionLines(s) {
+  return s.formula ? (s.substitutions ?? []).map((x) => `「${x.said}」→ ${x.as}`) : [];
+}
+
 function renderLogic(s) {
   const attempts = s.attempts;
   const llm = LLM_JA[s.llm_backend] ?? "LLM";
   setText("formula", s.formula ?? "—");
+  const lines = substitutionLines(s);
+  $("substitutions-box").hidden = lines.length === 0;
+  $("substitutions").replaceChildren(...lines.map((t) => el("li", "substitution", t)));
   const verdict = $("verdict");
   verdict.hidden = attempts.length === 0;
   if (s.formula && attempts.length) {
@@ -673,7 +681,7 @@ function render(s) {
   $("box-buttons").hidden = !("world" in s);  // the server sends the world only when simulating
 
   renderInstruction(s);
-  if (changed("logic", [s.attempts, s.formula, s.llm_backend])) renderLogic(s);
+  if (changed("logic", [s.attempts, s.formula, s.llm_backend, s.substitutions])) renderLogic(s);
   if (changed("plan", s.steps)) renderPlan(s.steps);
   renderNotice(noticeFor(s));
   if (changed("log", s.log)) renderLog("log", s.log);

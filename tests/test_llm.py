@@ -26,7 +26,7 @@ SCHEMA = {
                    "unsupported": {"type": "array", "items": {"type": "string"}}},
     "required": ["formula", "unsupported"],
 }
-GOOD = {"formula": "F hello", "unsupported": []}
+GOOD = {"formula": "F hello", "unsupported": [], "substitutions": []}
 
 
 def fake_run(stdout="", returncode=0, stderr=""):
@@ -255,3 +255,21 @@ def test_child_env_is_read_when_called(monkeypatch):
     llm("p", SCHEMA)
     env = calls[0][1]["env"]
     assert "OPENAI_API_KEY" not in env and env["GO2_TEST_MARK"] == "1"
+
+
+@pytest.mark.parametrize("reply", [
+    {"formula": "F hello", "unsupported": []},                                   # no substitutions
+    {"formula": "F hello", "unsupported": [], "substitutions": None},
+    {"formula": "F hello", "unsupported": [], "substitutions": [{"said": "走って"}]},
+])
+def test_a_reply_without_well_formed_substitutions_is_unreadable(reply):
+    # design §7.4.1: all three keys are required, so a replacement is never acted on unseen
+    from voice_ltl.prompt import SCHEMA as PROMPT_SCHEMA
+    for stdout in (json.dumps({"is_error": False, "structured_output": reply}),
+                   json.dumps({"is_error": False, "result": json.dumps(reply)})):
+        run, _ = fake_run(stdout)
+        with pytest.raises(LLMError):
+            ClaudeCLI(runner=run)("p", PROMPT_SCHEMA)
+    good = {**reply, "substitutions": [{"said": "走って", "as": "前へ歩く"}]}
+    run, _ = fake_run(json.dumps({"is_error": False, "structured_output": good}))
+    assert ClaudeCLI(runner=run)("p", PROMPT_SCHEMA) == good

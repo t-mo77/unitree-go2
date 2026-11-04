@@ -704,3 +704,22 @@ def test_an_unknown_posture_longer_than_1s_aborts(tmp_path):
     snap = sess.snapshot()
     assert snap["status"] == "error" and snap["message"] == "姿勢が計画と違います（計画: 立ち / 実際: 不明）"
     assert link.sim.accepted == sent + [STOP_MOVE] and HELLO not in link.sim.accepted
+
+
+def test_substitutions_reach_the_snapshot_and_the_log(tmp_path):
+    # design §7.4.1 (2026-11-05): what was read as a nearby action is shown, then it runs
+    sess, link = make(tmp_path, FakeLLM([{"formula": "F sitting", "unsupported": [],
+                                          "substitutions": [{"said": "しゃがんで", "as": "おすわり"}]}]))
+    sess.submit_text("しゃがんで"); drive(sess, link, 20)
+    snap = sess.snapshot()
+    assert snap["substitutions"] == [{"said": "しゃがんで", "as": "おすわり"}]
+    assert "こう受け取りました：「しゃがんで」→ おすわり" in snap["log"]
+    assert SIT in link.sim.accepted
+
+
+def test_no_substitutions_before_any_instruction_or_without_them(tmp_path):
+    sess, link = make(tmp_path, FakeLLM([{"formula": "F hello", "unsupported": []}]))
+    assert sess.snapshot()["substitutions"] == []
+    sess.submit_text("挨拶して"); drive(sess, link, 3)
+    snap = sess.snapshot()
+    assert snap["substitutions"] == [] and not any("こう受け取りました" in line for line in snap["log"])

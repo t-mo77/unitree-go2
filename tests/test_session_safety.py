@@ -96,7 +96,8 @@ class LLMByInstruction:
         self.instructions = []
 
     def __call__(self, prompt, schema):
-        instruction = prompt.split("## Query\n指示: ", 1)[1].split("\n", 1)[0]
+        # the prompt gives the instruction as one JSON string (design §7.4.1)
+        instruction = json.loads(prompt.split("## Query\n指示: ", 1)[1].split("\n", 1)[0])
         self.instructions.append(instruction)
         return {"formula": self.table[instruction], "unsupported": []}
 
@@ -484,3 +485,20 @@ def test_a_short_sensor_dropout_resumes_the_move(tmp_path):
     snap = sess.snapshot()
     assert snap["status"] == "done", snap["message"]
     assert link.sim.x == pytest.approx(1.0, abs=0.05)
+
+
+def test_secret_like_substitutions_are_hidden_before_they_are_clipped(tmp_path):
+    # the secret starts near the end of a long phrase: clipping first would leave a piece of it
+    said = "走って" + "あ" * 37 + FAKE_TOKEN
+    llm = FakeLLM([{"formula": "F moved_forward", "unsupported": [],
+                    "substitutions": [{"said": said, "as": f"前へ歩く {FAKE_KEY}"}]}])
+    sess, link = make(tmp_path, llm)
+    sess.submit_text("走って"); drive(sess, link, 3)
+    snap = sess.snapshot()
+    blob = json.dumps(snap, ensure_ascii=False)
+    assert FAKE_TOKEN[:9] not in blob and "Q7xR2" not in blob and "sk-" not in blob
+    sub = snap["substitutions"][0]
+    assert sub["said"].startswith("走って") and MSG_REDACTED in sub["said"]
+    assert sub["as"] == MSG_REDACTED       # a line that looks like a key is hidden whole
+    assert any(line.startswith("こう受け取りました：「走って") for line in snap["log"])
+    assert len(sub["said"]) <= session_mod.MAX_SUBSTITUTION_LEN + 1
