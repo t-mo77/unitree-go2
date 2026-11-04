@@ -6,13 +6,15 @@
   （control_input_msgs/Inputs）に変えて送る。
 - Gazebo の本当の位置（/model/robot/odometry、nav_msgs/Odometry）から /sportmodestate
   （unitree_go/SportModeState）を作る。position・imu_state.rpy・error_code などを入れる。
-- Gazebo の LiDAR の点群（/gazebo/lidar/points）から自分の体の点を除き、/utlidar/cloud
-  （frame utlidar_lidar）に出し直す。
+- Gazebo の LiDAR の点群（/gazebo/lidar/points）から自分の体の点と地面の点（世界の z < 0.05 m）を除き、
+  /utlidar/cloud（frame utlidar_lidar）に出し直す。
 - /sim/obstacles（std_msgs/String、{"cmd": "front" | "back" | "clear"}）で Gazebo に箱を出し入れし
   （/world/empty/create・/world/empty/remove）、/sim/world（{"boxes": [[x, y, size], ...], "collided": bool}）を出す。
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
 controller へ command を送る間隔はシミュレーションの時間（/clock）で数える（bridge_core.py の説明）。
+controller が本当に「歩く」に入った時刻は、controller が /rosout に出す "Switched from fixed stand to
+trotting" で知り、Move の速度はその 0.5 秒後（シミュレーションの時間）から入れる（Ruling R22）。
 位置はいつも Gazebo の本当の位置なので、距離は Gazebo の速さ（RTF）によらない。
 Humble 側の相手のノードの名前は分からない（Gid の長さの違い）ので使わない。
 
@@ -29,11 +31,12 @@ import numpy as np
 import rclpy
 from control_input_msgs.msg import Inputs
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import Log
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from ros_gz_interfaces.msg import Entity
 from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
 from sensor_msgs.msg import PointCloud2
@@ -44,7 +47,7 @@ from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE
 from gazebo.bridge_core import (BoxWorld, BridgeCore, ControllerInput, api_name, box_sdf,
-                                drop_self_points)
+                                drop_ground_and_self_points)
 from sim.sim_core import BOX_HEIGHT
 
 # 実機と同じトピック
@@ -61,6 +64,8 @@ MODEL_NAME = "robot"
 CONTROL_TOPIC = "/control_input"
 ODOM_TOPIC = f"/model/{MODEL_NAME}/odometry"
 RAW_CLOUD_TOPIC = "/gazebo/lidar/points"
+ROSOUT_TOPIC = "/rosout"
+TROT_SWITCH_LOG = "Switched from fixed stand to trotting"   # unitree_guide controller のログ
 CREATE_SERVICE = f"/world/{WORLD_NAME}/create"
 REMOVE_SERVICE = f"/world/{WORLD_NAME}/remove"
 
@@ -82,7 +87,7 @@ class GazeboBridge(Node):
     def __init__(self):
         super().__init__("go2_gazebo_bridge",
                          parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
-        self.core = BridgeCore(*self._now())
+        self.core = BridgeCore(*self._now(), reports_trot_entry=True)
         self.boxes = BoxWorld()
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)
@@ -98,6 +103,9 @@ class GazeboBridge(Node):
         self.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, RAW_CLOUD_TOPIC, self._on_cloud, qos_profile_sensor_data)
         self.create_subscription(String, OBSTACLES_TOPIC, self._on_obstacles, 10)
+        # controller のログ。過去の分は要らないので volatile で受ける
+        self.create_subscription(Log, ROSOUT_TOPIC, self._on_log, QoSProfile(
+            depth=100, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE))
         self._create = self.create_client(SpawnEntity, CREATE_SERVICE)
         self._remove = self.create_client(DeleteEntity, REMOVE_SERVICE)
         wall = Clock(clock_type=ClockType.STEADY_TIME)   # Gazebo が止まっても回る
@@ -128,6 +136,10 @@ class GazeboBridge(Node):
         if self.core.error_code != self._last_code:
             self.get_logger().info(f"error_code {self._last_code} → {self.core.error_code}")
             self._last_code = self.core.error_code
+
+    def _on_log(self, msg: Log) -> None:
+        if msg.msg.startswith(TROT_SWITCH_LOG):
+            self.core.trot_entered(self._now()[1])
 
     def _send(self, i: ControllerInput) -> None:
         self._control_pub.publish(Inputs(command=i.command, lx=float(i.lx), ly=float(i.ly),
@@ -164,8 +176,11 @@ class GazeboBridge(Node):
 
     # ---------- LiDAR ----------
     def _on_cloud(self, msg: PointCloud2) -> None:
+        if self._pose is None:   # 地面の点を除くには base の高さと向きが要る（odometry はすぐ届く）
+            return
         pts = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"))
-        kept = np.ascontiguousarray(drop_self_points(pts), dtype=np.float32)
+        kept = np.ascontiguousarray(
+            drop_ground_and_self_points(pts, self._pose[2], self._quat), dtype=np.float32)
         header = Header(frame_id=LIDAR_FRAME, stamp=msg.header.stamp)
         self._cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, kept))
 

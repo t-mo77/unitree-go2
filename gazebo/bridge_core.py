@@ -11,11 +11,13 @@
 
 controller の状態の番号・切り替え・速度の倍率は docs/reference/gazebo_feasibility_jazzy.md の表のとおり。
 - command は次のメッセージが来るまで controller に残り、新しい状態に入ったときに 0 に戻る。
-- 伏せ・立つは、入って 1.8 秒（シミュレーションの時間）たつまで次の状態へ行かない。
+- 伏せ・立つは、入って 1.8 秒（シミュレーションの時間。Gazebo で測ると 1.9 秒前後）たつまで次の状態へ行かない。
   その前に来た command は残っていて、1.8 秒たった時点で効く。だから、前の command が効く前に
   次の command を送ると上書きして消してしまう。前の command が効く時刻を見積もってから送る。
 - Gazebo が遅いと、error_code が先に変わり、体は後から追いつく（command は controller の中で待つ）。
+  だから Move の速度は、controller が歩くに入って TROT_WAIT_S 秒たつまで 0 のまま待たせる（Ruling R22）。
 - 今の状態を知らせるトピックは無いので、自分が送った command から controller の状態を持つ。
+  ただし「歩くに入った」ことだけは、橋渡しのノードが controller のログ（/rosout）で知らせる（trot_entered）。
 """
 
 import json
@@ -47,10 +49,14 @@ _ROUTE = {  # (今の状態, 行きたい状態) → 送る command の列
     (FIXED_STAND, FIXED_DOWN): (2,), (TROTTING, FIXED_DOWN): (2, 2),
     (FIXED_STAND, TROTTING): (4,), (TROTTING, TROTTING): (),
 }
-# 以下 3 つは sim_now の時計
+# 以下 5 つは sim_now の時計
 HOLD_S = {FIXED_DOWN: 1.8, FIXED_STAND: 1.8}   # 入ってからこの秒数は次の状態へ行かない
 SETTLE_S = 0.2   # 状態が切り替わってから次の command を送るまでの余裕（controller の 1 周期は 5 ms）
 RISE_WALK_S = 2.0  # RiseSit：「立つ」を送ってから「歩く」を送るまで
+TROT_WAIT_S = 0.5  # 歩くに入ってからこの秒数は、Move の速度を入れず 0 のまま待たせる（Ruling R22）。
+                   # 窓口の 1013 は体が歩くに入るより先に出るので、すぐ来た Move を入れると歩き出しでよろける
+TROT_REPORT_LATE_S = 1.0  # 歩くに入った知らせ（trot_entered）が来ないとき、見積もりよりこれだけ遅らせる。
+                          # 本当の伏せ・立つは 1.8 秒より長い（Gazebo で 1.9 秒前後）ので、見積もりは早めに出る
 
 # ---- 実機の窓口から見た時間（設計書 §9.1 の表。now の時計） ----
 STAND_S = 2.0      # StandUp・StandDown・Sit・RiseSit が終わるまで
@@ -69,6 +75,7 @@ LIDAR_IN_BODY = (0.28, 0.0, 0.10)   # base から見た LiDAR（go2_sensors.urdf
 SELF_HALF_X = 0.40                  # 機体の外形：中心から前後 0.40 m・左右 0.20 m・高さ −0.35〜0.15 m
 SELF_HALF_Y = 0.20
 SELF_Z = (-0.35, 0.15)
+GROUND_Z = 0.05                     # 世界の z がこれ未満の点は地面とみなして除く（Ruling R23）[m]
 BOX_DISTANCE = 1.2                  # 箱は Go2 の今の位置から前（後ろ）にこの距離 [m]
 
 _EPS = 1e-6
@@ -106,7 +113,10 @@ def move_input(x: float, y: float, z: float) -> ControllerInput:
 class BridgeCore:
     """指令を受けて、controller に送る入力と error_code を決める。"""
 
-    def __init__(self, now: float, sim_now: Optional[float] = None):
+    def __init__(self, now: float, sim_now: Optional[float] = None,
+                 reports_trot_entry: bool = False):
+        """reports_trot_entry：呼び出し側が controller の本当の「歩くに入った」を trot_entered で
+        知らせる（橋渡しのノードは /rosout で知る）。False なら、送った command からの見積もりで数える。"""
         sim_now = now if sim_now is None else sim_now
         self.error_code = 1001        # 起動直後は脱力（伏せ扱い）
         self.notes: List[str] = []
@@ -116,6 +126,9 @@ class BridgeCore:
         self._ctl_since = sim_now     # その状態に入る時刻（sim）
         self._next_cmd_t = sim_now    # 次の状態を変える command を送ってよい時刻（sim）
         self._vel = (0.0, 0.0, 0.0)   # 送った（送る予定の）(lx, ly, rx)
+        self._vel_sent = (0.0, 0.0, 0.0)   # 本当に送った最後の (lx, ly, rx)
+        self._reports_trot_entry = reports_trot_entry
+        self._trot_entered: Optional[float] = None   # 知らされた「歩くに入った」時刻（sim）
         self._move_until: Optional[float] = None
         self._busy_until = now
         self._done: Optional[Tuple[float, int]] = None   # (時刻, 終わったときの error_code)
@@ -179,9 +192,28 @@ class BridgeCore:
         """今送るべき controller への入力。無ければ None。"""
         sim = now if sim_now is None else sim_now
         self._advance(now, sim)
-        if self._queue and sim >= self._queue[0][0] - _EPS:
-            return self._queue.pop(0)[1]
-        return None
+        if not self._queue or sim < self._queue[0][0] - _EPS:
+            return None
+        _, i, velocity_only = self._queue[0]
+        if velocity_only:
+            if sim < self._walk_from() - _EPS:      # 速度は歩くに入って TROT_WAIT_S 秒たってから（R22）
+                return None
+            if self._reports_trot_entry and self._trot_entered is None:
+                self._note("controller が歩くに入ったことを /rosout で確かめられないので、見積もりで速度を入れます")
+        self._queue.pop(0)
+        self._vel_sent = (i.lx, i.ly, i.rx)
+        return i
+
+    def trot_entered(self, sim_now: float) -> None:
+        """controller が本当に「歩く」（trotting）に入った（橋渡しのノードが /rosout で知って呼ぶ）。"""
+        self._trot_entered = sim_now
+
+    def _walk_from(self) -> float:
+        """Move の速度を入れてよい時刻（sim）：歩くに入って TROT_WAIT_S 秒後（Ruling R22）。"""
+        if self._trot_entered is not None:
+            return self._trot_entered + TROT_WAIT_S
+        late = TROT_REPORT_LATE_S if self._reports_trot_entry else 0.0
+        return self._ctl_since + TROT_WAIT_S + late
 
     def _advance(self, now: float, sim: float) -> None:
         if self._done is not None and now >= self._done[0] - _EPS:
@@ -212,8 +244,11 @@ class BridgeCore:
         状態を変える入力は速度 0 で送る。"""
         self._drop_queued_velocity()
         self._vel = (0.0, 0.0, 0.0)
+        route = _ROUTE[(self._ctl, goal)]
+        if route:
+            self._trot_entered = None   # 前の「歩く」の知らせは、次に歩くに入るときには使わない
         t = max(not_before, self._next_cmd_t)
-        for cmd in _ROUTE[(self._ctl, goal)]:
+        for cmd in route:
             self._queue.append((t, ControllerInput(cmd), False))
             switch = max(t, self._ctl_since + HOLD_S.get(self._ctl, 0.0))
             self._ctl, self._ctl_since = _NEXT[(self._ctl, cmd)], switch
@@ -221,12 +256,17 @@ class BridgeCore:
         self._next_cmd_t = t
 
     def _set_velocity(self, vel: Tuple[float, float, float], sim: float) -> None:
-        """歩いている controller の速度を変える。command は TROT_CMD のまま送る
-        （まだ「立つ」の 1.8 秒の途中でも、残っている 4 を消さない）。"""
+        """歩いている controller の速度を変える。歩くに入って TROT_WAIT_S 秒たつまでは速度 0 のまま
+        待たせ、それから入れる（Ruling R22）。command は TROT_CMD のまま送る（残っている 4 を消さない）。"""
         if vel == self._vel or self._ctl != TROTTING:
             return
         self._drop_queued_velocity()
-        t = max([sim] + [q[0] for q in self._queue])   # 状態を変える command を追い越さない
+        # 待たせていた速度を捨てた後に controller に残る速度（状態を変える command は速度 0）
+        if vel == ((0.0, 0.0, 0.0) if self._queue else self._vel_sent):
+            self._vel = vel
+            return
+        # 状態を変える command を追い越さない。歩くに入る前には step が出さない（_walk_from）
+        t = max([sim] + [q[0] for q in self._queue])
         self._queue.append((t, ControllerInput(TROT_CMD, *vel), True))
         self._vel = vel
 
@@ -240,6 +280,19 @@ def drop_self_points(points_lidar: np.ndarray) -> np.ndarray:
     inside = ((np.abs(body[:, 0]) <= SELF_HALF_X) & (np.abs(body[:, 1]) <= SELF_HALF_Y)
               & (body[:, 2] >= SELF_Z[0]) & (body[:, 2] <= SELF_Z[1]))
     return p[~inside]
+
+
+def drop_ground_and_self_points(points_lidar: np.ndarray, base_z: float,
+                                base_quat: Tuple[float, float, float, float]) -> np.ndarray:
+    """/utlidar/cloud に出す点（LiDAR 座標、N×3）。drop_self_points の後、地面の点（世界の z が
+    GROUND_Z 未満）も除く（Ruling R23）。伏せていると LiDAR が地面に近く、地面の点が perception の
+    前方の箱に入って「障害物あり」になるため。base_z・base_quat (w, x, y, z) は Gazebo の本当の
+    base の高さと向き（傾いていても地面を地面として除く）。"""
+    p = drop_self_points(points_lidar)
+    w, x, y, z = base_quat
+    up_row = np.array([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)])  # 回転行列の 3 行目
+    world_z = base_z + (p + np.asarray(LIDAR_IN_BODY)) @ up_row
+    return p[world_z >= GROUND_Z]
 
 
 # ---- 箱 ----
