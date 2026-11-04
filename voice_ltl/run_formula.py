@@ -8,13 +8,16 @@
 - 終了コード：status が done なら 0、それ以外（error、時間切れ、Go2 が見つからない、式が却下）は 1。
 - status が done か error になったら終わる。--timeout 秒たっても終わらなければ、止めて終わる。
 - 終わるときは RosLink.close(3)（StopMove を 3 回）。Ctrl+C・SIGTERM でも同じ。
+- Go2 を待つ秒数は Web のページと同じ（GO2_WAIT_READY_S。空なら SIM_KIND=gazebo で 90 秒、ほかは 5 秒）。
 
 コンテナで（Go2・にせ Go2・Gazebo のどれかが動いているとき。Web のページ（app）とは同時に使わない。
 /api/sport/request の送り手が 2 つになるため、起動を断る）:
     docker compose run --rm app python3 -m voice_ltl.run_formula "F(moved_forward & X F(turned_left & X F lying))"
+Gazebo なら先頭に SIM_KIND=gazebo を付ける（Gazebo の立ち上がりを 90 秒まで待つ）。
 """
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -22,6 +25,7 @@ from typing import Optional
 
 from voice_ltl.grammar import check
 from voice_ltl.llm import FakeLLM
+from voice_ltl.server import wait_ready_seconds
 from voice_ltl.world import PROPOSITIONS
 
 WORKDIR = Path("/work/out")   # 合成の作業場所（server.py と同じ）
@@ -52,7 +56,7 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
     return args
 
 
-def run(formula: str, timeout: float) -> int:
+def run(formula: str, timeout: float, wait_s: float) -> int:
     # 式は Session の中でも check() を通る。ここでも先に通すのは、却下の理由をそのまま出して、
     # ROS 2 を起動せずに終わるため（FakeLLM は 1 回しか答えないので、聞き直すと理由が消える）
     errors = check(formula, PROPOSITIONS)
@@ -62,20 +66,21 @@ def run(formula: str, timeout: float) -> int:
             print(f"  {e}", flush=True)
         return 1
 
-    from go2_nl_control.perception import PerceptionConfig
-
-    from voice_ltl.ros_link import RosLink
-    from voice_ltl.session import Session
-
-    try:
-        link = RosLink(PerceptionConfig(), node_name="go2_run_formula")
-    except RuntimeError as exc:   # 二重起動
-        print(exc, flush=True)
-        return 1
+    link = None
     stop_times = 3
-    try:
+    try:   # ROS 2 を読み込み・RosLink を作っている間の Ctrl+C も「中断しました」で終える
+        from go2_nl_control.perception import PerceptionConfig
+
+        from voice_ltl.ros_link import RosLink
+        from voice_ltl.session import Session
+
         try:
-            link.wait_ready()
+            link = RosLink(PerceptionConfig(), node_name="go2_run_formula")
+        except RuntimeError as exc:   # 二重起動
+            print(exc, flush=True)
+            return 1
+        try:
+            link.wait_ready(wait_s)
         except RuntimeError as exc:   # Go2 が見つからない・別の送り手がいる
             print(exc, flush=True)
             if link.other_senders():  # そちらが Go2 を動かしているので、StopMove で割り込まない
@@ -89,7 +94,8 @@ def run(formula: str, timeout: float) -> int:
         print("結果：中断しました", flush=True)
         return 1
     finally:
-        link.close(stop_times)
+        if link is not None:
+            link.close(stop_times)
 
 
 def _follow(link, session, timeout: float) -> int:
@@ -110,9 +116,9 @@ def _follow(link, session, timeout: float) -> int:
     while snap["status"] not in FINAL:
         if time.monotonic() >= end:
             session.stop()   # StopMove を送り、計画を捨てる（終わりに close(3) も送る）
-            show()
-            print(f"結果：時間切れ（{timeout:g} 秒たっても終わりませんでした。status {snap['status']}）",
-                  flush=True)
+            snap = show()    # 止めた後の status を出す（止める前のものは古い）
+            print(f"結果：時間切れ（{timeout:g} 秒たっても終わりませんでした。"
+                  f"止めた後の status：{snap['status']}（{snap['message']}））", flush=True)
             return 1
         link.spin_once()
         session.tick(time.time())
@@ -132,7 +138,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         args = _parse(argv)
     except SystemExit as exc:   # --help は 0、使い方の誤りは 1（argparse の 2 にしない）
         return 0 if exc.code in (0, None) else 1
-    return run(args.formula, args.timeout)
+    try:
+        wait_s = wait_ready_seconds(os.environ)
+    except ValueError as exc:   # GO2_WAIT_READY_S か SIM_KIND がおかしい
+        print(exc, flush=True)
+        return 1
+    return run(args.formula, args.timeout, wait_s)
 
 
 if __name__ == "__main__":
