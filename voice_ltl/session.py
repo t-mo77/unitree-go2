@@ -3,7 +3,11 @@
 - submit_text / submit_audio: a stop word (is_stop_text) sends StopMove at once (no LLM).
   Anything else stops the running plan, then is translated (LLM) on a worker thread.
   Results go through a queue and tick() takes them. Every new instruction and every stop
-  bumps the generation; results of an older generation are dropped.
+  bumps the generation; results of an older generation are dropped. A recording changes
+  nothing until its text is known (R36): a stop word then always stops, however old; an empty
+  or unreadable one leaves the instruction on the way alone; an instruction is dropped only if
+  an input that came after it has already taken effect. While another program sends commands
+  to the Go2, an instruction is refused (REAL-2); a stop word is not.
 - tick(now), 10 Hz: a finished translation waits until the Go2 is ready: a posture change
   or gesture it is still doing has had its planned time (R28), and its posture is known
   (R27: Standing Lock gets BalanceStand; still unknown after 3 s is refused). Then the
@@ -13,10 +17,12 @@
   when the Step ends, the event that happened (the action and the label from the current
   sensors) moves the supervisor; done needs the Go2 in the planned final posture (§7.6).
   A posture that reads UNKNOWN for a moment there (a real Go2 between two error_codes) is
-  waited for, up to POSTURE_SETTLE_S.
+  waited for, up to POSTURE_SETTLE_S. During a Step too the Go2 must stay in a posture its
+  action allows, or the plan ends with StopMove (SAFETY-2).
 - snapshot() is what the page shows: the steps of the plan, what the session is connected to,
   the transcription, the wait, and two logs: "log" in words for people, "debug_log" with the
-  session's and the executor's own lines (event names and all).
+  session's and the executor's own lines (event names and all). Secret-like text in it (an
+  API key, a token) is hidden (R37).
 """
 
 import dataclasses
@@ -41,7 +47,7 @@ from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import render_focus_svg, render_svg
-from voice_ltl.llm import LLM, ClaudeCLI, CodexCLI, LLMError
+from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.translator import Translation, translate
@@ -76,6 +82,8 @@ MSG_NO_AUDIO = "音声を文字にできませんでした"
 MSG_BUSY = "前の動作が終わるのを待っています"
 MSG_SETTLING = "Go2 の姿勢が決まるのを待っています"
 MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏せさせてから、もう一度話してください"
+MSG_POSTURE_CHANGED = "姿勢が変わったので止めました"
+MSG_OTHER_SENDERS = "ほかのプログラムが Go2 に指令を送っています。そちらを終了してから指示してください"
 LOG_LINES = 200
 
 POSTURE_WAIT_S = 3.0   # R27: how long an unknown posture may take to settle before a plan
@@ -85,6 +93,45 @@ STAND_LOCK = 1002      # error_code of Standing Lock: StandUp done, BalanceStand
 # such command keeps the Go2 busy for the time its action's sequence waits after it.
 BUSY_S: dict[int, float] = {api: wait for spec in ACTIONS.values() for api, wait in spec.sequence}
 _EPS = 1e-9
+_ACTIVE = ("thinking", "executing", "waiting")   # an instruction is on the way
+
+
+def _label(action: str) -> str:
+    """The action's name on the page: ACTION_JA's, or the name itself for an action added to
+    world.ACTION_NAMES without a line in ACTION_JA (TD-1)."""
+    return ACTION_JA.get(action, action)
+
+
+def _allowed_postures(action: str) -> set[str]:
+    """The postures the Go2 may be in while `action` runs (SAFETY-2): standing for a move or a
+    gesture; for a posture change the postures it starts from (stand: also UNKNOWN, the Standing
+    Lock it passes through) and the one it ends in."""
+    transitions = ACTIONS[action].transitions
+    return set(transitions) | set(transitions.values())
+
+
+# ---------------- secrets on the page (R37) ----------------
+# Inside a line: an API key (sk-...) or a long run of letters and digits (a token). Underscores
+# are not in the run, so event names (forward_to_moved_forward_standing) stay as they are.
+_SECRET_RUN = re.compile(r"sk-[A-Za-z0-9_-]+|[A-Za-z0-9+/=-]{24,}")
+
+
+def _redact(text: str | None) -> str | None:
+    """text for the page with secret-like parts hidden: a line llm.py would hide in a log
+    (token=..., Bearer ...) becomes MSG_REDACTED, and in other lines each secret-like run does."""
+    if not text:
+        return text
+    return "\n".join(MSG_REDACTED if _is_secretish(line) else _SECRET_RUN.sub(MSG_REDACTED, line)
+                     for line in text.split("\n"))
+
+
+def _redacted(value):
+    """_redact() on a string, and on each string of a list."""
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, list):
+        return [_redacted(v) for v in value]
+    return value
 
 # ---------------- stop words ----------------
 _STOP_REPEATS = [(re.compile(rf"{re.escape(w)}(?:[\W_]*{re.escape(w)})+", re.IGNORECASE), w)
@@ -119,7 +166,9 @@ def is_stop_text(text: str) -> bool:
 class Link(Protocol):
     """The Go2 as the session sees it (RosLink on ROS 2, DirectSimLink in tests).
     A link may also have error_code() -> int | None; only then is Standing Lock (1002) turned
-    into a standing Go2 with BalanceStand (R27). Without it an unknown posture is only waited for."""
+    into a standing Go2 with BalanceStand (R27). Without it an unknown posture is only waited for.
+    A link may also have other_senders() -> int: how many other programs send commands to the
+    Go2; while there are any, instructions are refused (REAL-2)."""
 
     def send(self, cmd: Command) -> None: ...
     def posture(self) -> str: ...
@@ -149,6 +198,9 @@ class DirectSimLink:
 
     def error_code(self) -> int | None:
         return self.sim.error_code
+
+    def other_senders(self) -> int:
+        return 0  # only this session drives the SimGo2
 
     def pose(self) -> tuple[float, float, float] | None:
         return (self.sim.x, self.sim.y, self.sim.yaw)
@@ -239,7 +291,10 @@ class Session:
         self._jobs: queue.Queue = queue.Queue()
         self._results: queue.Queue = queue.Queue()
         self._status = "idle"
-        self._transcribing_gen: int | None = None
+        # R36: every input (typed, recorded, the stop button) is numbered as it comes
+        self._arrivals = 0
+        self._took_effect = 0                   # number of the latest input that took effect
+        self._transcribing: int | None = None   # number of the newest recording not yet transcribed
         self._transcript = ""
         self._stt: dict | None = None     # {"model", "seconds"} of the transcript; None if typed
         self._translation: Translation | None = None
@@ -272,31 +327,32 @@ class Session:
     # ---------------- input ----------------
     def submit_text(self, text: str) -> None:
         """Empty -> 「聞き取れませんでした」; a stop word -> stop(); else a new instruction."""
-        gen = self._accept_text(text)
+        with self._lock:
+            gen = self._accept_text(text, None, self._arrive())
         if gen is not None:
             self._dispatch(("translate", gen, text))
 
     def submit_audio(self, audio: bytes) -> None:
-        """Transcribe (on the worker), then the same as submit_text. The plan keeps running
-        until the text is known."""
+        """Transcribe (on the worker), then the same as submit_text. Until the text is known
+        nothing changes: the plan keeps running and a translation on the way goes on (R36)."""
         with self._lock:
-            self._gen += 1                   # the newest input wins
-            self._transcribing_gen = self._gen
-            if self._status == "thinking":   # that translation is dropped now
-                self._prep = None
-                self._status = "idle"
-            gen = self._gen
-        self._dispatch(("audio", gen, audio))
+            n = self._transcribing = self._arrive()
+        self._dispatch(("audio", n, audio))
 
     def stop(self) -> None:
         """StopMove once, forget the plan and any translation on the way, and go idle."""
-        self._stop(None)
-
-    def _stop(self, word: str | None) -> None:
-        """stop(); `word` is the stop word heard, None for the button."""
         with self._lock:
+            self._stop(None, self._arrive())
+
+    def _arrive(self) -> int:
+        self._arrivals += 1
+        return self._arrivals
+
+    def _stop(self, word: str | None, n: int) -> None:
+        """stop(); `word` is the stop word heard, None for the button; `n` the input's number."""
+        with self._lock:
+            self._took_effect = max(self._took_effect, n)
             self._gen += 1                   # drops any translation on the way
-            self._transcribing_gen = None
             self._prep = None
             self._discard_plan("止める")
             self.link.send(STOP)
@@ -305,20 +361,24 @@ class Session:
             self._stop_word = word
             self._note(MSG_STOPPED)
 
-    def _accept_text(self, text: str, stt: dict | None = None) -> int | None:
+    def _accept_text(self, text: str, stt: dict | None, n: int) -> int | None:
         """The quick part of submit_text. Returns the new generation to translate, or None.
-        stt: how the text was transcribed (None when it was typed)."""
+        stt: how the text was transcribed (None when it was typed); n: the input's number."""
         with self._lock:
-            self._transcript = text
-            self._stt = stt
-            if not text.strip():
-                self._message = MSG_EMPTY
-                self._note(MSG_EMPTY)
-                return None
-            if is_stop_text(text):
+            if is_stop_text(text):           # never too old to stop (R36)
+                self._transcript, self._stt = text, stt
                 self._note(f"止める言葉: {text}", f"止める言葉：「{text}」")
-                self._stop(text)
+                self._stop(text, n)
                 return None
+            if not text.strip():
+                self._heard_nothing(MSG_EMPTY)
+                return None
+            if n < self._took_effect:        # an input that came after it took effect first
+                self._note(f"後から来た入力が先に届いたので使いません: {text}", "")
+                return None
+            self._took_effect = n
+            self._transcript, self._stt = text, stt
+            refused = self._other_senders() > 0   # REAL-2, as nl_control.py does per instruction
             self._gen += 1
             self._prep = None
             if self._running:
@@ -330,10 +390,24 @@ class Session:
             self.runtime = None
             self._syn_id += 1
             self._set_diagrams({})
+            self._note(f"指示: {text}", f"指示：「{text}」")
+            if refused:
+                self._finish("error", MSG_OTHER_SENDERS)
+                return None
             self._message = ""
             self._status = "thinking"
-            self._note(f"指示: {text}", f"指示：「{text}」")
             return self._gen
+
+    def _heard_nothing(self, message: str) -> None:
+        """An empty or unreadable input (R36): the instruction on the way, if any, goes on with its
+        own message, and the transcript stays. With none, `message` is shown."""
+        self._note(message)
+        if self._status not in _ACTIVE:
+            self._message = message
+
+    def _other_senders(self) -> int:
+        read = getattr(self.link, "other_senders", None)
+        return read() if callable(read) else 0
 
     # ---------------- worker ----------------
     def _dispatch(self, job: tuple) -> None:
@@ -343,7 +417,8 @@ class Session:
             self._run(job)
 
     def _work(self) -> None:
-        """One job at a time: LLM calls never overlap, and a stale job is skipped."""
+        """One job at a time: LLM calls never overlap, and a stale translation or synthesis is
+        skipped (a recording is always transcribed)."""
         while True:
             job = self._jobs.get()
             try:
@@ -352,21 +427,20 @@ class Session:
                 _logger.exception("session job failed")
 
     def _run(self, job: tuple) -> None:
-        kind, gen, payload = job
+        kind, key, payload = job   # key: the generation; for "audio" the recording's number
         if kind == "audio":
-            self._transcribe_then_translate(gen, payload)
+            self._transcribe_then_translate(key, payload)
         elif kind == "translate":
-            self._produce(gen, self._translate, payload)
+            self._produce(key, self._translate, payload)
         else:  # "synthesize": (translation, initial state) once the Go2 is ready
-            self._produce(gen, self._synthesize, gen, *payload)
+            self._produce(key, self._synthesize, key, *payload)
 
     def _stale(self, gen: int) -> bool:
         with self._lock:
             return gen != self._gen
 
-    def _transcribe_then_translate(self, gen: int, audio: bytes) -> None:
-        if self._stale(gen):
-            return
+    def _transcribe_then_translate(self, n: int, audio: bytes) -> None:
+        """Every recording is transcribed, however many came after it: it may be a stop word."""
         try:
             if self.transcribe is None:
                 raise RuntimeError("no transcriber")
@@ -382,18 +456,18 @@ class Session:
         except Exception:  # faster-whisper and PyAV raise many types
             _logger.exception("transcription failed")
             with self._lock:
-                if gen == self._gen:
-                    self._transcribing_gen = None
-                    self._message = MSG_NO_AUDIO
-                    self._note(MSG_NO_AUDIO)
+                self._transcribed(n)
+                self._heard_nothing(MSG_NO_AUDIO)
             return
         with self._lock:
-            if gen != self._gen:
-                return
-            self._transcribing_gen = None
-            new_gen = self._accept_text(text, stt)
+            self._transcribed(n)
+            new_gen = self._accept_text(text, stt, n)
         if new_gen is not None:
             self._produce(new_gen, self._translate, text)
+
+    def _transcribed(self, n: int) -> None:
+        if self._transcribing == n:
+            self._transcribing = None
 
     def _produce(self, gen: int, make: Callable[..., Optional[_Outcome]], *args) -> None:
         """Run one step of planning for `gen` and hand its outcome to tick()."""
@@ -543,6 +617,8 @@ class Session:
         self._note(f"監督器: {outcome.synthesis.sup.size} 状態", self._plan_text())
 
     def _step(self, now: float, reading: Reading) -> None:
+        if self._action is not None and not self._posture_fits_action(now):
+            return
         if not self._apply_sensor_changes(reading):
             return
         if self._action is None and not self._load_next(now):
@@ -555,6 +631,24 @@ class Session:
             self._complete()
         elif not ex.steps:  # the executor gave up (held too long, or a move took too long)
             self._finish("error", self._last_report, note=False)  # already in the log
+
+    def _posture_fits_action(self, now: float) -> bool:
+        """SAFETY-2: while a Step runs, the Go2 stays in a posture its action allows. A remote's
+        lie-down and stand-up (or a fall) during a move must not let the move walk on by itself:
+        a known posture outside them ends the plan with StopMove. UNKNOWN (a real Go2 between two
+        error_codes) is waited for up to POSTURE_SETTLE_S, as between Steps."""
+        actual = self._posture
+        if actual in _allowed_postures(self._action):
+            self._unknown_since = None
+            return True
+        if actual == UNKNOWN:
+            if self._unknown_since is None:
+                self._unknown_since = now
+            if now - self._unknown_since < POSTURE_SETTLE_S - _EPS:
+                return True
+        self._note(f"姿勢の変化: {self._action} の途中で {actual}", "")
+        self._abort(MSG_POSTURE_CHANGED)
+        return False
 
     def _apply_sensor_changes(self, reading: Reading) -> bool:
         """A change in front / back "blocked" since the last tick is an uncontrollable event."""
@@ -612,7 +706,7 @@ class Session:
         self._take_executor_events()
         self._action = action
         self._status = "executing"
-        self._say(f"開始：{ACTION_JA[action]}")
+        self._say(f"開始：{_label(action)}")
         return True
 
     def _settled_posture(self, now: float) -> str | None:
@@ -652,7 +746,7 @@ class Session:
         self._done.append(action)
         moved = (f"（{POSTURE_JA[before]} → {POSTURE_JA[self._plan_posture]}）"
                  if before != self._plan_posture else "")
-        self._note(f"イベント: {event}", f"完了：{ACTION_JA[action]}{moved}")
+        self._note(f"イベント: {event}", f"完了：{_label(action)}{moved}")
         self._refresh_plan()
         self._redraw_sup()
 
@@ -701,7 +795,7 @@ class Session:
     def _plan_text(self) -> str:
         """The plan as a log line, when a supervisor starts."""
         if self._plan:
-            return "計画：" + " → ".join(ACTION_JA[a] for a in self._plan)
+            return "計画：" + " → ".join(_label(a) for a in self._plan)
         if self.runtime.done:
             return "計画：指示はもう満たされているので、動きません"
         return "計画：今は進める動作がありません"
@@ -759,7 +853,7 @@ class Session:
         if self._action is None:
             return text
         step = Step(self._action, step_value(self._action)).text(EXEC_ACTIONS)
-        return text.replace(step, ACTION_JA[self._action])
+        return text.replace(step, _label(self._action))
 
     def _executor_line(self, line: str) -> str:
         """An executor line for the log people read ("" leaves it out). The executor gets one
@@ -769,7 +863,7 @@ class Session:
             return ""
         if self._action is None:
             return line
-        label = ACTION_JA[self._action]
+        label = _label(self._action)
         step = Step(self._action, step_value(self._action)).text(EXEC_ACTIONS)
         if line.startswith(hold := f"一時停止（{step}）: "):
             return f"一時停止：{label}（{line[len(hold):]}）"
@@ -802,7 +896,7 @@ class Session:
             if ahead and ahead[0] == self._action:
                 ahead.pop(0)
         rows += [(a, "pending") for a in ahead]
-        return [{"action": a, "label": ACTION_JA[a], "status": st} for a, st in rows]
+        return [{"action": a, "label": _label(a), "status": st} for a, st in rows]
 
     def _wait_start(self) -> float | None:
         """Since when the plan waits (block_timeout ends it): the session waiting for a
@@ -818,13 +912,17 @@ class Session:
         with self._lock:
             r = self._reading
             tr = self._translation
+            # the newest recording is still being transcribed, and nothing came after it
+            transcribing = (self._transcribing is not None
+                            and self._transcribing > self._took_effect)
             return {
-                "status": "transcribing" if self._transcribing_gen == self._gen else self._status,
-                "transcript": self._transcript,
-                "attempts": [dataclasses.asdict(a) for a in tr.attempts] if tr else [],
-                "formula": tr.formula if tr else None,
-                "unsupported": list(tr.unsupported) if tr else [],
-                "message": self._message,
+                "status": "transcribing" if transcribing else self._status,
+                "transcript": _redact(self._transcript),
+                "attempts": [{k: _redacted(v) for k, v in dataclasses.asdict(a).items()}
+                             for a in tr.attempts] if tr else [],
+                "formula": _redact(tr.formula) if tr else None,
+                "unsupported": _redacted(list(tr.unsupported)) if tr else [],
+                "message": _redact(self._message),
                 "plan": list(self._plan),
                 "current": self._action,
                 "posture": self._posture,
@@ -843,6 +941,6 @@ class Session:
                 "server_now": self._clock,   # same clock as waiting_since: the page needs no clock of its own
                 "block_timeout": self.executor.cfg.block_timeout,
                 "stop_word": self._stop_word,
-                "log": list(self._log),
-                "debug_log": list(self._debug_log),
+                "log": [_redact(line) for line in self._log],
+                "debug_log": [_redact(line) for line in self._debug_log],
             }

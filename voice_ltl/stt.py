@@ -1,11 +1,52 @@
-"""Speech to text with faster-whisper (Japanese)."""
+"""Speech to text with faster-whisper (Japanese).
+
+A press with no speech must give "" (UI-2): Whisper otherwise makes up text such as
+「ご視聴ありがとうございました」, which would end the running plan as a new instruction. So
+segments Whisper itself marks as no speech are dropped, and a result made only of the phrases
+it makes up (HALLUCINATIONS) is empty. Measured with the small model (int8): faint noise gives
+that phrase at no_speech_prob 0.87-0.93 but avg_logprob -0.86 to -0.98, while a clear 「止まって」
+has no_speech_prob 0.68, so no_speech_prob alone would drop a stop word.
+"""
 
 import io
 import time
+import unicodedata
 
 import av
 
 MIN_SECONDS = 0.3
+NO_SPEECH_PROB = 0.6   # a segment above this ...
+LOW_LOGPROB = -1.0     # ... and below this is no speech (Whisper's own thresholds)
+# Texts Whisper makes up for no speech (from video subtitles in its training data)
+HALLUCINATIONS = (
+    "ご視聴ありがとうございました",
+    "ご視聴ありがとうございます",
+    "最後までご視聴いただきありがとうございました",
+    "ご清聴ありがとうございました",
+    "チャンネル登録よろしくお願いします",
+    "チャンネル登録をお願いします",
+    "チャンネル登録お願いします",
+    "チャンネル登録",
+    "高評価よろしくお願いします",
+    "ありがとうございました",
+    "お疲れ様でした",
+)
+_LONGEST_FIRST = sorted(HALLUCINATIONS, key=len, reverse=True)
+
+
+def _no_words(text: str) -> bool:
+    """True if text has nothing but spaces, punctuation and HALLUCINATIONS phrases."""
+    t = "".join(ch for ch in unicodedata.normalize("NFKC", text)
+                if not (ch.isspace() or unicodedata.category(ch)[0] in "PSZ"))
+    for phrase in _LONGEST_FIRST:
+        t = t.replace(phrase, "")
+    return not t
+
+
+def _is_speech(segment) -> bool:
+    if segment.no_speech_prob > NO_SPEECH_PROB and segment.avg_logprob < LOW_LOGPROB:
+        return False
+    return not _no_words(segment.text)
 
 
 class Transcriber:
@@ -51,4 +92,5 @@ class Transcriber:
         segments, _ = self._model.transcribe(
             io.BytesIO(audio), language="ja", vad_filter=False, beam_size=5
         )
-        return "".join(s.text for s in segments).strip()
+        text = "".join(s.text for s in segments if _is_speech(s)).strip()
+        return "" if _no_words(text) else text
