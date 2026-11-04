@@ -52,7 +52,7 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
 docker compose --profile fake up      # アプリと、偽の Go2（sim）を起動
 ```
 
-1. ブラウザで <http://localhost:8000> を開きます。
+1. ブラウザで <http://localhost:8810> を開きます。ポートを変えたいときは `GO2_UI_PORT` を渡します（例：`GO2_UI_PORT=8811 docker compose --profile fake up`）。シェルの環境変数でも、compose.yaml と同じ場所に置いた `.env` の `GO2_UI_PORT=8811` でも構いません。ホスト側は 127.0.0.1 だけに公開します。
 2. 「マイクを使う」を押して許可します。
 3. **スペースを押している間**話して、離します。画面に書き起こし、Claude の式、`check()` の合否、状態遷移図、Go2 の状態、上から見た図が出ます。
 4. 「前に箱を置く」「後ろに箱を置く」「箱を全部どける」ボタンで、障害物を試せます（シミュレーションのときだけ表示されます）。
@@ -109,7 +109,7 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
 
 ## 6. Linux PC へ移す（設計書 §10）
 
-移す先は画面つきの Ubuntu PC（22.04 想定）です。その PC のブラウザとマイクで操作します（`http://localhost:8000` なのでマイクの許可はそのまま使えます）。
+移す先は画面つきの Ubuntu PC（22.04 想定）です。その PC のブラウザとマイクで操作します（`http://localhost:8810` で開くので、`localhost` のままマイクの許可が使えます）。
 
 1. **フォルダをコピー**します（`env.txt` も自分でコピー、または作り直します）。
 2. **有線の設定：** PC の有線ポートを `192.168.123.x` に固定します。ただし Go2 本体が使う `192.168.123.161` は使いません（例：`192.168.123.99/24`）。
@@ -126,15 +126,28 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
    docker compose -f compose.robot.yaml up
    ```
 
-   `network_mode: host`、`SIM=0` です。サーバーは 127.0.0.1 だけで待ち受け、箱のボタンは出ません。偽の Go2 は起動しません。
-7. **実機の状態を確かめる**（別の端末でコンテナに入って）：
+   `network_mode: host`、`SIM=0` です。サーバーは 127.0.0.1 だけで待ち受け（ポートは既定で 8810。変えるときは `env.txt` に `GO2_UI_PORT=<ポート>` を書きます。`compose.robot.yaml` では `.env` やシェルの変数は使いません）、箱のボタンは出ません。偽の Go2 は起動しません。
+7. **実機の状態を確かめる**（別の端末で、同じイメージのコンテナを 1 回だけ起動して実行）：
 
    ```bash
    docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate
    ```
 
    位置と姿勢の値が流れてくれば、実機とつながっています。
-8. **後方の LiDAR を確かめる（必須）：** 後退の安全は後ろの LiDAR が見えていることが前提です。`rviz2` で `/utlidar/cloud` を表示し、Go2 の後ろに物を置いて、点群に映るか見ます。映るなら `backward` はそのまま使えます。**映らない場合は、`voice_ltl/world.py` の `ACTION_NAMES` から `"backward"` を外してください**（後退ができなくなります。`ACTION_PROP`、`PROP_DESCRIPTION_JA` の対応する行も、テストの指示に合わせて直します）。
+8. **後方の LiDAR を確かめる（必須）：** 後退の安全は後ろの LiDAR が見えていることが前提です。`rviz2` で `/utlidar/cloud` を表示し、Go2 の後ろに物を置いて、点群に映るか見ます。映るなら `backward` はそのまま使えます。**映らない場合は、`voice_ltl/world.py` の次の 3 行を消してください**（後退ができなくなり、「後ろに下がって」は単語帳にない言葉として却下されます）。
+
+   - `ACTION_NAMES` の `"backward",`
+   - `ACTION_PROP` の `"backward": "moved_backward",`
+   - `PROP_DESCRIPTION_JA` の `"moved_backward": "後ろへ下がった",`
+
+   `obstacle_back`（後ろの障害物センサー）は消しません。
+   後退の命題が消えるので、後退を前提にしたテストは落ちます。コードを読んで3行を消し、`-m "not slow" tests` を流した結果、落ちたのは次の 7 件でした（手元で確かめ済み）。
+   これらは後退を前提にしているので、後退をやめるなら同じ commit で直すか外します。
+
+   - `tests/test_world.py`：`test_vocabulary_is_safe_and_complete`（命題が 15 個、という確認）、`test_go2_world_counts`（状態・遷移の数）
+   - `tests/test_automata.py`：`test_safety_events_never_in_sup[F moved_backward]`
+   - `tests/test_session.py`：`test_back_box_holds_backward`
+   - `tests/test_adversarial_session.py`：`test_fuzz_reaches_the_interesting_cases`、`test_property_holds_in_every_trial[P7]`、`[P7b]`
 
 ### 安全の注意
 
@@ -145,9 +158,13 @@ docker compose --profile fake up      # アプリと、偽の Go2（sim）を起
 ## 7. テスト
 
 ```bash
-docker compose run --rm --no-deps app python3 -m pytest -q tests
-docker compose run --rm --no-deps app python3 -m pytest -q tests nl_control/tests
+docker compose run --rm --no-deps app python3 -m pytest -q -m "not slow" tests nl_control/tests
 ```
+
+`run --rm` は、使い捨てのコンテナを 1 つ起動してコマンドを実行し、終わると消します。
+
+- `-m "not slow"` は、遅いテストを除きます。普段はこれで足ります。
+- 遅いテスト（`slow`）は、本物の Whisper のモデルを使います。初回はモデルを落とすので時間がかかります。流すときは `-m "not slow"` を外すか、`-m slow tests` にします。
 
 ## 8. わかっていないこと
 

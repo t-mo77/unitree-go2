@@ -1,8 +1,11 @@
 # Real Go2 on a Linux PC (design section 10, method A). No fake Go2, no Gazebo here.
 #   docker compose -f compose.robot.yaml up
 # network_mode: host lets the container see the LAN port wired to the Go2.
-# SIM=0: the server listens on 127.0.0.1:8000 only and the page has no box buttons.
+# SIM=0: the server listens on 127.0.0.1:GO2_UI_PORT (8810) only and the page has no box buttons.
 # GO2_IFACE (the LAN port name, e.g. enp3s0) is read from env.txt.
+# Keep this file in step with compose.yaml by hand: the build, image, volumes, env_file and the
+# app command must stay the same in both (compose.robot.yaml is not generated from it).
+# GO2_UI_PORT (the page's port, default 8810) is read from env.txt here, not from the shell or .env.
 # Never run `docker compose config` while env.txt exists: it prints the secrets.
 services:
   app:
