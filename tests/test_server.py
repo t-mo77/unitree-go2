@@ -52,6 +52,23 @@ def test_index_has_push_to_talk(tmp_path):
     assert "スペース" in html and "app.js" in html
 
 
+def test_index_has_the_designed_parts(tmp_path):
+    """The page of the Claude Design canvas (docs/reference/ui-design): its fixed parts."""
+    c, _ = make_client(tmp_path)
+    html = c.get("/").text
+    for text in [
+        "/static/style.css", "Go2 Voice", "止める", "マイクを使う",       # top bar, talk band
+        "あなたの指示", "ロジック（LTLf）", "LLM の試行", "計画",        # the cards
+        "状態遷移図", 'role="tablist"', 'role="tab"', 'aria-selected="true"',
+        ">監督器<", ">trim 後<", ">要求<", ">環境<",                    # the diagram tabs
+        "姿勢", "前方", "後方", "上から見た図",                           # the Go2 card
+        "前に箱を置く", "後ろに箱を置く", "箱を全部どける",
+        "<details", "記録",                                                # the log
+        'role="status"', 'role="alert"',                                   # the messages
+    ]:
+        assert text in html, text
+
+
 @pytest.mark.parametrize("env,address", [
     ({"SIM": "1"}, ("0.0.0.0", 8000)),                         # compose publishes it on the host
     ({"SIM": "1", "GO2_UI_PORT": "9123"}, ("0.0.0.0", 8000)),

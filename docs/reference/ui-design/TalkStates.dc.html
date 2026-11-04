@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>話すボタンの状態</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F5F5F7}
+@keyframes ring{0%{transform:scale(1);opacity:.55}100%{transform:scale(1.55);opacity:0}}
+@keyframes bar{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(1)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.dc-ring{animation:ring 1.6s ease-out infinite}
+.dc-bar{transform-origin:center;animation:bar 1s ease-in-out infinite}
+.dc-spin{animation:spin 1s linear infinite;transform-origin:50% 50%}
+@media (prefers-reduced-motion: reduce){.dc-ring,.dc-bar,.dc-spin{animation:none}}
+</style>
+</helmet>
+<div style="width: 1440px; height: 560px; box-sizing: border-box; padding: 64px; background: #F5F5F7; color: #1D1D1F; font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px">
+
+<article style="background: #FFFFFF; border-radius: 22px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 32px; text-align: center">
+<span style="font-size: 13px; font-weight: 600; color: #6E6E73; letter-spacing: 0.02em">待機</span>
+<button type="button" aria-label="押している間、話せます" style="width: 112px; height: 112px; border-radius: 50%; border: none; background: {{accent}}; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 10px 30px rgba(10,102,214,0.28), 0 0 0 10px rgba(10,102,214,0.08)"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg></button>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 22px; font-weight: 600">スペースを押しながら話す</span>
+<span style="font-size: 14px; color: #6E6E73">離すと送ります</span>
+</div>
+</article>
+
+<article style="background: #FFFFFF; border-radius: 22px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 32px; text-align: center">
+<span style="font-size: 13px; font-weight: 600; color: #6E6E73; letter-spacing: 0.02em">録音中（押している間）</span>
+<div style="position: relative; width: 112px; height: 112px; display: flex; align-items: center; justify-content: center">
+<div class="dc-ring" aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; background: rgba(196,41,28,0.18)"></div>
+<button type="button" aria-label="録音中。離すと送ります" style="position: relative; width: 112px; height: 112px; border-radius: 50%; border: none; background: #C4291C; display: flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; box-shadow: 0 10px 30px rgba(196,41,28,0.30)">
+<span class="dc-bar" style="display: block; width: 5px; height: 30px; border-radius: 3px; background: #FFFFFF; animation-delay: 0s"></span>
+<span class="dc-bar" style="display: block; width: 5px; height: 44px; border-radius: 3px; background: #FFFFFF; animation-delay: .15s"></span>
+<span class="dc-bar" style="display: block; width: 5px; height: 36px; border-radius: 3px; background: #FFFFFF; animation-delay: .3s"></span>
+<span class="dc-bar" style="display: block; width: 5px; height: 24px; border-radius: 3px; background: #FFFFFF; animation-delay: .45s"></span>
+</button>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 22px; font-weight: 600">聞いています</span>
+<span style="font-size: 14px; color: #6E6E73; font-variant-numeric: tabular-nums">0:03 · 離すと送ります</span>
+</div>
+</article>
+
+<article style="background: #FFFFFF; border-radius: 22px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 32px; text-align: center">
+<span style="font-size: 13px; font-weight: 600; color: #6E6E73; letter-spacing: 0.02em">考え中</span>
+<button type="button" disabled aria-label="考えています" style="width: 112px; height: 112px; border-radius: 50%; border: none; background: #E8E8ED; display: flex; align-items: center; justify-content: center">
+<svg class="dc-spin" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="16" fill="none" stroke="#C7C7CC" stroke-width="3"></circle><path d="M20 4 A16 16 0 0 1 36 20" fill="none" stroke="#0A66D6" stroke-width="3" stroke-linecap="round"></path></svg>
+</button>
+<div style="display: flex; flex-direction: column; gap: 10px; align-items: center">
+<span style="font-size: 22px; font-weight: 600">考えています</span>
+<ol style="list-style: none; margin: 0; padding: 0; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; font-size: 13px">
+<li style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; background: #F5F5F7; color: #1E7A36"><svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="#1E7A36" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5l3 3 6-7"></path></svg>書き起こし</li>
+<li style="display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; background: rgba(10,102,214,0.10); color: #0A57B8; font-weight: 600">ロジックに翻訳</li>
+<li style="display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid rgba(0,0,0,0.10); color: #6E6E73">監督器を合成</li>
+</ol>
+</div>
+</article>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0A66D6","options":["#0A66D6","#1D1D1F","#2E7D5B"]},"$preview":{"width":1440,"height":560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#0A66D6' };
+  }
+}
+</script>
+</body>
+</html>
