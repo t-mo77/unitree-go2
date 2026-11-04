@@ -1,9 +1,14 @@
+import dataclasses
+import re
+import threading
 import time
 
 import pytest
 from go2_nl_control.actions import (BALANCE_STAND, DANCE1, HELLO, MOVE, SIT, STAND_UP,
-                                    STOP_MOVE, STRETCH)
+                                    STANDING, STOP_MOVE, STRETCH)
+from go2_nl_control.supervisor import BLOCKED
 
+import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2
 from voice_ltl.llm import FakeLLM, LLMError
 from voice_ltl.session import DirectSimLink, Session
@@ -57,10 +62,12 @@ def test_two_meters_stops_for_box_then_continues(tmp_path):
 
 def test_box_never_cleared_aborts_after_15s(tmp_path):
     sess, link = make(tmp_path, llm_for("F moved_forward", "F(moved_forward & X F moved_forward)"))
-    # A box already too close: no controllable path, so the session waits (lying) and gives up.
+    # A box already too close. Lying, the readings count as clear (R24), so the Go2 stands;
+    # standing, it sees the box: no controllable path, so the session waits and gives up.
     link.sim.place_box("front", 0.6)
     sess.submit_text("前に進んで"); drive(sess, link, 10)
-    assert sess.snapshot()["status"] == "waiting" and link.sim.accepted == []
+    assert sess.snapshot()["status"] == "waiting"
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND]
     drive(sess, link, 10)
     snap = sess.snapshot()
     assert snap["status"] == "error" and "秒待っても" in snap["message"]
@@ -80,7 +87,8 @@ def test_back_box_holds_backward(tmp_path):
     link.sim.place_box("back", 0.6)
     sess.submit_text("後ろに下がって"); drive(sess, link, 8)
     assert sess.snapshot()["status"] == "waiting"
-    assert link.sim.accepted == [] and link.sim.x == 0.0              # 後退しない（立ちもしない）
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND]             # 立ってから箱を見て（R24）
+    assert link.sim.x == 0.0                                           # 後退しない
     link.sim.clear_boxes(); link.sim.place_box("back", 0.9)           # 0.75 m 先：下がり始められる
     drive(sess, link, 8)
     snap = sess.snapshot()
@@ -90,6 +98,38 @@ def test_back_box_holds_backward(tmp_path):
     link.sim.clear_boxes(); drive(sess, link, 10)                    # どければ下がる
     assert sess.snapshot()["status"] == "done"
     assert link.sim.x == pytest.approx(-0.5, abs=0.05)
+
+
+class GroundSeenWhileLying(DirectSimLink):
+    """Lying, the LiDAR sees the ground and the Go2's own legs: the front reads「あり」.
+    While `box` is True something is really in front, so standing it reads「あり」too."""
+
+    def __init__(self):
+        super().__init__(SimGo2())
+        self.box = True
+
+    def reading(self, now):
+        r = super().reading(now)
+        if self.box or self.sim.posture != STANDING:
+            return dataclasses.replace(r, front=BLOCKED, front_dist=0.3)
+        return r
+
+
+def test_readings_while_not_standing_count_as_clear(tmp_path):
+    # R24: the start is planned as clear; standing, the box is a front_blocked that holds forward.
+    link = GroundSeenWhileLying()
+    sess = Session(link, llm_for("F moved_forward"), None, tmp_path, background=False)
+    drive(sess, link, 1)
+    assert sess.snapshot()["front"] == BLOCKED                         # 伏せたまま「あり」
+    sess.submit_text("前に進んで"); drive(sess, link, 10)
+    snap = sess.snapshot()
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND]              # 立ち上がった
+    assert link.sim.posture == STANDING and snap["status"] == "waiting"  # 物があるので待つ
+    assert "センサー: front_blocked" in snap["log"]
+    link.box = False; drive(sess, link, 10)                            # 物が消えれば進む
+    assert sess.snapshot()["status"] == "done"
+    assert link.sim.accepted[:3] == [STAND_UP, BALANCE_STAND, MOVE]
+    assert link.sim.x == pytest.approx(0.5, abs=0.05)
 
 
 def test_stop_word_stops_immediately(tmp_path):
@@ -129,6 +169,21 @@ def test_unsupported_and_unsatisfiable_do_not_move(tmp_path):
     snap = sess.snapshot()
     assert snap["status"] == "error" and "満たせません" in snap["message"]
     assert link.sim.accepted == []
+
+
+@pytest.mark.parametrize("word,is_number", [
+    ("2階", False), ("3番目の部屋", False), ("1号室", False),
+    ("0.7メートル", True), ("0.7 m", True), ("30cm", True), ("45度", True),
+    ("10回", True), ("七回", True), ("２メートル", True),
+])
+def test_number_message_only_for_a_number_with_a_unit(tmp_path, word, is_number):
+    # 「この数は指定できません」 is for a distance, angle or count; 「2階」 is a word not in the vocabulary.
+    sess, link = make(tmp_path, FakeLLM([{"formula": None, "unsupported": [word]}]))
+    sess.submit_text(f"{word}へ"); drive(sess, link, 0.2)
+    message = sess.snapshot()["message"]
+    assert f"「{word}」" in message
+    assert ("この数は指定できません" in message) == is_number
+    assert ("単語帳にない" in message) == (not is_number)
 
 
 def test_empty_transcript_does_not_call_llm(tmp_path):
@@ -197,24 +252,105 @@ def test_diagrams_are_made_and_sup_follows_the_supervisor(tmp_path):
     assert session.diagrams["PLANT"] and "hl" in session.diagrams["SUP"]
 
 
-def test_sup_drawing_does_not_block_tick(tmp_path):
+def sup_highlight(svg):
+    """(the highlighted states, the number of highlighted arrows) of a SUP drawing."""
+    states = [int(s) for s in re.findall(r'class="node hl">\s*<title>(\d+)</title>', svg)]
+    return states, len(re.findall(r'class="edge(?: dashed)? hl"', svg))
+
+
+def test_sup_drawing_does_not_block_tick(tmp_path, monkeypatch):
+    real_render = session_mod.render_svg
+    gate = threading.Event()   # SUP redraws on the drawing thread wait here until the test opens it
+    drawn_by_tick = []
+
+    def slow_render(a, title, state=None, events=()):
+        if threading.current_thread().name == "session-diagrams":
+            gate.wait(30)
+        elif threading.current_thread() is threading.main_thread():
+            drawn_by_tick.append(title)
+        return real_render(a, title, state, events)
+
+    monkeypatch.setattr(session_mod, "render_svg", slow_render)
     session, link = make(tmp_path, llm_for("F hello"), background=True)
     session.submit_text("手を振って")
-    t0 = time.monotonic()
-    while session.snapshot()["status"] == "thinking" and time.monotonic() - t0 < 30:
-        time.sleep(0.05)
-        link.advance(round(link.now + 0.1, 6))
-        session.tick(link.now)
-    slowest = 0.0
-    for _ in range(150):
-        link.advance(round(link.now + 0.1, 6))
-        t = time.monotonic()
-        session.tick(link.now)
-        slowest = max(slowest, time.monotonic() - t)
-        if session.snapshot()["status"] == "done":
-            break
+    deadline = time.monotonic() + 30
+    while session.snapshot()["status"] == "thinking" and time.monotonic() < deadline:
+        drive(session, link, 0.1); time.sleep(0.02)
+    v_start = session.diagram_version
+    drive(session, link, 20)                   # the whole plan, while every SUP redraw is held
     assert session.snapshot()["status"] == "done"
-    assert slowest < 0.1
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO]
+    assert drawn_by_tick == [] and session.diagram_version == v_start
+    gate.set()                                 # now the held redraws finish, the newest last
+    final = ([session.runtime.state], 0)       # the accepting state, no plan arrows left
     deadline = time.monotonic() + 10
-    while "hl" not in session.diagrams["SUP"] and time.monotonic() < deadline:
-        time.sleep(0.05)
+    while sup_highlight(session.diagrams["SUP"]) != final and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sup_highlight(session.diagrams["SUP"]) == final
+    assert session.diagram_version > v_start
+    assert session.runtime.state in session.runtime.sup.marked
+
+
+def test_no_diagrams_for_a_plan_made_stale_during_synthesis(tmp_path, monkeypatch):
+    drawn = []
+    monkeypatch.setattr(session_mod, "render_svg",
+                        lambda a, title, *rest: drawn.append(title) or "<svg/>")
+    sess, link = make(tmp_path, llm_for("F hello"))
+    real_synthesize = session_mod.synthesize
+
+    def synthesize_then_stop(*args):
+        syn = real_synthesize(*args)
+        sess.stop()                            # 「止まって」 while the supervisor was being made
+        return syn
+
+    monkeypatch.setattr(session_mod, "synthesize", synthesize_then_stop)
+    sess.submit_text("挨拶して"); drive(sess, link, 2)
+    assert drawn == [] and sess.diagrams == {}
+    assert sess.snapshot()["status"] == "idle" and link.sim.accepted == [STOP_MOVE]
+
+
+class SlotRaceSession(Session):
+    """When the drawing thread reads _sup_slot, `race` runs once there: a new redraw request
+    arrives at that very moment, as a tick could make it."""
+
+    race = None
+
+    @property
+    def _sup_slot(self):
+        value = self.__dict__.get("_slot")
+        if value is not None and self.race is not None and threading.current_thread().name == "draw":
+            race, self.race = self.race, None
+            race()
+        return value
+
+    @_sup_slot.setter
+    def _sup_slot(self, value):
+        self.__dict__["_slot"] = value
+
+
+def test_a_sup_redraw_requested_while_one_is_taken_is_not_lost(tmp_path, monkeypatch):
+    link = DirectSimLink(SimGo2())
+    sess = SlotRaceSession(link, llm_for("F hello"), None, tmp_path, background=False)
+    sess.submit_text("挨拶して"); drive(sess, link, 0.1)    # the plan runs; its diagrams are drawn
+    drawn = []
+
+    def record(a, title, state=None, events=()):
+        drawn.append(state)
+        return f"<svg>{title} {state}</svg>"
+
+    monkeypatch.setattr(session_mod, "render_svg", record)
+    sess.background = True                                  # SUP redraws go through the slot now
+    threading.Thread(target=sess._draw_loop, name="draw", daemon=True).start()
+
+    def tick_requests_a_redraw():                           # as tick() would, from its own thread
+        t = threading.Thread(target=sess._redraw_sup)
+        t.start(); t.join(0.3)
+
+    sess.race = tick_requests_a_redraw
+    sess._sup_slot = (sess._syn_id, sess.runtime.sup, -1, [])  # an older request, not yet drawn
+    sess._sup_wake.set()
+    newest = f"<svg>SUP {sess.runtime.state}</svg>"
+    deadline = time.monotonic() + 5
+    while sess.diagrams["SUP"] != newest and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert drawn == [-1, sess.runtime.state] and sess.diagrams["SUP"] == newest

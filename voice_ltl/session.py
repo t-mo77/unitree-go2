@@ -106,6 +106,17 @@ def _plan_posture(posture: str) -> str:
     return LYING if posture == UNKNOWN else posture
 
 
+def _blocked(reading: Reading | None, posture: str) -> tuple[bool, bool]:
+    """(front, back) blocked as the supervisor is told (R24). Only a standing Go2 can move, and
+    lying or sitting the LiDAR sees the ground and the Go2's own legs: in any other posture both
+    count as clear. A box really there is a front_blocked / back_blocked once the Go2 stands."""
+    if posture != STANDING:
+        return False, False
+    if reading is None:  # no reading yet counts as blocked (safe side)
+        return True, True
+    return reading.front_blocked, reading.back_blocked
+
+
 def _sup_highlight(rt: Runtime) -> tuple[int, list[tuple[int, str]]]:
     """The runtime's state and the (state, event) arrows of its remaining plan."""
     state, events = rt.state, []
@@ -134,6 +145,7 @@ class Session:
         self.diagram_version = 0  # bumped whenever self.diagrams changes
         self._syn_id = 0          # which synthesis self.diagrams belong to
         self._sup_slot: tuple | None = None  # newest SUP drawing request (latest wins)
+        self._sup_lock = threading.Lock()    # guards _sup_slot between tick and the drawing thread
         self._sup_wake = threading.Event()
 
         self._lock = threading.RLock()
@@ -294,6 +306,8 @@ class Session:
             syn = synthesize(tr.formula, go2_world(initial), self.workdir / f"{gen:04d}")
         except SpecError as exc:
             return _Outcome(tr, error=str(exc))
+        if self._stale(gen):  # a newer instruction or a stop came during synthesis: no drawing
+            return None
         diagrams = self._draw_all(syn)
         if syn.empty:
             return _Outcome(tr, syn, initial, MSG_UNSATISFIABLE, diagrams)
@@ -316,9 +330,9 @@ class Session:
 
     def _initial_state(self) -> PlantState:
         with self._lock:
-            reading = self._reading  # the last tick's; none yet counts as blocked (safe side)
-        front, back = (reading.front_blocked, reading.back_blocked) if reading else (True, True)
-        return PlantState(_plan_posture(self.link.posture()), front, back)
+            reading = self._reading  # the last tick's
+        posture = self.link.posture()
+        return PlantState(_plan_posture(posture), *_blocked(reading, posture))
 
     # ---------------- control loop ----------------
     def tick(self, now: float) -> None:
@@ -379,11 +393,12 @@ class Session:
     def _apply_sensor_changes(self, reading: Reading) -> bool:
         """A change in front / back "blocked" since the last tick is an uncontrollable event."""
         front, back = self._sensed
+        now_front, now_back = _blocked(reading, self._posture)
         events = []
-        if reading.front_blocked != front:
-            events.append("front_blocked" if reading.front_blocked else "front_clear")
-        if reading.back_blocked != back:
-            events.append("back_blocked" if reading.back_blocked else "back_clear")
+        if now_front != front:
+            events.append("front_blocked" if now_front else "front_clear")
+        if now_back != back:
+            events.append("back_blocked" if now_back else "back_clear")
         for event in events:
             try:
                 self.runtime.apply(event)
@@ -391,7 +406,7 @@ class Session:
                 self._abort(f"監督器がセンサーの変化を受け付けませんでした（{event}）")
                 return False
             self._note(f"センサー: {event}")
-        self._sensed = (reading.front_blocked, reading.back_blocked)
+        self._sensed = (now_front, now_back)
         if events:
             self._refresh_plan()
             self._redraw_sup()
@@ -493,14 +508,16 @@ class Session:
         if not self.background:
             self._draw_sup(request)
             return
-        self._sup_slot = request  # a newer request replaces one not yet drawn
+        with self._sup_lock:
+            self._sup_slot = request  # a newer request replaces one not yet drawn
         self._sup_wake.set()
 
     def _draw_loop(self) -> None:
         while True:
             self._sup_wake.wait()
             self._sup_wake.clear()
-            request, self._sup_slot = self._sup_slot, None
+            with self._sup_lock:  # take and empty in one step: a request made meanwhile waits
+                request, self._sup_slot = self._sup_slot, None
             if request is not None:
                 try:
                     self._draw_sup(request)

@@ -1,8 +1,16 @@
-from fastapi.testclient import TestClient
+import sys
+import threading
+import time
+import types
 
+import pytest
+from fastapi.testclient import TestClient
+from go2_nl_control.actions import STOP_MOVE
+
+import voice_ltl.server as server
 from sim.sim_core import SimGo2
 from voice_ltl.llm import FakeLLM
-from voice_ltl.server import create_app
+from voice_ltl.server import control_loop, create_app
 from voice_ltl.session import DirectSimLink, Session
 
 
@@ -25,6 +33,13 @@ def test_audio_and_stop_and_obstacle_404(tmp_path):
     assert c.post("/api/obstacle", json={"cmd": "front"}).status_code == 404
 
 
+def test_empty_audio_is_refused(tmp_path):
+    c, sess = make_client(tmp_path)
+    assert c.post("/api/audio", content=b"", headers={"content-type": "audio/webm"}).status_code == 400
+    snap = sess.snapshot()
+    assert snap["status"] == "idle" and snap["transcript"] == "" and snap["log"] == []
+
+
 def test_ws_sends_snapshot(tmp_path):
     c, _ = make_client(tmp_path)
     with c.websocket_connect("/ws") as ws:
@@ -35,3 +50,94 @@ def test_index_has_push_to_talk(tmp_path):
     c, _ = make_client(tmp_path)
     html = c.get("/").text
     assert "スペース" in html and "app.js" in html
+
+
+@pytest.mark.parametrize("env,address", [
+    ({"SIM": "1"}, ("0.0.0.0", 8000)),                         # compose publishes it on the host
+    ({"SIM": "1", "GO2_UI_PORT": "9123"}, ("0.0.0.0", 8000)),
+    ({"SIM": "0"}, ("127.0.0.1", 8810)),                       # host network (a real Go2)
+    ({}, ("127.0.0.1", 8810)),
+    ({"SIM": "0", "GO2_UI_PORT": ""}, ("127.0.0.1", 8810)),    # empty = the default
+    ({"SIM": "0", "GO2_UI_PORT": " 9123 "}, ("127.0.0.1", 9123)),
+])
+def test_listen_address(env, address):
+    assert server.listen_address(env) == address
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "65536", "-1", "80.5"])
+def test_bad_ui_port_is_refused(bad):
+    with pytest.raises(ValueError, match="GO2_UI_PORT"):
+        server.listen_address({"SIM": "0", "GO2_UI_PORT": bad})
+
+
+class SpinningLink(DirectSimLink):
+    """DirectSimLink with RosLink's spin_once, for control_loop."""
+
+    def __init__(self):
+        super().__init__(SimGo2())
+        self.spins = 0
+
+    def spin_once(self):
+        self.spins += 1
+
+
+class BrokenTick(Session):
+    """tick() raises on ticks 1-3 and from tick 6 on; ticks 4 and 5 work."""
+
+    ticks = 0
+
+    def tick(self, now):
+        self.ticks += 1
+        if self.ticks <= 3 or self.ticks >= 6:
+            raise RuntimeError("壊れた tick")
+
+
+def test_control_loop_sends_stopmove_when_tick_fails(tmp_path):
+    link = SpinningLink()
+    sess = BrokenTick(link, FakeLLM([]), None, tmp_path, background=False)
+    stop = threading.Event()
+    loop = threading.Thread(target=control_loop, args=(link, sess, stop, 0.01), daemon=True)
+    loop.start()
+    deadline = time.monotonic() + 5
+    while sess.ticks < 10 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    stop.set(); loop.join(2)
+    assert not loop.is_alive() and sess.ticks >= 10 and link.spins >= 10
+    assert link.sim.accepted == [STOP_MOVE, STOP_MOVE]     # once per run of failures
+    assert sess.snapshot()["status"] == "idle"
+
+
+@pytest.mark.parametrize("others,stop_times", [
+    (1, 0),   # another program drives the Go2: close without cutting in with StopMove
+    (0, 3),   # Go2 not found: the usual StopMove x3
+])
+def test_refusing_to_start(monkeypatch, tmp_path, others, stop_times):
+    made = []
+
+    class FakeRosLink:
+        def __init__(self, perception):
+            self.node, self.closed_with = None, None
+            made.append(self)
+
+        def wait_ready(self):
+            raise RuntimeError("別の送り手がいます" if others else "Go2 が見つかりません")
+
+        def other_senders(self):
+            return others
+
+        def close(self, stop_times=3):
+            self.closed_with = stop_times
+
+    ros_link = types.ModuleType("voice_ltl.ros_link")
+    ros_link.RosLink, ros_link.SimControl = FakeRosLink, None
+    stt = types.ModuleType("voice_ltl.stt")
+    stt.Transcriber = lambda model: (lambda audio: "")
+    monkeypatch.setitem(sys.modules, "voice_ltl.ros_link", ros_link)
+    monkeypatch.setitem(sys.modules, "voice_ltl.stt", stt)
+    monkeypatch.setattr(server, "make_llm", lambda env: FakeLLM([]))
+    monkeypatch.setattr(server, "WORKDIR", tmp_path)
+    monkeypatch.setenv("SIM", "0")
+    monkeypatch.delenv("GO2_UI_PORT", raising=False)
+    with pytest.raises(SystemExit):
+        server._serve()
+    assert [link.closed_with for link in made] == [stop_times]

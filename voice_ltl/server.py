@@ -1,7 +1,7 @@
 """The Web page and its API (design §8), and main(): ROS 2 + Session + the 10 Hz loop.
 
 - GET /                     the page (static/index.html)
-- POST /api/audio           body = recorded audio -> Session.submit_audio, 202
+- POST /api/audio           body = recorded audio -> Session.submit_audio, 202; empty body 400
 - POST /api/text            {"text": str} -> Session.submit_text, 202 (typed instructions)
 - POST /api/stop            Session.stop, 204
 - POST /api/obstacle        {"cmd": "front" | "back" | "clear"}; 404 when not simulating
@@ -10,6 +10,7 @@
                             simulating, "world" (SimControl.latest_world())
 
 Run in the container: python3 -m voice_ltl.server (compose passes env.txt as variables).
+The page is http://localhost:8810 on the host; GO2_UI_PORT changes the port (listen_address).
 """
 
 import asyncio
@@ -39,7 +40,8 @@ STATIC = Path(__file__).resolve().parent / "static"
 DIAGRAM_NAMES = ("PLANT", "SPEC", "TRIMMED", "SUP")
 WS_PERIOD = 0.2       # [s] between two snapshots on /ws
 CONTROL_PERIOD = 0.1  # [s] the control loop (10 Hz)
-PORT = 8000
+UI_PORT = 8810        # the page's port on the host (GO2_UI_PORT, R25)
+CONTAINER_PORT = 8000  # inside the container when simulating; compose publishes it as UI_PORT
 WORKDIR = Path("/work/out")
 
 
@@ -62,6 +64,8 @@ def create_app(session: Session, sim: "SimControl | None") -> FastAPI:
     @app.post("/api/audio", status_code=202)
     async def audio(request: Request) -> Response:
         body = await request.body()
+        if not body:  # a short tap records nothing; the page says so and does not send it
+            raise HTTPException(400, "音声が空です")
         await run_in_threadpool(session.submit_audio, body)
         return Response(status_code=202)
 
@@ -136,6 +140,26 @@ def sim_mode(env: Mapping[str, str]) -> bool:
     return (env.get("SIM") or "0").strip() != "0"
 
 
+def ui_port(env: Mapping[str, str]) -> int:
+    """The page's port on the host: GO2_UI_PORT, 8810 when empty or unset. ValueError if bad."""
+    raw = (env.get("GO2_UI_PORT") or "").strip()
+    if not raw:
+        return UI_PORT
+    port = int(raw) if raw.isdecimal() else 0
+    if not 1 <= port <= 65535:
+        raise ValueError(f"GO2_UI_PORT は 1〜65535 の数にしてください（今: {raw!r}）")
+    return port
+
+
+def listen_address(env: Mapping[str, str]) -> tuple[str, int]:
+    """Where uvicorn listens. SIM=1: in the container on 0.0.0.0:8000, which compose publishes
+    as 127.0.0.1:GO2_UI_PORT. Otherwise the host network (a real Go2): 127.0.0.1:GO2_UI_PORT,
+    so only the PC itself opens the page."""
+    if sim_mode(env):
+        return "0.0.0.0", CONTAINER_PORT
+    return "127.0.0.1", ui_port(env)
+
+
 def _serve() -> None:
     from go2_nl_control.perception import PerceptionConfig
 
@@ -143,7 +167,12 @@ def _serve() -> None:
     from voice_ltl.stt import Transcriber
 
     simulating = sim_mode(os.environ)
-    host = "0.0.0.0" if simulating else "127.0.0.1"
+    try:
+        page_port = ui_port(os.environ)
+        host, port = listen_address(os.environ)
+    except ValueError as exc:
+        _logger.error("%s", exc)
+        raise SystemExit(1) from None
     try:
         link = RosLink(PerceptionConfig())
     except RuntimeError as exc:  # already running
@@ -151,6 +180,7 @@ def _serve() -> None:
         raise SystemExit(1) from None
     stop = threading.Event()
     loop: threading.Thread | None = None
+    stop_times = 3  # StopMove x3 on the way out
     try:
         sim = SimControl(link.node) if simulating else None
         transcriber = Transcriber((os.environ.get("WHISPER_MODEL") or "").strip() or "small")
@@ -159,19 +189,21 @@ def _serve() -> None:
             link.wait_ready()
         except RuntimeError as exc:  # Go2 not found, or another program sends commands
             _logger.error("%s", exc)
+            if link.other_senders():  # that program drives the Go2: do not cut in with StopMove
+                stop_times = 0
             raise SystemExit(1) from None
         loop = threading.Thread(target=control_loop, args=(link, session, stop),
                                 name="control-loop", daemon=True)
         loop.start()
-        _logger.info("ページ: http://localhost:%d （%s）", PORT,
+        _logger.info("ページ: http://localhost:%d （%s）", page_port,
                      "シミュレーション" if simulating else "実機")
         # A short graceful shutdown, so StopMove x3 goes out well before docker's SIGKILL.
-        uvicorn.run(create_app(session, sim), host=host, port=PORT, timeout_graceful_shutdown=2)
+        uvicorn.run(create_app(session, sim), host=host, port=port, timeout_graceful_shutdown=2)
     finally:
         stop.set()
         if loop is not None:
             loop.join(timeout=2.0)  # no tick may send a command after close's StopMoves
-        link.close(3)
+        link.close(stop_times)
 
 
 def main() -> None:

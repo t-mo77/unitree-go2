@@ -8,8 +8,10 @@ from voice_ltl.grammar import check
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 
-# An unsupported part that is a number (0.7メートル, 45度, 七回): design §7.4.0
-_NUMBER = re.compile(r"\d|[〇一二三四五六七八九十百千]+(?:回|度|メートル|センチ|歩|周)")
+# An unsupported part that is a number with a unit (0.7メートル, 45度, 七回): design §7.4.0.
+# Digits without one (2階, 3番目の部屋) are a word that is not in the vocabulary.
+_NUMBER = re.compile(r"(?:\d+(?:[.．]\d+)?|[〇一二三四五六七八九十百千]+)\s*"
+                     r"(?:メートル|センチ|ミリ|cm|mm|m|ｍ|度|°|回|歩|周)(?![A-Za-z])")
 
 LLM = Callable[[str, dict], dict]
 

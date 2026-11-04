@@ -20,9 +20,11 @@ services:
   app:
     <<: *go2
     ports:
-      - "127.0.0.1:8000:8000"
+      # the page: http://localhost:8810 (GO2_UI_PORT=<port> docker compose ... to change it)
+      - "127.0.0.1:${GO2_UI_PORT:-8810}:8000"
     environment:
       SIM: "1"
+      GO2_UI_PORT: "${GO2_UI_PORT:-8810}"  # only for the page address in the log
     command: python3 -m voice_ltl.server
 
   sim:

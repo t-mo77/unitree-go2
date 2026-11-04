@@ -48,7 +48,7 @@
 - LLM には道具を使わせない。Claude は `--bare` を使わない。
 - トークンや認証のファイルは `env.txt` と Docker のボリュームにだけ置く。実装者はトークンの値を読まない・書かない・表示しない。
 - 画面と利用者への文言は日本語。
-- Web ページはブラウザの `http://localhost:8000` で開く。Mac ではコンテナの 8000 番を `127.0.0.1:8000` に出す。
+- Web ページはブラウザの `http://localhost:8810` で開く（ポートは `GO2_UI_PORT` で変えられる。空なら既定の 8810）。Mac ではコンテナの 8000 番を `127.0.0.1:${GO2_UI_PORT:-8810}` に出す。
 - 危ない動作（宙返り・逆立ち・二足歩行・ジャンプ）は語彙に入れない。
 
 ## Review Focus
@@ -67,7 +67,7 @@
 
 ```
 go2/
-  compose.yaml               # Mac 用：app + sim（ブリッジネットワーク、127.0.0.1:8000）
+  compose.yaml               # Mac 用：app + sim（ブリッジネットワーク、127.0.0.1:${GO2_UI_PORT:-8810}）
   compose.robot.yaml         # Linux PC 用：app のみ、network_mode: host、SIM=0
   docker/Dockerfile
   docker/unitree_setup.sh    # コンテナ内の ~/unitree_ros2/setup.sh になる
@@ -177,7 +177,7 @@ docker compose run --rm --no-deps app python3 -m pytest -q tests/<file>.py
   - volumes：`./:/work`、`hf-cache:/root/.cache/huggingface`、`codex-home:/root/.codex`
   - `env_file: [{path: env.txt, required: false}]`
   - `app`：
-    - `ports: ["127.0.0.1:8000:8000"]`
+    - `ports: ["127.0.0.1:${GO2_UI_PORT:-8810}:8000"]`
     - `environment: SIM=1`
     - `command: python3 -m voice_ltl.server`
   - `sim`：`command: python3 -m sim.fake_go2`
@@ -1055,7 +1055,7 @@ docker compose exec sim bash -lc 'source ~/unitree_ros2/setup.sh && cd /work/scr
     2. `RosLink`、`make_llm(os.environ)`、`Transcriber(os.environ.get("WHISPER_MODEL", "small"))`、`Session(..., workdir=Path("/work/out"))` を作る。
     3. `wait_ready()` を待つ。
     4. 制御ループのスレッドを起こす（10 Hz：`link.spin_once()` → `session.tick(now)`）。
-    5. uvicorn を `0.0.0.0:8000` で動かす（`SIM=0` なら `127.0.0.1:8000`）。
+    5. uvicorn を `0.0.0.0:8000` で動かす（`SIM=0` なら `127.0.0.1:${GO2_UI_PORT}`。空・未設定なら 8810）。
     6. 終わるときは `link.close(3)`。
 
 **画面（設計書 §8）：**
@@ -1118,10 +1118,10 @@ def test_index_has_push_to_talk(tmp_path):
 
 ```bash
 cd ~/work/physicalAI/go2 && docker compose --profile fake up -d
-curl -s -X POST localhost:8000/api/audio -H 'content-type: audio/wav' --data-binary @tests/fixtures/stand_hello.wav -o /dev/null -w '%{http_code}\n'
+curl -s -X POST localhost:8810/api/audio -H 'content-type: audio/wav' --data-binary @tests/fixtures/stand_hello.wav -o /dev/null -w '%{http_code}\n'
 ```
 
-  Expected：`202`。続けて Playwright（MCP）で `http://localhost:8000` を開き、次を確かめる。
+  Expected：`202`。続けて Playwright（MCP）で `http://localhost:8810` を開き、次を確かめる。
   - 書き起こしに「挨拶」、式に `hello` が出る。
   - SUP の図が出る。
   - 姿勢が「立ち」になる。
@@ -1166,7 +1166,7 @@ curl -s -X POST localhost:8000/api/audio -H 'content-type: audio/wav' --data-bin
      - `docker compose build`
   3. 使い方
      - `docker compose up`
-     - ブラウザで `http://localhost:8000`
+     - ブラウザで `http://localhost:8810`（`GO2_UI_PORT` で変えられる）
      - 「マイクを使う」→ スペースを押して話す
      - 止め方：「止まって」と言う、「止める」ボタン、`docker compose down`
   4. 話せること：単語帳の一覧と、設計書 §7.4 の表

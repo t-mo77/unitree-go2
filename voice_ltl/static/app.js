@@ -73,7 +73,14 @@ function startRecording() {
   }
   const chunks = [];
   rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  rec.onstop = () => sendAudio(new Blob(chunks, { type: rec.mimeType || MIME }));
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: rec.mimeType || MIME });
+    if (!blob.size) {  // a short tap records nothing: say so instead of sending it
+      showHint("聞き取れませんでした");
+      return;
+    }
+    sendAudio(blob);
+  };
   ptt.recorder = rec;
   ptt.recording = true;
   ptt.starts += 1;
