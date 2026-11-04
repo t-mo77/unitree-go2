@@ -21,7 +21,15 @@
 
 **Spec:** `go2/docs/design.md`（以下「設計書」）。講義のノートブックは `go2/docs/reference/nl2fl_grid.ipynb` にコピーして参照する（Task 1）。
 
-**コミットについて：** `go2/` は git リポジトリではない。ユーザーはコミットを頼んでいないので、この計画にコミットの手順はない。頼まれたら、そのときに `git init` から行う。
+**コミットについて：**
+- `go2/` は git リポジトリで、作業はブランチ `feat/voice-ltl-gazebo` で行う（ユーザー承認済み）。
+- 各タスクの最後に、そのタスクのファイルだけを `git add` してコミットする。
+- コミットメッセージの最後に `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` を入れる。
+- push はしない。`env.txt` は絶対にコミットしない。
+
+**実行の順番：** 1 → 15 → 2 → 3 → … → 14 → 16 → 17。
+- Task 15（Gazebo で立って歩けるかを試す）を早めに行う。
+- Task 15 が「使えない」で終わったら、そこで止めてユーザーに相談する。
 
 ## Global Constraints
 
@@ -90,6 +98,14 @@ go2/
     __init__.py
     sim_core.py   # SimGo2（ROS なし）
     fake_go2.py   # ROS 2 ノード
+  gazebo/                    # Task 15〜16
+    __init__.py
+    bridge_core.py           # 橋渡しの中身（ROS なし）：指令 → 制御の入力、状態 → error_code
+    gazebo_bridge.py         # ROS 2 ノード：/api/sport/request ↔ unitree_guide、/sportmodestate、/utlidar/cloud、箱
+    go2_sensors.urdf.xacro   # LiDAR と真の位置（p3d）を Go2 に足す
+    launch/go2_gazebo.launch.py
+  docker/Dockerfile.gazebo, docker/gazebo_entry.sh   # Task 15
+  voice_ltl/run_formula.py   # Task 17：式から直接動かす道具（LLM なし）
   tests/
     conftest.py   # sys.path に /work と /work/nl_control を足す
     fixtures/      # 音声のサンプル（Task 11）
@@ -156,7 +172,8 @@ docker compose run --rm --no-deps app python3 -m pytest -q tests/<file>.py
 
 - [ ] **Step 4: `compose.yaml` を書く**
 
-  - `app` と `sim` は同じ build（`docker/Dockerfile`）を使う。
+  - `app` と `sim` は同じ build（`docker/Dockerfile`）を使う。イメージ名は `image: go2-voice-ltl:dev` にする（Task 15 の Gazebo のイメージがこれを土台にする）。
+  - `sim` には `profiles: ["fake"]` を付ける。`docker compose --profile fake up` で app とにせ Go2 が起動する。`docker compose up -d sim` のようにサービス名を指定すれば、profile を書かなくても起動する。
   - volumes：`./:/work`、`hf-cache:/root/.cache/huggingface`、`codex-home:/root/.codex`
   - `env_file: [{path: env.txt, required: false}]`
   - `app`：
@@ -1100,7 +1117,7 @@ def test_index_has_push_to_talk(tmp_path):
   前提：ユーザーが `env.txt` を作り、`claude setup-token` で作ったトークンを自分で書いてあること。無ければ、この Step はユーザーに頼んでから行う。
 
 ```bash
-cd ~/work/physicalAI/go2 && docker compose up -d
+cd ~/work/physicalAI/go2 && docker compose --profile fake up -d
 curl -s -X POST localhost:8000/api/audio -H 'content-type: audio/wav' --data-binary @tests/fixtures/stand_hello.wav -o /dev/null -w '%{http_code}\n'
 ```
 
@@ -1176,3 +1193,238 @@ docker compose run --rm --no-deps app python3 -m pytest -q tests nl_control/test
 ```
 
   Expected：`robot-compose-ok`。テストはすべて通る（`slow` の印のものも含む）。
+
+  README の「使い方」に、Gazebo の起動（`docker compose --profile gazebo up`、`http://localhost:6080`）と、Gazebo でできること・できないこと（設計書 §9.1 の表）も書く。Task 16・17 が終わったあとに書き足してよい。
+
+---
+
+### Task 15: Gazebo のコンテナと、Go2 が立って歩けるかの試し（実行順は Task 1 の直後）
+
+**Files:**
+- Create: `docker/Dockerfile.gazebo`、`docker/gazebo_entry.sh`、`docs/reference/gazebo_feasibility.md`（測った結果の記録）、`docs/reference/gazebo_feasibility.png`
+- Modify: `compose.yaml`（`gazebo` サービスを足す）
+
+**Interfaces:**
+- Consumes：Task 1 のイメージ `go2-voice-ltl:dev`
+- Produces：
+  - `docker compose --profile gazebo up` で、Gazebo Classic の中に Go2 が出る。
+    - 制御：unitree_guide controller。起動時は脱力の状態。
+    - 画面：`http://localhost:6080/vnc.html` で見える。
+  - `docs/reference/gazebo_feasibility.md` に、Task 16 が使う次の事実を書く。
+    - unitree_guide controller の状態の番号と、そこへ切り替える `control_input_msgs/msg/Inputs` の値
+    - 速度を入れるフィールドと向き
+    - 位置・向き・状態を読めるトピック
+    - real-time factor の実測
+    - 判定（GO / NO-GO）
+
+- [ ] **Step 1: `docker/Dockerfile.gazebo` を書く**
+
+  - `FROM go2-voice-ltl:dev`
+  - apt：`ros-humble-gazebo-ros-pkgs`、`ros-humble-gazebo-ros2-control`、`ros-humble-ros2-controllers`、`ros-humble-xacro`、`xvfb`、`fluxbox`、`x11vnc`、`novnc`、`websockify`、`mesa-utils`
+  - `git clone -b humble https://github.com/legubiao/quadruped_ros2_control ~/gz_ws/src/quadruped_ros2_control`。ビルド時点の commit を `git checkout <sha>` で固定する。
+  - `rosdep install --from-paths src --ignore-src -r -y`
+  - `colcon build --packages-up-to unitree_guide_controller go2_description keyboard_input`
+  - `ENV LIBGL_ALWAYS_SOFTWARE=1`、`ENV DISPLAY=:1`
+  - arm64 で apt の Gazebo のパッケージが無い・足りないときは、無いパッケージ名と `apt-cache policy` の出力を `gazebo_feasibility.md` に書き、BLOCKED で報告する。
+
+- [ ] **Step 2: `docker/gazebo_entry.sh` を書く**
+
+  1. `Xvfb :1 -screen 0 1280x800x24` を起動する。
+  2. `fluxbox` と `x11vnc -display :1 -forever -nopw -shared -rfbport 5900` を起動する。
+  3. `websockify --web /usr/share/novnc 6080 localhost:5900` を起動する。
+  4. `source ~/unitree_ros2/setup.sh && source ~/gz_ws/install/setup.bash` のあと、`exec "$@"` する。
+
+  `compose.yaml` の `gazebo` サービス：
+  - `profiles: ["gazebo"]`、build は `docker/Dockerfile.gazebo`、`image: go2-voice-ltl-gazebo:dev`
+  - `ports: ["127.0.0.1:6080:6080"]`、volumes は app と同じ
+  - entrypoint は `gazebo_entry.sh`
+  - command：`ros2 launch unitree_guide_controller gazebo_classic.launch.py pkg_description:=go2_description`（Task 16 で自分の launch に差し替える）
+
+- [ ] **Step 3: ビルドして起動する**
+
+```bash
+cd ~/work/physicalAI/go2
+docker compose build app && docker compose --profile gazebo build gazebo
+docker compose --profile gazebo up -d gazebo && sleep 40
+docker compose exec gazebo bash -lc 'source ~/unitree_ros2/setup.sh; source ~/gz_ws/install/setup.bash; ros2 topic list; ros2 control list_controllers'
+```
+
+  Expected：トピックの一覧に `/control_input` か、それに当たる入力のトピックがある。unitree_guide controller が `active`。
+
+- [ ] **Step 4: 状態の切り替えと速度の入れ方を、コードから読み取る**
+
+  - `~/gz_ws/src/quadruped_ros2_control` の `controllers/unitree_guide_controller` の FSM と、`commands/keyboard_input` を読む。
+  - 「伏せ（fixed down）」「立つ（fixed stand）」「歩く（trotting）」「脱力（passive）」に切り替える `Inputs.command` の値と、速度を入れるフィールド（`lx` / `ly` / `rx` など）と、その向きと大きさの範囲を表にする。
+  - それを `gazebo_feasibility.md` に書く。
+
+- [ ] **Step 5: 立って歩けるかを測る**
+
+  - Step 4 の値を `ros2 topic pub --once` で送る。順番は「立つ」→ 5 秒待つ →「歩く」→ 前向きの速度を 5 秒。
+  - 胴体の高さ・位置・傾きは、Gazebo のモデルの状態（`/gazebo/get_entity_state` サービス、または `gz model -m <name> -p`）で、立つ前・立った後・歩いた後に読む。
+  - real-time factor は `gz stats -p` の数秒分の平均で測る。
+  - 合格の目安（すべてを満たせば GO）：
+    - 立った後の胴体の高さが、立つ前より 0.1 m 以上高い
+    - 5 秒の前進で 0.3 m 以上進む
+    - 前進の間、転ばない（roll と pitch の絶対値が 0.5 rad 未満）
+    - real-time factor が 0.3 以上
+  - 結果の数値と判定を `gazebo_feasibility.md` に書く。
+
+- [ ] **Step 6: 画面が見えることを確かめる**
+
+  - Playwright（MCP）で `http://localhost:6080/vnc.html?autoconnect=1` を開き、Go2 が見えるスクリーンショットを `docs/reference/gazebo_feasibility.png` に保存する。
+  - 終わったら `docker compose --profile gazebo down`。
+  - **NO-GO のとき：** 試した内容と数値を報告に書き、DONE_WITH_CONCERNS で返す。controller（呼び出し元）がユーザーに相談する。
+
+---
+
+### Task 16: Gazebo の橋渡し（`gazebo/`）
+
+**Files:**
+- Create: `gazebo/__init__.py`、`gazebo/bridge_core.py`、`gazebo/gazebo_bridge.py`、`gazebo/go2_sensors.urdf.xacro`、`gazebo/launch/go2_gazebo.launch.py`
+- Modify: `compose.yaml`（`gazebo` の command を自分の launch に）
+- Test: `tests/test_bridge_core.py`
+
+**Interfaces:**
+- Consumes：
+  - `docs/reference/gazebo_feasibility.md` の表（状態の番号、速度のフィールド、トピック）
+  - `go2_nl_control.actions` の `api_id` と `_ERROR_CODE_TO_STATE`
+  - Task 8 の `Box` / `FOOTPRINT` と点群の作り方の考え方
+  - Task 12 の `/sim/obstacles` と `/sim/world` の形
+- Produces：
+  - `BridgeCore(now: float)`
+    - `handle(api_id: int, parameter: str, now: float) -> None`
+    - `step(now: float) -> ControllerInput | None`：今送るべき制御の入力。変化が無ければ `None`。
+    - `error_code -> int`
+    - `notes: list[str]`：「（Gazebo では再現なし）」などのログ
+  - `ControllerInput(command: int, lx: float, ly: float, rx: float, ry: float)`
+  - ROS 2 ノード `python3 -m gazebo.gazebo_bridge`
+  - launch `gazebo/launch/go2_gazebo.launch.py`：Go2 を `go2_sensors.urdf.xacro` 付きで出し、controller と橋渡しを起動する。
+
+**決めたふるまい（設計書 §9.1 の表のとおり）：**
+
+| 指令 | 受け付ける状態 | 制御の入力 | 終わったときの `error_code` |
+|---|---|---|---|
+| StandUp 1004 | 伏せ（脱力も含む） | 「立つ」 | 2.0 秒後に 1002 |
+| BalanceStand 1002 | 1002・1013 | 「歩く」に切り替え、速度 0 | 0.5 秒後に 1013 |
+| StandDown 1005 | 立ち | 「伏せ」 | 2.0 秒後に 1004 |
+| Sit 1009 | 立ち | 「伏せ」 | 2.0 秒後に 1007 |
+| RiseSit 1010 | 1007 | 「立つ」→ 2.0 秒後に「歩く」 | 1013 |
+| Move 1008 | 1013・1015 | 「歩く」のまま速度を入れる。前後の速度 `x`、左右 `y`、旋回 `z` を、Task 15 の表の向きと範囲に合わせて変換する | 動いている間は 1015、1.0 秒送り直しが無ければ速度 0 にして 1013 |
+| StopMove 1003 | いつでも | 速度 0 | — |
+| ジェスチャー（1016・1017・1020・1022・1029・1036） | 立ち | 変えない。3.0 秒の間は他の指令を受け付けない | 1013 のまま。`notes` に「（Gazebo では再現なし）」 |
+
+- 受け付けない指令は無視し、`notes` に書く。
+- 起動直後は脱力の状態で、`error_code` は 1001（伏せ扱い）。
+
+**センサーと箱：**
+- **LiDAR：** `go2_sensors.urdf.xacro` で、`base` リンクから (x=0.28, y=0, z=0.10)、傾きなし（`perception.py` の既定 `lidar_x=0.28`、`lidar_z=0.10`、`lidar_pitch=0`）の位置に Gazebo Classic の ray センサーを付ける。
+  - 設定：水平 360 度・垂直 −30〜+30 度、10 Hz、範囲 0.05〜10 m
+  - 出力：`libgazebo_ros_ray_sensor.so` の `sensor_msgs/PointCloud2`。トピック `/utlidar/cloud`、frame `utlidar_lidar`
+  - 自分の脚が点群に映るときは、橋渡しで機体の外形（中心から前後 0.40 m・左右 0.20 m・高さ −0.35〜0.15 m の箱の中）の点を取り除いてから出す。
+- **真の位置：** `libgazebo_ros_p3d.so` で `base` の位置と向きを 50 Hz で受け、`/sportmodestate` の `position` と `imu_state.rpy` にする。
+- **箱：**
+  - `/sim/obstacles` を受けたら、Go2 の今の位置から前（後ろ）1.2 m に 0.3 m の立方体を `/spawn_entity` で出す。`clear` なら `/delete_entity` で全部消す。
+  - `/sim/world` には、にせ Go2 と同じ形（`{"boxes": [[x, y, size], ...], "collided": bool}`）を出す。`collided` は、中心から箱までが `FOOTPRINT`（0.35 m）未満になったら真にする。
+
+- [ ] **Step 1: 失敗するテストを書く（`BridgeCore`、ROS なし）**
+
+```python
+def test_stand_then_walk_then_expire():
+    b = BridgeCore(0.0)
+    b.handle(STAND_UP, "", 0.0); assert b.step(0.0).command == STAND_CMD
+    b.step(2.1); assert b.error_code == 1002
+    b.handle(BALANCE_STAND, "", 2.1); assert b.step(2.1).command == TROT_CMD
+    b.step(2.7); assert b.error_code == 1013
+    b.handle(MOVE, '{"x":0.3,"y":0,"z":0}', 3.0); i = b.step(3.0)
+    assert i.command == TROT_CMD and (i.lx, i.ly) != (0, 0)
+    assert b.error_code == 1015
+    i = b.step(4.2); assert (i.lx, i.ly, i.rx) == (0, 0, 0) and b.error_code == 1013
+
+def test_gesture_is_pretend_and_sit_uses_crouch():
+    b = standing_core()
+    b.handle(HELLO, "", 10.0); assert b.step(10.0) is None and "再現なし" in b.notes[-1]
+    b.handle(SIT, "", 13.5); assert b.step(13.5).command == DOWN_CMD
+    b.step(15.6); assert b.error_code == 1007 and state_from_error_code(1007) == SITTING
+
+def test_invalid_command_ignored():
+    b = BridgeCore(0.0); b.handle(MOVE, '{"x":0.3,"y":0,"z":0}', 0.0)
+    assert b.step(0.0) is None and b.error_code == 1001
+```
+
+  `STAND_CMD`・`TROT_CMD`・`DOWN_CMD` は `bridge_core.py` の定数で、値は `gazebo_feasibility.md` の表から取る。`standing_core()` は 1013 まで進めたものを返すテスト内の補助関数。速度の向き（`lx` / `ly` のどちらが前後か）も表に合わせ、上のテストの前進の assert をその向きで書き直してよい。
+
+- [ ] **Step 2: 失敗を確かめる。** Expected: ImportError
+- [ ] **Step 3: `bridge_core.py`、`gazebo_bridge.py`、xacro、launch を実装する**
+- [ ] **Step 4: 単体テストが通ることを確かめる。** Expected: `3 passed`
+
+- [ ] **Step 5: Gazebo の上で、窓口が実機と同じになっているか確かめる**
+
+```bash
+cd ~/work/physicalAI/go2
+docker compose --profile gazebo build gazebo && docker compose --profile gazebo up -d gazebo && sleep 40
+docker compose exec gazebo bash -lc 'source ~/unitree_ros2/setup.sh; ros2 topic list | grep -E "api/sport/request|sportmodestate|utlidar/cloud"; timeout 5 ros2 topic echo --once /sportmodestate --field error_code; timeout 6 ros2 topic hz /utlidar/cloud'
+```
+
+  Expected：3つのトピックが並ぶ。`error_code` は 1001。点群は 5 Hz 以上。
+
+- [ ] **Step 6: `demo_script.py` を Gazebo 相手に最後まで流す**
+
+```bash
+docker compose exec gazebo bash -lc 'source ~/unitree_ros2/setup.sh && cd /work/scripts && printf "\n" | timeout 120 python3 demo_script.py'
+```
+
+  Expected：「立つ」→「前進 0.5 m」→「左に 90°」→「挨拶」→「座る」→「立ち上がる」→「終わりました」。
+  - 途中で Playwright で `http://localhost:6080/vnc.html?autoconnect=1` のスクリーンショットを撮る。少なくとも「立った」「前進した後」「伏せ（座るの代用）」の3枚を `docs/reference/gazebo_demo_*.png` に保存する。
+  - 終わったら `docker compose --profile gazebo down`。
+
+---
+
+### Task 17: 式から直接動かす道具と、アプリ一式での Gazebo の確認
+
+**Files:**
+- Create: `voice_ltl/run_formula.py`、`docs/reference/gazebo_e2e.md`
+- Modify: `README.md`（Gazebo の使い方。Task 14 の Step 2 の追記分）
+
+**Interfaces:**
+- Consumes：
+  - `Session`（Task 9）。`llm` には、式を1つ返す `FakeLLM` を内部で作って渡す。
+  - `RosLink`（Task 12）
+- Produces：`python3 -m voice_ltl.run_formula "<LTLf の式>" [--timeout 120]`
+  - 標準出力に、計画・各動作の開始と完了・最後の `status` を日本語で出す。
+  - 終了コード：`done` なら 0、それ以外は 1。
+  - LLM も音声も使わない。翻訳以外は本番と同じ道（`check()`、合成、監督器、実行器、センサー）を通る。
+
+- [ ] **Step 1: 実装する**
+
+  - 中身：`Session(RosLink(...), FakeLLM([{"formula": f, "unsupported": []}]), None, Path("/work/out"), background=False)` を作り、`submit_text("(run_formula)")` してから、10 Hz で `spin_once` と `tick` を回す。
+  - 終わり方：`status` が `done` か `error` になったら止まる。`--timeout` を超えても止まる。
+  - 終了時は `RosLink.close(3)` を呼ぶ。
+
+- [ ] **Step 2: Gazebo の上で基本動作を確かめる**
+
+```bash
+cd ~/work/physicalAI/go2
+docker compose --profile gazebo up -d gazebo && sleep 40
+docker compose run --rm app python3 -m voice_ltl.run_formula "F(moved_forward & X F(turned_left & X F lying))"; echo "exit=$?"
+```
+
+  Expected：計画 `stand → forward → turn_left → lie_down` が順に完了し、`exit=0`。
+  - Playwright のスクリーンショットで、Go2 が前に出て、向きを変え、伏せたことを確かめる。`docs/reference/gazebo_e2e_*.png` に保存する。
+  - `app` が `gazebo` と同じネットワークで DDS をやり取りできること。compose の既定のネットワークのままでよい。
+
+- [ ] **Step 3: 箱で止まるかを確かめる**
+
+  1. `ros2 topic pub --once /sim/obstacles std_msgs/msg/String '{data: "{\"cmd\":\"clear\"}"}'` で箱を消す。
+  2. 前と同じ手順で、Go2 を立たせて前向きにしたところで、`{"cmd":"front"}` で前に箱を出す。
+  3. `run_formula "F(moved_forward & X F(moved_forward & X F(moved_forward & X F moved_forward)))" --timeout 40` を流す。
+  4. Expected：
+     - Go2 が箱の手前で止まる（`/sim/world` の `collided` が偽のまま）。
+     - 15 秒後に「秒待っても」の文言で中止し、`exit=1`。
+     - スクリーンショットを1枚残す。
+  5. 箱を消してもう一度流すと、`exit=0` になる。
+
+- [ ] **Step 4: 結果を `docs/reference/gazebo_e2e.md` に書き、README に Gazebo の使い方を足す**
+
+  - `gazebo_e2e.md` には、コマンド・出力の要点・スクリーンショットの名前・real-time factor を書く。
+  - README には、起動、`http://localhost:6080/vnc.html`、`run_formula` の使い方、できること・できないことを書く。
+  - 終わったら `docker compose --profile gazebo down`。
