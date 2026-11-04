@@ -4,14 +4,16 @@ import threading
 import time
 
 import pytest
-from go2_nl_control.actions import (BALANCE_STAND, DANCE1, HELLO, MOVE, SIT, STAND_UP,
-                                    STANDING, STOP_MOVE, STRETCH)
+from go2_nl_control.actions import (BALANCE_STAND, DANCE1, HELLO, LYING, MOVE, RISE_SIT, SIT,
+                                    STAND_DOWN, STAND_UP, STANDING, STOP_MOVE, STRETCH)
 from go2_nl_control.supervisor import BLOCKED
 
 import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2
 from voice_ltl.llm import FakeLLM, LLMError
 from voice_ltl.session import DirectSimLink, Session
+
+MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏せさせてから、もう一度話してください"
 
 
 def llm_for(*formulas):
@@ -354,3 +356,143 @@ def test_a_sup_redraw_requested_while_one_is_taken_is_not_lost(tmp_path, monkeyp
     while sess.diagrams["SUP"] != newest and time.monotonic() < deadline:
         time.sleep(0.01)
     assert drawn == [-1, sess.runtime.state] and sess.diagrams["SUP"] == newest
+
+
+# ---------------- R28: a posture change or gesture is not cut short ----------------
+@pytest.mark.parametrize("first,busy,second,then", [
+    ("F hello", HELLO, "F stretched", [STRETCH]),          # hello: 5 s planned
+    ("F sitting", SIT, "F hello", [RISE_SIT, HELLO]),      # sit: 5 s planned, then the Go2 sits
+])
+def test_new_instruction_during_gesture_or_posture_change_waits_for_it(tmp_path, first, busy,
+                                                                     second, then):
+    sess, link = make(tmp_path, llm_for(first, second))
+    sess.submit_text("一つ目の指示"); drive(sess, link, 5.0)
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, busy]       # sent at 4.2 s
+    sess.submit_text("二つ目の指示")
+    assert link.sim.accepted[-1] == STOP_MOVE                          # StopMove at once
+    drive(sess, link, 4.0)                                             # 9.0 s: its 5 s are not over
+    snap = sess.snapshot()
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, busy, STOP_MOVE]
+    assert snap["status"] == "thinking" and snap["message"] == "前の動作が終わるのを待っています"
+    drive(sess, link, 15)
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, busy, STOP_MOVE, *then]
+    assert sess.snapshot()["status"] == "done"
+
+
+def test_stop_during_gesture_then_new_instruction_waits_for_the_gesture(tmp_path):
+    sess, link = make(tmp_path, llm_for("F hello", "F stretched"))
+    sess.submit_text("挨拶して"); drive(sess, link, 5.0)
+    sess.submit_text("止まって")
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO, STOP_MOVE]
+    drive(sess, link, 1.0)
+    sess.submit_text("伸びをして"); drive(sess, link, 3.0)               # 9.0 s: hello's 5 s are not over
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO, STOP_MOVE]
+    drive(sess, link, 10)
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO, STOP_MOVE, STRETCH]
+    assert sess.snapshot()["status"] == "done"
+
+
+class IgnoresSit(DirectSimLink):
+    """A Go2 that does not take Sit (as a busy one would): it keeps standing."""
+
+    def send(self, cmd):
+        if cmd.api_id != SIT:
+            super().send(cmd)
+
+
+def test_done_only_when_the_go2_is_in_the_planned_posture(tmp_path):
+    link = IgnoresSit(SimGo2())
+    sess = Session(link, llm_for("F sitting"), None, tmp_path, background=False)
+    sess.submit_text("座って"); drive(sess, link, 15)
+    snap = sess.snapshot()
+    assert snap["status"] == "error" and "姿勢が計画と違います" in snap["message"]
+    assert link.sim.posture == STANDING and "終わりました" not in snap["log"]
+
+
+# ---------------- R27: an unknown posture at the start of a plan ----------------
+def test_standing_lock_gets_balance_stand_and_is_planned_as_standing(tmp_path):
+    sim = SimGo2()
+    sim.error_code = 1002                                              # Standing Lock: UNKNOWN
+    sess, link = make(tmp_path, llm_for("F hello"), sim=sim)
+    sess.submit_text("挨拶して"); drive(sess, link, 0.1)
+    assert link.sim.accepted == [BALANCE_STAND]                        # not StandUp
+    drive(sess, link, 10)
+    assert link.sim.accepted == [BALANCE_STAND, HELLO]
+    assert sess.snapshot()["status"] == "done"
+
+
+def test_standing_lock_after_a_stop_during_stand_then_lie_down(tmp_path):
+    sess, link = make(tmp_path, llm_for("F hello", "F lying"))
+    sess.submit_text("挨拶して"); drive(sess, link, 1.0)                # StandUp at 0.1 s
+    sess.submit_text("止まって"); drive(sess, link, 3.0)                # StandUp still ends: 1002
+    assert link.sim.error_code == 1002
+    sess.submit_text("伏せて"); drive(sess, link, 10)
+    assert link.sim.accepted == [STAND_UP, STOP_MOVE, BALANCE_STAND, STAND_DOWN]
+    assert sess.snapshot()["status"] == "done" and link.sim.posture == LYING
+
+
+class NoErrorCode(DirectSimLink):
+    """Like RosLink: there is no error_code() to read (R27 then only waits)."""
+
+    error_code = None
+
+
+def test_unknown_posture_is_refused_after_3s(tmp_path):
+    sim = SimGo2()
+    sim.error_code = 1002
+    link = NoErrorCode(sim)
+    sess = Session(link, llm_for("F hello"), None, tmp_path, background=False)
+    sess.submit_text("挨拶して"); drive(sess, link, 2.8)
+    snap = sess.snapshot()
+    assert snap["status"] == "thinking" and snap["message"] == "Go2 の姿勢が決まるのを待っています"
+    drive(sess, link, 0.5)
+    snap = sess.snapshot()
+    assert snap["status"] == "error" and snap["message"] == MSG_POSTURE_UNKNOWN
+    drive(sess, link, 5)
+    assert link.sim.accepted == [] and sess.diagrams == {}
+
+
+def test_unknown_posture_that_settles_within_3s_is_planned_from_there(tmp_path):
+    sim = SimGo2()
+    sim.error_code = 2000                                              # not in the table: UNKNOWN
+    sess, link = make(tmp_path, llm_for("F hello"), sim=sim)
+    sess.submit_text("挨拶して"); drive(sess, link, 2.0)
+    assert link.sim.accepted == [] and sess.snapshot()["status"] == "thinking"
+    link.sim.error_code = 1004                                         # now lying
+    drive(sess, link, 15)
+    assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO]
+    assert sess.snapshot()["status"] == "done"
+
+
+def test_a_new_instruction_while_waiting_for_the_posture_replaces_it(tmp_path):
+    sim = SimGo2()
+    sim.error_code = 2000
+    sess, link = make(tmp_path, llm_for("F hello", "F lying"), sim=sim)
+    sess.submit_text("挨拶して"); drive(sess, link, 2.0)
+    sess.submit_text("伏せて"); drive(sess, link, 2.0)                  # 4 s after the first: its wait is gone
+    assert sess.snapshot()["status"] == "thinking"
+    link.sim.error_code = 1004
+    drive(sess, link, 1.0)
+    snap = sess.snapshot()
+    assert snap["status"] == "done" and snap["formula"] == "F lying" and link.sim.accepted == []
+
+
+# ---------------- stop words as voice input writes them ----------------
+@pytest.mark.parametrize("word", ["ｽﾄｯﾌﾟ", "止まって止まって止まって止まって", "ＳＴＯＰ！",
+                                  "　止まって。", "ストップ、ストップ、ストップ！"])
+def test_stop_word_variants_stop_without_the_llm(tmp_path, word):
+    llm = llm_for("F(moved_forward & X F moved_forward)")
+    sess, link = make(tmp_path, llm)
+    sess.submit_text("1メートル進んで"); drive(sess, link, 5.5)
+    assert link.sim.accepted[-1] == MOVE
+    sent = len(link.sim.accepted)
+    sess.submit_text(word)
+    assert link.sim.accepted[sent:] == [STOP_MOVE] and len(llm.prompts) == 1
+    assert sess.snapshot()["status"] == "idle"
+
+
+def test_negated_stop_word_is_an_instruction(tmp_path):
+    llm = llm_for("F hello")
+    sess, link = make(tmp_path, llm)
+    sess.submit_text("止まらないで")
+    assert len(llm.prompts) == 1 and sess.snapshot()["status"] == "thinking"

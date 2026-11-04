@@ -1,30 +1,37 @@
 """The conductor: instruction -> formula -> supervisor -> one Go2 action at a time.
 
-- submit_text / submit_audio: a stop word sends StopMove at once (no LLM). Anything else
-  stops the running plan, then is translated (LLM) and synthesized (no LLM) on a worker
-  thread. Results go through a queue and tick() takes them. Every new instruction and
-  every stop bumps the generation; results of an older generation are dropped.
-- tick(now), 10 Hz: sensor changes become uncontrollable events on the supervisor; the
-  next controllable event on the shortest path runs on the zip's Executor, one Step at a
-  time; when the Step ends, the event that happened (the action and the label from the
-  current sensors) moves the supervisor (design §7.6).
+- submit_text / submit_audio: a stop word (is_stop_text) sends StopMove at once (no LLM).
+  Anything else stops the running plan, then is translated (LLM) on a worker thread.
+  Results go through a queue and tick() takes them. Every new instruction and every stop
+  bumps the generation; results of an older generation are dropped.
+- tick(now), 10 Hz: a finished translation waits until the Go2 is ready: a posture change
+  or gesture it is still doing has had its planned time (R28), and its posture is known
+  (R27: Standing Lock gets BalanceStand; still unknown after 3 s is refused). Then the
+  supervisor is synthesized (no LLM) on the worker from that posture.
+- While a supervisor runs: sensor changes become uncontrollable events on it; the next
+  controllable event on the shortest path runs on the zip's Executor, one Step at a time;
+  when the Step ends, the event that happened (the action and the label from the current
+  sensors) moves the supervisor; done needs the Go2 in the planned final posture (§7.6).
 """
 
 import dataclasses
 import json
 import logging
 import queue
+import re
 import threading
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
-from go2_nl_control.actions import ACTIONS, LYING, SITTING, STANDING, UNKNOWN, ActionSpec
+from go2_nl_control.actions import (ACTIONS, BALANCE_STAND, LYING, SITTING, STANDING, UNKNOWN,
+                                    ActionSpec)
 from go2_nl_control.executor import STOP, Command, ExecConfig, Executor
 from go2_nl_control.perception import PerceptionConfig
 from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
-from go2_nl_control.translator import is_stop_command
+from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import render_svg
@@ -51,11 +58,52 @@ MSG_DONE = "終わりました"
 MSG_STOPPED = "止めました"
 MSG_WAITING = "今は進める動作がないので待っています"
 MSG_NO_AUDIO = "音声を文字にできませんでした"
+MSG_BUSY = "前の動作が終わるのを待っています"
+MSG_SETTLING = "Go2 の姿勢が決まるのを待っています"
+MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏せさせてから、もう一度話してください"
 LOG_LINES = 200
+
+POSTURE_WAIT_S = 3.0   # R27: how long an unknown posture may take to settle before a plan
+STAND_LOCK = 1002      # error_code of Standing Lock: StandUp done, BalanceStand not yet (UNKNOWN)
+# R28: a posture change or gesture runs to its end in the Go2 (StopMove does not end it). Each
+# such command keeps the Go2 busy for the time its action's sequence waits after it.
+BUSY_S: dict[int, float] = {api: wait for spec in ACTIONS.values() for api, wait in spec.sequence}
+_EPS = 1e-9
+
+# ---------------- stop words ----------------
+_STOP_REPEATS = [(re.compile(rf"{re.escape(w)}(?:[\W_]*{re.escape(w)})+", re.IGNORECASE), w)
+                 for w in STOP_WORDS]
+
+
+def _edge_char(ch: str) -> bool:
+    return ch.isspace() or unicodedata.category(ch)[0] in "PS"   # punctuation, symbols
+
+
+def normalize_stop_text(text: str) -> str:
+    """The text as the zip's is_stop_command should see it: NFKC (ｽﾄｯﾌﾟ -> ストップ,
+    ＳＴＯＰ -> STOP), no spaces / punctuation / symbols at either end (「止まって！」), and one
+    stop word said again and again (「止まって止まって止まって」) written once."""
+    t = unicodedata.normalize("NFKC", text)
+    i, j = 0, len(t)
+    while i < j and _edge_char(t[i]):
+        i += 1
+    while j > i and _edge_char(t[j - 1]):
+        j -= 1
+    t = t[i:j]
+    for pattern, word in _STOP_REPEATS:
+        t = pattern.sub(word, t)
+    return t
+
+
+def is_stop_text(text: str) -> bool:
+    """A stop word: StopMove at once, no LLM (the zip's rule after normalize_stop_text)."""
+    return is_stop_command(normalize_stop_text(text))
 
 
 class Link(Protocol):
-    """The Go2 as the session sees it (RosLink on ROS 2, DirectSimLink in tests)."""
+    """The Go2 as the session sees it (RosLink on ROS 2, DirectSimLink in tests).
+    A link may also have error_code() -> int | None; only then is Standing Lock (1002) turned
+    into a standing Go2 with BalanceStand (R27). Without it an unknown posture is only waited for."""
 
     def send(self, cmd: Command) -> None: ...
     def posture(self) -> str: ...
@@ -83,6 +131,9 @@ class DirectSimLink:
     def posture(self) -> str:
         return self.sim.posture
 
+    def error_code(self) -> int | None:
+        return self.sim.error_code
+
     def pose(self) -> tuple[float, float, float] | None:
         return (self.sim.x, self.sim.y, self.sim.yaw)
 
@@ -101,9 +152,15 @@ class _Outcome:
     diagrams: dict = field(default_factory=dict)
 
 
-def _plan_posture(posture: str) -> str:
-    # StandUp -> BalanceStand works from anywhere, so an unknown posture plans as lying.
-    return LYING if posture == UNKNOWN else posture
+@dataclass
+class _Prep:
+    """A translation waiting for the Go2 to be ready before its supervisor is made."""
+
+    gen: int
+    translation: Translation
+    since: Optional[float] = None   # when the wait for a known posture began
+    balance_sent: bool = False      # BalanceStand sent for Standing Lock
+    told: str = ""                  # the waiting message already shown
 
 
 def _blocked(reading: Reading | None, posture: str) -> tuple[bool, bool]:
@@ -160,6 +217,8 @@ class Session:
         self._log: deque[str] = deque(maxlen=LOG_LINES)
         self._last_report = ""
 
+        self._prep: _Prep | None = None  # a translation waiting for the Go2 to be ready
+        self._busy_until = float("-inf")  # R28: the Go2 is doing a posture change / gesture
         self._running = False           # a supervisor is being followed
         self._action: str | None = None  # the action loaded in the executor
         self._plan: list[str] = []
@@ -189,6 +248,7 @@ class Session:
             self._gen += 1                   # the newest input wins
             self._transcribing_gen = self._gen
             if self._status == "thinking":   # that translation is dropped now
+                self._prep = None
                 self._status = "idle"
             gen = self._gen
         self._dispatch(("audio", gen, audio))
@@ -198,6 +258,7 @@ class Session:
         with self._lock:
             self._gen += 1                   # drops any translation on the way
             self._transcribing_gen = None
+            self._prep = None
             self._discard_plan("止める")
             self.link.send(STOP)
             self._status = "idle"
@@ -212,11 +273,12 @@ class Session:
                 self._message = MSG_EMPTY
                 self._note(MSG_EMPTY)
                 return None
-            if is_stop_command(text):
+            if is_stop_text(text):
                 self._note(f"止める言葉: {text}")
                 self.stop()
                 return None
             self._gen += 1
+            self._prep = None
             if self._running:
                 self._discard_plan("新しい指示")
                 self.link.send(STOP)
@@ -250,8 +312,10 @@ class Session:
         kind, gen, payload = job
         if kind == "audio":
             self._transcribe_then_translate(gen, payload)
-        else:
-            self._translate_and_synthesize(gen, payload)
+        elif kind == "translate":
+            self._produce(gen, self._translate, payload)
+        else:  # "synthesize": (translation, initial state) once the Go2 is ready
+            self._produce(gen, self._synthesize, gen, *payload)
 
     def _stale(self, gen: int) -> bool:
         with self._lock:
@@ -278,29 +342,31 @@ class Session:
             self._transcribing_gen = None
             new_gen = self._accept_text(text)
         if new_gen is not None:
-            self._translate_and_synthesize(new_gen, text)
+            self._produce(new_gen, self._translate, text)
 
-    def _translate_and_synthesize(self, gen: int, text: str) -> None:
+    def _produce(self, gen: int, make: Callable[..., Optional[_Outcome]], *args) -> None:
+        """Run one step of planning for `gen` and hand its outcome to tick()."""
         if self._stale(gen):
             return
         try:
-            outcome = self._make_supervisor(gen, text)
+            outcome = make(*args)
         except Exception as exc:  # a bug must not leave the session thinking forever
             _logger.exception("planning failed")
             outcome = _Outcome(error=f"処理の途中でエラーが起きました（{type(exc).__name__}）")
         if outcome is not None:
             self._results.put((gen, outcome))
 
-    def _make_supervisor(self, gen: int, text: str) -> _Outcome | None:
+    def _translate(self, text: str) -> _Outcome:
+        """A translation alone: tick() makes its supervisor once the Go2 is ready."""
         try:
             tr = translate(text, self.llm)
         except LLMError as exc:
             return _Outcome(error=str(exc))
         if not tr.ok:
             return _Outcome(tr, error=tr.message)
-        if self._stale(gen):
-            return None
-        initial = self._initial_state()
+        return _Outcome(tr)
+
+    def _synthesize(self, gen: int, tr: Translation, initial: PlantState) -> _Outcome | None:
         try:
             # R13: the formula goes in as it is; go2_world's forbidden events keep it safe.
             syn = synthesize(tr.formula, go2_world(initial), self.workdir / f"{gen:04d}")
@@ -328,20 +394,18 @@ class Session:
             _logger.exception("drawing diagrams failed")
             return {}
 
-    def _initial_state(self) -> PlantState:
-        with self._lock:
-            reading = self._reading  # the last tick's
-        posture = self.link.posture()
-        return PlantState(_plan_posture(posture), *_blocked(reading, posture))
-
     # ---------------- control loop ----------------
     def tick(self, now: float) -> None:
-        """One control period (10 Hz): read the Go2, take a finished translation, run the plan."""
+        """One control period (10 Hz): read the Go2, take finished translations and supervisors,
+        get the Go2 ready for a new plan, run the plan."""
         with self._lock:
             self._reading = self.link.reading(now)
             self._posture = self.link.posture()
             self._pose = self.link.pose()
             self._take_results()
+            if self._prep is not None:
+                self._get_ready(now)
+                self._take_results()  # without a worker thread the supervisor is made already
             if self._running:
                 self._step(now, self._reading)
 
@@ -351,14 +415,61 @@ class Session:
                 gen, outcome = self._results.get_nowait()
             except queue.Empty:
                 return
-            if gen == self._gen:
+            if gen != self._gen:
+                continue
+            if outcome.synthesis is None and not outcome.error:  # translated: wait for the Go2
+                self._show_translation(outcome.translation)
+                self._prep = _Prep(gen, outcome.translation)
+            else:
                 self._start(outcome)
 
-    def _start(self, outcome: _Outcome) -> None:
-        tr = outcome.translation
-        self._translation = tr
-        if tr is not None and tr.formula:
+    def _get_ready(self, now: float) -> None:
+        """Make the supervisor only once the Go2 is ready. R28: a posture change or gesture it
+        is still doing has had its planned time. R27: its posture is known; Standing Lock (1002)
+        gets BalanceStand and is planned as standing once that ends; a posture still unknown
+        after POSTURE_WAIT_S is refused, and nothing is sent."""
+        p = self._prep
+        if p.gen != self._gen:
+            self._prep = None
+            return
+        if now < self._busy_until - _EPS:   # busy with our own BalanceStand: settling too
+            self._tell(p, MSG_SETTLING if p.balance_sent else MSG_BUSY)
+            return
+        posture = self._posture
+        if posture == UNKNOWN:
+            if p.since is None:
+                p.since = now
+            if not p.balance_sent and self._error_code() == STAND_LOCK:
+                p.balance_sent, p.since = True, now   # its own POSTURE_WAIT_S to reach 1013
+                self._note("立ち固め（1002）なので BalanceStand を送ります")
+                self._send(Command(BALANCE_STAND), now)
+            elif now - p.since >= POSTURE_WAIT_S - _EPS:
+                self._prep = None
+                self._finish("error", MSG_POSTURE_UNKNOWN)
+            else:
+                self._tell(p, MSG_SETTLING)
+            return
+        self._prep = None
+        self._message = ""
+        initial = PlantState(posture, *_blocked(self._reading, posture))
+        self._dispatch(("synthesize", p.gen, (p.translation, initial)))
+
+    def _tell(self, p: _Prep, message: str) -> None:
+        if p.told != message:
+            p.told = self._message = message
+            self._note(message)
+
+    def _error_code(self) -> int | None:
+        read = getattr(self.link, "error_code", None)   # RosLink has none (R27)
+        return read() if callable(read) else None
+
+    def _show_translation(self, tr: Translation | None) -> None:
+        if tr is not None and tr is not self._translation and tr.formula:
             self._note(f"式: {tr.formula}")
+        self._translation = tr
+
+    def _start(self, outcome: _Outcome) -> None:
+        self._show_translation(outcome.translation)
         if outcome.synthesis is not None:
             self.synthesis = outcome.synthesis
             self._syn_id += 1
@@ -382,7 +493,7 @@ class Session:
         if self._action is None and not self._load_next(now):
             return
         for cmd in self.executor.tick(now, self._env(self._action, reading), self._pose):
-            self.link.send(cmd)
+            self._send(cmd, now)
         self._take_executor_events()
         ex = self.executor
         if len(ex.steps) == 1 and ex.idx == 1:
@@ -414,7 +525,11 @@ class Session:
 
     def _load_next(self, now: float) -> bool:
         if self.runtime.done:
-            self._finish("done", MSG_DONE)
+            actual = self.link.posture()   # R28: the Go2 may have ignored a command
+            if actual != self._plan_posture:
+                self._abort(self._posture_mismatch(actual))
+            else:
+                self._finish("done", MSG_DONE)
             return False
         event = self.runtime.next_event()
         if event is None:
@@ -426,9 +541,8 @@ class Session:
             elif now - self._waiting_since > self.executor.cfg.block_timeout:
                 self._abort(f"{self.executor.cfg.block_timeout:g}秒待っても進めません")
             return False
-        if _plan_posture(self._posture) != self._plan_posture:
-            self._abort(f"姿勢が計画と違います（計画: {POSTURE_JA[self._plan_posture]}"
-                        f" / 実際: {POSTURE_JA.get(self._posture, self._posture)}）")
+        if self._posture != self._plan_posture:
+            self._abort(self._posture_mismatch(self._posture))
             return False
         if self._waiting_since is not None:
             self._waiting_since = None
@@ -464,6 +578,17 @@ class Session:
         self._redraw_sup()
 
     # ---------------- helpers ----------------
+    def _send(self, cmd: Command, now: float) -> None:
+        """Send a command of the plan. A posture change or gesture keeps the Go2 busy (R28)."""
+        self.link.send(cmd)
+        busy = BUSY_S.get(cmd.api_id)
+        if busy is not None:
+            self._busy_until = max(self._busy_until, now + busy)
+
+    def _posture_mismatch(self, actual: str) -> str:
+        return (f"姿勢が計画と違います（計画: {POSTURE_JA[self._plan_posture]}"
+                f" / 実際: {POSTURE_JA.get(actual, actual)}）")
+
     def _discard_plan(self, reason: str) -> None:
         """Forget the plan. The caller sends StopMove (the executor's own is not sent)."""
         if self._action is not None:

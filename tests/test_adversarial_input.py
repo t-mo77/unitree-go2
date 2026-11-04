@@ -1,6 +1,6 @@
 """Adversarial tests (C3): bad LLM replies, bad user input, CLI argument hygiene, secrets.
 
-Genuine bugs found here were fixed (BUG-C3-1..5); BUG-C3-6 (Session) stays strict xfail.
+Genuine bugs found here were fixed (BUG-C3-1..5 here, BUG-C3-6 in Session's stop-word check).
 All CLI runners are fakes; the real claude / codex are never called. Token strings are fake.
 """
 import json
@@ -15,6 +15,7 @@ from voice_ltl import llm as llm_module
 from voice_ltl.grammar import check
 from voice_ltl.llm import ClaudeCLI, CodexCLI, FakeLLM, LLMError, make_llm
 from voice_ltl.prompt import SCHEMA
+from voice_ltl.session import is_stop_text
 from voice_ltl.translator import translate
 from voice_ltl.world import PROPOSITIONS
 
@@ -635,13 +636,14 @@ def test_whitespace_only_backend_means_default_like_empty(backend):
 
 # ---------------------------------------------------------------- 6. stop words
 
-# text -> is_stop_command expected today. Documented table; "safe" column explains.
+# text -> is it a stop for Session (is_stop_text: NFKC, no spaces / punctuation at either end, one
+# stop word repeated counted once, then the zip's is_stop_command). Comments say why.
 STOP_TABLE = {
     # the words the user listed
     "止まって": True, "ストップ": True, "停止": True, "とまって": True,
     "止まれ": True, "ストップして": True,
     # decorations that voice input often adds
-    "止まって！": True, "止まって。": True, "  止まって  ": True, "ストップ！": True,
+    "止まって！": True, "止まって。": True, "  止まって  ": True, "　止まって　": True, "ストップ！": True,
     "とまれ": True, "止まってください": True, "STOP": True, "Stop!": True, "stop": True,
     "やめて": True, "待って": True, "停止して": True, "今すぐ止まって": True,
     # negations: any text containing a stop word is a stop (fails safe)
@@ -650,7 +652,13 @@ STOP_TABLE = {
     "止まらないで": False, "止まるな": False,
     # not stop commands
     "前に進んで": False, "挨拶して": False, "座って": False, "": False, "  ": False,
-    "ストッ": False, "ｽﾄｯﾌﾟ": False,
+    "ストッ": False,
+    # half-width / full-width forms are the same word after NFKC (BUG-C3-6)
+    "ｽﾄｯﾌﾟ": True, "ｽﾄｯﾌﾟ！": True, "ＳＴＯＰ": True, "ｓｔｏｐ。": True,
+    # only one stop word, said again and again, is still a stop however long (BUG-C3-6)
+    "止まって止まって止まって止まって": True, "ストップ、ストップ、ストップ、ストップ！": True,
+    "stop stop stop stop stop": True, "停止停止停止停止停止停止停止": True,
+    "止まらないで止まらないで止まらないで": False,
     # longer than 12 characters goes to the LLM even with a stop word (documented design)
     "お願いだから今すぐ止まってください": False,
     "前に進んで、壁の手前で止まって挨拶して": False,
@@ -658,13 +666,15 @@ STOP_TABLE = {
 
 
 @pytest.mark.parametrize("text", sorted(STOP_TABLE, key=lambda s: (STOP_TABLE[s], s)))
-def test_is_stop_command_table(text):
-    assert is_stop_command(text) is STOP_TABLE[text]
+def test_is_stop_text_table(text):
+    assert is_stop_text(text) is STOP_TABLE[text]
 
 
-def test_stop_command_never_raises_on_odd_text():
-    for text in ["\x00", "\n止まって\n", "止" * 100_000, "　止まって　", "🛑", "止まって" * 3]:
-        assert isinstance(is_stop_command(text), bool)
+@pytest.mark.parametrize("check", [is_stop_command, is_stop_text])
+def test_stop_command_never_raises_on_odd_text(check):
+    for text in ["\x00", "\n止まって\n", "止" * 100_000, "　止まって　", "🛑", "止まって" * 3,
+                 "止まって" * 25_000, "！" * 1000]:
+        assert isinstance(check(text), bool)
 
 
 def test_stop_command_for_stopword_embedded_in_longer_word_is_safe_side():
@@ -672,9 +682,8 @@ def test_stop_command_for_stopword_embedded_in_longer_word_is_safe_side():
     assert is_stop_command("stopwatch") is True
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG-C3-6: a stop word repeated or padded past 12 characters (e.g. 止まって止まって止まって止まって) "
-    "is not an immediate stop; it goes to the LLM instead of StopMove. Design says long = LLM, but a "
-    "text consisting only of stop words is an emergency"))
 def test_pure_repeated_stop_words_longer_than_12_chars_stop():
-    assert is_stop_command("止まって止まって止まって止まって")
+    # BUG-C3-6 (fixed in Session): a text of only one stop word, repeated or padded past 12
+    # characters, is an emergency: StopMove at once, not the LLM.
+    assert is_stop_command("止まって止まって止まって止まって") is False      # the zip alone
+    assert is_stop_text("止まって止まって止まって止まって") is True
