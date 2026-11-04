@@ -60,3 +60,8 @@ def test_apply_unknown_event_raises(tmp_path):
     rt = Runtime(go2_sup(tmp_path, "F hello", PlantState(LYING, False, False)))
     with pytest.raises(PlanError):
         rt.apply("hello_to_hello_standing")  # cannot greet while lying
+
+
+def test_runtime_sorts_events_once():
+    rt = Runtime(synthesize("F at_goal & G !collide", grid_world(), __import__("tempfile").mkdtemp()).sup)
+    assert all(evs == sorted(evs, reverse=True) for evs in rt._order.values())
