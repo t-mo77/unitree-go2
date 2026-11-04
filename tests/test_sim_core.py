@@ -4,7 +4,7 @@ import pytest
 from go2_nl_control.actions import (BALANCE_STAND, HELLO, MOVE, RISE_SIT, SIT, STAND_DOWN,
                                     STAND_UP, STANDING, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
-from sim.sim_core import FOOTPRINT, SimGo2
+from sim.sim_core import FOOTPRINT, FOOTPRINT_HALF_WIDTH, Box, SimGo2
 from voice_ltl.sensing import Sensing
 
 
@@ -48,6 +48,27 @@ def test_box_appears_in_cloud_and_blocks_motion():
         sim.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t)
         t = run(sim, t, t + 0.1)
     assert sim.collided and sim.x < 1.2 - 0.15 - FOOTPRINT + 0.05
+
+
+def test_box_beside_the_body_is_not_hit_but_box_ahead_is():
+    side = standing_sim()
+    side.boxes.append(Box(0.0, 0.40))                    # 横 0.40 m（体の半幅 0.16 m の外）
+    t = 0.0
+    while t < 6:
+        side.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t)
+        t = run(side, t, t + 0.1)
+    assert not side.collided and side.x > 1.0
+    ahead = standing_sim()
+    ahead.place_box("front", 1.2)
+    t = 0.0
+    while t < 6:
+        ahead.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t)
+        t = run(ahead, t, t + 0.1)
+    assert ahead.collided
+
+
+def test_footprint_is_a_rectangle():
+    assert FOOTPRINT == 0.35 and FOOTPRINT_HALF_WIDTH == 0.16
 
 
 def test_collided_is_stable_while_move_is_resent_into_box():
