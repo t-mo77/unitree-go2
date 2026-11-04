@@ -1,19 +1,8 @@
 from voice_ltl.grammar import check
+from voice_ltl.llm import FakeLLM
 from voice_ltl.prompt import build_prompt
 from voice_ltl.translator import translate
 from voice_ltl.world import PROPOSITIONS
-
-
-class FakeLLM:
-    """Temporary stand-in (Task 6 swaps it for voice_ltl.llm.FakeLLM)."""
-
-    def __init__(self, replies):
-        self.replies = list(replies)
-        self.prompts = []
-
-    def __call__(self, prompt, schema):
-        self.prompts.append(prompt)
-        return self.replies[len(self.prompts) - 1]
 
 
 def test_check_accepts_and_rejects():
