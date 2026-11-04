@@ -31,6 +31,8 @@ services:
       # what the page says it drives: fake (the fake Go2) or gazebo
       # (SIM_KIND=gazebo docker compose --profile gazebo up)
       SIM_KIND: "${SIM_KIND:-fake}"
+      # seconds to wait for the Go2 at start-up; empty: 90 with SIM_KIND=gazebo, else 5
+      GO2_WAIT_READY_S: "${GO2_WAIT_READY_S:-}"
     command: python3 -m voice_ltl.server
 
   sim:

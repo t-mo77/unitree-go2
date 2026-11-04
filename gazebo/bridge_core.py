@@ -18,6 +18,8 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   だから Move の速度は、controller が歩くに入って TROT_WAIT_S 秒たつまで 0 のまま待たせる（Ruling R22）。
 - 今の状態を知らせるトピックは無いので、自分が送った command から controller の状態を持つ。
   ただし「歩くに入った」ことだけは、橋渡しのノードが controller のログ（/rosout）で知らせる（trot_entered）。
+- 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
+  立っているつもりで転んだら error_code を 1001（伏せ扱い）にし、速度を 0 にする。起き上がらせはしない。
 """
 
 import json
@@ -64,6 +66,13 @@ BALANCE_S = 0.5
 GESTURE_S = 3.0
 MOVE_HOLD_S = 1.0  # Move は送り直しが無ければこの秒数で止まる
 GESTURES = (HELLO, STRETCH, CONTENT, DANCE1, SCRAPE, HEART)
+STANDING_CODES = (1002, 1013, 1015)   # この橋渡しが、立っているときに出す error_code
+
+# ---- 転んだとき（Ruling R38。Gazebo の本当の胴の傾きと高さで見る） ----
+FALL_TILT = 1.0    # 立っているつもりで |roll| か |pitch| がこれを超えたら転んだ [rad]（歩く揺れは 0.8 まで）
+FALL_Z = 0.15      # 立っているつもりで胴の高さがこれ未満なら転んだ [m]（立つと 0.33〜0.345）
+UPRIGHT_Z = 0.25   # 胴がこの高さまで上がってから見張る [m]。窓口の 1002 は体が立ち上がりきる前に出るので
+FELL = "（Gazebo で転びました）"
 
 # ---- 速度の倍率（StateTrotting の上限） ----
 V_X_MAX = 0.4    # ly = 1 で前へ 0.4 m/s
@@ -132,6 +141,8 @@ class BridgeCore:
         self._move_until: Optional[float] = None
         self._busy_until = now
         self._done: Optional[Tuple[float, int]] = None   # (時刻, 終わったときの error_code)
+        self._watching = False        # 立って、胴が UPRIGHT_Z まで上がった。転ぶのを見張っている
+        self._fallen = False          # 転んだ。この後は StopMove のほか受け付けない
 
     # ---- 指令 ----
     def handle(self, api_id: int, parameter: str, now: float,
@@ -141,6 +152,9 @@ class BridgeCore:
         name = api_name(api_id)
         if api_id == STOP_MOVE:                   # いつでも受け付ける（安全側）
             self._stop(sim)
+            return
+        if self._fallen:
+            self._note(f"{name} は受け付けません{FELL}。Gazebo を起動し直してください")
             return
         if now < self._busy_until - _EPS:
             self._note(f"{name} は受け付けません（前の動作の途中）")
@@ -207,6 +221,39 @@ class BridgeCore:
     def trot_entered(self, sim_now: float) -> None:
         """controller が本当に「歩く」（trotting）に入った（橋渡しのノードが /rosout で知って呼ぶ）。"""
         self._trot_entered = sim_now
+
+    def observe(self, roll: float, pitch: float, height: float, now: float,
+                sim_now: Optional[float] = None) -> None:
+        """Gazebo の本当の胴の傾き（roll・pitch [rad]）と高さ [m]（橋渡しのノードが odometry ごとに呼ぶ）。
+
+        立っているつもりのときに |roll| か |pitch| が FALL_TILT を超えるか、高さが FALL_Z 未満になったら
+        転んだとみなし、error_code を 1001（伏せ扱い）にして速度を 0 にする（Ruling R38）。
+        起き上がらせはしない（利用者が Gazebo を起動し直す）。立つの途中（窓口は 1002 でも胴はまだ低い）と、
+        伏せ・おすわりへ下りる途中は見ない。"""
+        sim = now if sim_now is None else sim_now
+        self._advance(now, sim)
+        if self._fallen or not self._believes_standing():
+            self._watching = False
+            return
+        tilted = abs(roll) > FALL_TILT or abs(pitch) > FALL_TILT
+        if not self._watching:
+            self._watching = height >= UPRIGHT_Z and not tilted
+        elif tilted or height < FALL_Z:
+            self._fall(roll, pitch, height, sim)
+
+    def _believes_standing(self) -> bool:
+        """窓口が立っていて、伏せ・おすわりへ移る途中でもない。"""
+        return self.error_code in STANDING_CODES and (
+            self._done is None or self._done[1] in STANDING_CODES)
+
+    def _fall(self, roll: float, pitch: float, height: float, sim: float) -> None:
+        self._fallen, self._watching = True, False
+        self._done = None              # 動作の終わりに立ちの error_code へ戻さない
+        self._stop(sim)
+        self.error_code = 1001
+        self._note(f"伏せ扱い（error_code 1001）にして、速度を 0 にします{FELL}。"
+                   f"roll {roll:+.2f}・pitch {pitch:+.2f} rad、胴の高さ {height:.2f} m。"
+                   "起き上がらせないので、Gazebo を起動し直してください")
 
     def _walk_from(self) -> float:
         """Move の速度を入れてよい時刻（sim）：歩くに入って TROT_WAIT_S 秒後（Ruling R22）。"""

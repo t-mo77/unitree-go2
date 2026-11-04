@@ -5,12 +5,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from go2_nl_control.actions import (BALANCE_STAND, HELLO, MOVE, RISE_SIT, SIT, SITTING,
-                                    STAND_UP, STOP_MOVE, state_from_error_code)
+from go2_nl_control.actions import (BALANCE_STAND, HELLO, LYING, MOVE, RISE_SIT, SIT, SITTING,
+                                    STAND_DOWN, STAND_UP, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
-from gazebo.bridge_core import (DOWN_CMD, GROUND_Z, LIDAR_IN_BODY, STAND_CMD, TROT_CMD,
-                                TROT_REPORT_LATE_S, TROT_WAIT_S, BoxWorld, BridgeCore,
-                                drop_ground_and_self_points, drop_self_points, move_input)
+from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, GROUND_Z, LIDAR_IN_BODY, STAND_CMD,
+                                TROT_CMD, TROT_REPORT_LATE_S, TROT_WAIT_S, UPRIGHT_Z, BoxWorld,
+                                BridgeCore, drop_ground_and_self_points, drop_self_points,
+                                move_input)
 from sim.sim_core import FOOTPRINT
 
 XACRO = Path(__file__).resolve().parent.parent / "gazebo" / "go2_sensors.urdf.xacro"
@@ -185,6 +186,99 @@ def test_stop_and_bad_move_parameters():
     b.handle(STOP_MOVE, "", 5.3); i = b.step(5.3)
     assert i.command == TROT_CMD and (i.lx, i.ly, i.rx) == (0, 0, 0) and b.error_code == 1013
     b.handle(STOP_MOVE, "", 5.4); assert b.step(5.4) is None
+
+
+# ---- 転んだとき（Ruling R38） ----
+UPRIGHT = (0.02, -0.01, 0.33)    # 立っているときの (roll, pitch, 胴の高さ)
+
+
+def fell(b: BridgeCore) -> bool:
+    return any("（Gazebo で転びました）" in n for n in b.notes)
+
+
+@pytest.mark.parametrize("roll,pitch,height", [
+    (1.2, 0.1, 0.20),       # 横に倒れた
+    (-0.3, -1.1, 0.25),     # 前に倒れた
+    (0.1, 0.0, 0.12),       # 傾きは小さいが、胴が落ちた
+])
+def test_fall_while_walking_reports_lying_and_stops(roll, pitch, height):
+    """立って歩いているつもりで |roll| か |pitch| が 1.0 rad を超えるか、胴が 0.15 m 未満になったら、
+    error_code を 1001（伏せ扱い）にし、速度を 0 にして、ノートに書く。"""
+    assert (FALL_TILT, FALL_Z) == (1.0, 0.15)
+    b = standing_core()
+    b.observe(*UPRIGHT, 4.2)
+    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 4.3, 4.5)] == [4.3]
+    assert b.error_code == 1015
+    b.observe(roll, pitch, height, 4.6)
+    assert b.error_code == 1001 and state_from_error_code(b.error_code) == LYING
+    assert fell(b)
+    i = b.step(4.6)
+    assert i.command == TROT_CMD and (i.lx, i.ly, i.rx) == (0, 0, 0)
+
+
+def test_after_a_fall_nothing_stands_it_up():
+    """起き上がらせない（利用者が Gazebo を起動し直す）。StopMove のほかは受け付けず、体が起きても 1001 のまま。"""
+    b = standing_core()
+    b.observe(*UPRIGHT, 4.2)
+    b.observe(0.0, 1.3, 0.22, 4.3)
+    assert b.error_code == 1001
+    b.notes.clear()
+    b.handle(MOVE, '{"x":0.3,"y":0,"z":0}', 4.4)
+    b.handle(STAND_UP, "", 5.0)
+    b.handle(BALANCE_STAND, "", 8.0)
+    b.handle(STOP_MOVE, "", 8.5)
+    assert all(b.step(t) is None for t in (4.4, 5.0, 7.1, 8.0, 8.5, 10.0))
+    assert len(b.notes) == 3 and all("Gazebo を起動し直して" in n for n in b.notes)
+    b.observe(*UPRIGHT, 10.0)                                 # 自分で起きても、伏せ扱いのまま
+    assert b.error_code == 1001
+
+
+def test_fall_during_a_gesture_is_not_undone_when_it_ends():
+    b = standing_core()
+    b.observe(*UPRIGHT, 4.2)
+    b.handle(HELLO, "", 5.0)                                   # 3 秒後に 1013 に戻る予定
+    b.observe(1.4, 0.2, 0.18, 6.0)
+    b.step(8.5)
+    assert b.error_code == 1001 and fell(b)
+
+
+def test_normal_sway_is_not_a_fall():
+    """普通に揺れる程度（0.6 rad）や、歩き出しで胴が少し下がる（0.24 m）程度では変わらない。境目ちょうども転びではない。"""
+    b = standing_core()
+    b.observe(*UPRIGHT, 4.2)
+    resend_move(b, '{"x":0.3,"y":0,"z":0}', 4.3, 4.5)
+    for t, (roll, pitch, height) in zip((4.6, 4.7, 4.8, 4.9, 5.0),
+                                        [(0.6, 0.0, 0.30), (-0.6, 0.1, 0.30), (0.1, 0.6, 0.24),
+                                         (FALL_TILT, -FALL_TILT, 0.30), (0.0, 0.0, FALL_Z)]):
+        b.observe(roll, pitch, height, t)
+    assert b.error_code == 1015 and not fell(b)
+
+
+def test_standing_up_is_not_a_fall():
+    """窓口は、体が立ち上がりきる前に 1002 になる。胴が UPRIGHT_Z まで上がってから見張る。"""
+    b = BridgeCore(0.0)
+    b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2)
+    b.observe(0.0, 0.0, 0.068, 1.0)                           # 脱力で伏せている（1001）
+    b.step(2.1); assert b.error_code == 1002
+    b.observe(0.0, 0.05, 0.10, 2.1)                           # 1002 だが、胴はまだ低い
+    b.observe(0.0, 0.02, 0.20, 2.8)
+    assert b.error_code == 1002 and not fell(b)
+    assert UPRIGHT_Z == 0.25
+    b.observe(*UPRIGHT, 3.6)                                  # 立ち上がった。ここから見張る
+    b.observe(0.0, 0.0, 0.10, 3.7)
+    assert b.error_code == 1001 and fell(b)
+
+
+@pytest.mark.parametrize("api_id,code", [(STAND_DOWN, 1004), (SIT, 1007)])
+def test_lying_down_or_sitting_is_not_a_fall(api_id, code):
+    """伏せ・おすわり（Gazebo では伏せ）の間、窓口はまだ 1013 だが胴は下がる。下りていく間とその後は見ない。"""
+    b = standing_core()
+    b.observe(*UPRIGHT, 4.2)
+    b.handle(api_id, "", 5.0); b.step(5.0)
+    b.observe(0.0, 0.1, 0.12, 5.8)
+    b.step(7.1); assert b.error_code == code
+    b.observe(1.3, 0.0, 0.10, 7.2)
+    assert b.error_code == code and not fell(b)
 
 
 def test_self_points_dropped_and_mount_matches_perception():

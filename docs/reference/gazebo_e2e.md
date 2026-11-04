@@ -201,8 +201,8 @@ ruling（R33）が認めた形で、`BridgeCore` だけに入れて試した：�
 
 ## 5. 気づいたこと（このタスクでは直していない）
 
-- **転んでも「完了」になることがある。** 上の 4 回目は、転んで横へ 0.67 m 流れた間に前進の距離（実行器は向きによらず、動いた距離で数える）を満たし、「完了：前進」になった。Gazebo の橋渡しは転んでも `error_code` を 1013 のままにするので、Session も姿勢のずれに気づかず、最後は「終わりました」だった。実機でも、転んだことは `error_code` だけではわからないかもしれない。
-- **一緒に起動すると app が止まる**（上の 3）。compose に `restart` も、gazebo の用意を待つ仕組みも無い。
+- **転んでも「完了」になることがある。** 上の 4 回目は、転んで横へ 0.67 m 流れた間に前進の距離（実行器は向きによらず、動いた距離で数える）を満たし、「完了：前進」になった。Gazebo の橋渡しは転んでも `error_code` を 1013 のままにするので、Session も姿勢のずれに気づかず、最後は「終わりました」だった。実機でも、転んだことは `error_code` だけではわからないかもしれない。→ Gazebo の橋渡しは FXD で直した（下の「FXD」）。
+- **一緒に起動すると app が止まる**（上の 3）。compose に `restart` も、gazebo の用意を待つ仕組みも無い。→ FXD で直した（下の「FXD」）。
 - 0.5 m の前進は 0.52〜0.64 m 進み、90 度の旋回は 92〜96 度回る（止めた後の流れ）。前進 → 前進を続けると、横へ 0.3 m ほどずれた（前進 4 回で x が −0.01 → −0.28）。
 
 ## real-time factor と CPU
@@ -221,3 +221,17 @@ docker compose run --rm app python3 -m voice_ltl.run_formula "F(moved_forward & 
 SIM_KIND=gazebo docker compose --profile gazebo up -d  # 本物の Claude で：app も起動し、http://localhost:8810 で話す
 docker compose --profile gazebo down
 ```
+
+## FXD：一度の起動と、転んだときの扱い（2026-11-05）
+
+上の 5 の 2 つを直した後の確認（Ruling R38）。同じ Mac、`go2-voice-ltl-gazebo:dev` はそのまま（ビルドし直していない）。
+
+- **一度の起動。** app は Go2 を待つ秒数を `GO2_WAIT_READY_S` から取る。空なら `SIM_KIND=gazebo` で 90 秒、ほかは 5 秒（`run_formula` も同じ）。
+  - `docker compose --profile gazebo down` の後に `SIM_KIND=gazebo docker compose --profile gazebo up -d`：app のログは `Go2 を待ちます（最長 90 秒…）`。6.3 秒後に `ページ: http://localhost:8810`。28 秒後も `app Up`、`GET /` は 200。controller の `Configured and activated unitree_guide_controller` は、2 回ともページが開く 0.4〜0.6 秒前だった。
+  - 比べるため、`GO2_WAIT_READY_S=5` で同じく一度に起動すると、5 秒で `Go2 が見つかりません`、`app Exited (1)`（前と同じ）。
+  - このときの Gazebo は、橋渡しが見えるまで 5 秒あまりだった（イメージがキャッシュに乗っていた）。前の確認（上の 3）では 20〜40 秒かかったので、既定を 90 秒にした。
+- **転んだら 1001。** 立っているつもりで |roll| か |pitch| > 1.0 rad、または胴の高さ < 0.15 m になったら、橋渡し（`BridgeCore.observe`）が `error_code` を 1001（伏せ扱い）にし、速度を 0 にする。立つの途中（窓口は 1002 でも胴はまだ低い）と、伏せ・おすわりへ下りる途中は見ない（胴が 0.25 m まで上がってから見張る）。転んだ後は StopMove のほかは受け付けない（起き上がらせない）。
+  - `run_formula "F standing"` で立たせ（`error_code` 1013、胴の高さ 0.334 m）、`gz service -s /world/empty/set_pose` で横倒し（roll 90°）にした。橋渡しのログ：`伏せ扱い（error_code 1001）にして、速度を 0 にします（Gazebo で転びました）。roll +1.60・pitch +0.00 rad、胴の高さ 0.25 m。…`、`error_code 1013 → 1001`。`/sportmodestate` の `error_code` は 1001。
+  - そのまま `run_formula "F standing"`：橋渡しは `StandUp 1004 は受け付けません（Gazebo で転びました）。Gazebo を起動し直してください`（BalanceStand も同じ）。結果は `結果：error（姿勢が計画と違います（計画: 立ち / 実際: 伏せ））`。
+  - `docker compose --profile gazebo restart gazebo` の 1 秒後に `SIM_KIND=gazebo … run_formula "F standing"` を流すと、立って `done`（起動し直すと元に戻る）。
+  - 歩いている途中（前進 ×3 の 2 回目、`ly 0.60`）に前へ倒した（pitch 90°）：同じ 0.01 秒の中で `controller へ: command 4, lx 0.00, ly 0.00`、`error_code 1015 → 1001`、その後の Move は断った。この時点の Session（FXA の「動作の途中で姿勢を確かめる」が入る前）は、その動作の終わりで `姿勢が計画と違います` になり `exit=1`（倒すときに x を 0.3 m 動かしたので、その前進は「完了」になった）。

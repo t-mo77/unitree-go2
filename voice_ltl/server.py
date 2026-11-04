@@ -281,6 +281,26 @@ def listen_address(env: Mapping[str, str]) -> tuple[str, int]:
     return "127.0.0.1", ui_port(env)
 
 
+WAIT_READY_S = 5.0          # [s] how long main() waits for the Go2 (GO2_WAIT_READY_S, R38)
+WAIT_READY_GAZEBO_S = 90.0  # [s] the same for Gazebo, which can take 20-40 s to start
+
+
+def wait_ready_seconds(env: Mapping[str, str]) -> float:
+    """How long to wait for the Go2 at start-up [s]: GO2_WAIT_READY_S; when empty or unset, 90 with
+    SIM=1 and SIM_KIND=gazebo (one `docker compose --profile gazebo up` starts the app and Gazebo
+    together), else 5. run_formula uses it too. ValueError unless a positive number."""
+    raw = (env.get("GO2_WAIT_READY_S") or "").strip()
+    if not raw:
+        return WAIT_READY_GAZEBO_S if link_kind(env) == "gazebo" else WAIT_READY_S
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = 0.0
+    if not 0.0 < seconds < float("inf"):  # also nan
+        raise ValueError(f"GO2_WAIT_READY_S は 0 より大きい秒数にしてください（今: {raw!r}）")
+    return seconds
+
+
 def _serve() -> None:
     from go2_nl_control.perception import PerceptionConfig
 
@@ -292,6 +312,7 @@ def _serve() -> None:
         page_port = ui_port(os.environ)
         host, port = listen_address(os.environ)
         kind = link_kind(os.environ)
+        wait_s = wait_ready_seconds(os.environ)
     except ValueError as exc:
         _logger.error("%s", exc)
         raise SystemExit(1) from None
@@ -307,8 +328,9 @@ def _serve() -> None:
         sim = SimControl(link.node) if simulating else None
         transcriber = Transcriber((os.environ.get("WHISPER_MODEL") or "").strip() or "small")
         session = Session(link, make_llm(os.environ), transcriber, workdir=WORKDIR, link_kind=kind)
+        _logger.info("Go2 を待ちます（最長 %g 秒。GO2_WAIT_READY_S で変えられます）", wait_s)
         try:
-            link.wait_ready()
+            link.wait_ready(wait_s)
         except RuntimeError as exc:  # Go2 not found, or another program sends commands
             _logger.error("%s", exc)
             if link.other_senders():  # that program drives the Go2: do not cut in with StopMove

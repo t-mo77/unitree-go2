@@ -228,7 +228,8 @@ def test_refusing_to_start(monkeypatch, tmp_path, others, stop_times):
             self.node, self.closed_with = None, None
             made.append(self)
 
-        def wait_ready(self):
+        def wait_ready(self, timeout_s=5.0):
+            self.waited = timeout_s
             raise RuntimeError("別の送り手がいます" if others else "Go2 が見つかりません")
 
         def other_senders(self):
@@ -247,11 +248,13 @@ def test_refusing_to_start(monkeypatch, tmp_path, others, stop_times):
     monkeypatch.setattr(server, "WORKDIR", tmp_path)
     monkeypatch.setenv("SIM", "0")
     monkeypatch.delenv("GO2_UI_PORT", raising=False)
+    monkeypatch.delenv("GO2_WAIT_READY_S", raising=False)
     sessions = []
     monkeypatch.setattr(server, "Session", lambda *a, **kw: sessions.append(kw) or Session(*a, **kw))
     with pytest.raises(SystemExit):
         server._serve()
     assert [link.closed_with for link in made] == [stop_times]
+    assert [link.waited for link in made] == [5.0]                 # GO2_WAIT_READY_S unset, SIM=0
     assert [kw.get("link_kind") for kw in sessions] == ["robot"]   # SIM=0: the page says 実機
 
 
