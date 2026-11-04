@@ -11,9 +11,9 @@ from typing import List, Literal, Optional
 
 import numpy as np
 
-from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HELLO, HEART, LYING,
-                                    MOVE, RISE_SIT, SCRAPE, SIT, STAND_DOWN, STAND_UP,
-                                    STANDING, STOP_MOVE, STRETCH, SITTING,
+from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO, LYING,
+                                    MOVE, RISE_SIT, SCRAPE, SIT, SITTING, STAND_DOWN,
+                                    STAND_UP, STANDING, STOP_MOVE, STRETCH,
                                     state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
 
@@ -81,7 +81,9 @@ class SimGo2:
             self._start(api_id, now, 1.5, 1013)
         elif api_id in GESTURES and posture == STANDING:
             self._set_vel((0.0, 0.0, 0.0), now)
-            self._start(api_id, now, GESTURE_S, self.error_code if self.error_code != 1015 else 1013)
+            if self.error_code == 1015:          # 歩きながらでも、受け付けたら止まって 1013 に戻る
+                self.error_code = 1013
+            self._start(api_id, now, GESTURE_S, self.error_code)
         elif api_id == MOVE and self.error_code in (1013, 1015):
             try:
                 p = json.loads(parameter)
@@ -92,7 +94,8 @@ class SimGo2:
                 self._vel_t0 = now
             self._vel = vel
             self._move_until = now + MOVE_HOLD_S
-            self.error_code = 1015
+            # 速度がすべて 0 の Move は実機と同じく歩行ではない（StopMove を待たず 1013）
+            self.error_code = 1015 if vel != (0.0, 0.0, 0.0) else 1013
             self.accepted.append(api_id)
 
     def _start(self, api_id: int, now: float, duration: float, to_code: int) -> None:
