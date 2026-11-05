@@ -3,7 +3,8 @@
 Arrows between the same two states are merged into one whose label lists the action
 names (event_action), at most MAX_LABELS of them, then 「ほか N 件」. Uncontrollable events
 are dashed, marked states are double circles. highlight_state is filled (class="hl" too); highlight_events
-are thick coloured arrows carrying class="hl".
+are thick coloured arrows carrying class="hl". Above MAX_DRAW_STATES states the full
+diagram is not drawn: dot takes minutes there (design §6.6), so a placeholder says so.
 """
 
 import re
@@ -25,6 +26,9 @@ DONE_TEXT = "完了"
 WAITING_TEXT = "待っています"
 _HL_GROUP = re.compile(r'(<g id="(?:edge|node)\d+" class="(?:edge|node)(?: dashed)? hl">.*?</g>)', re.S)
 EMPTY_TEXT = "（空：この指示は満たせません）"
+MAX_DRAW_STATES = 200
+TOO_BIG_TEXT = "大きすぎるので図は省きました"
+MAP_HINT_TEXT = "上から見た図を見てください"
 
 
 def _empty_svg(title: str) -> str:
@@ -34,6 +38,18 @@ def _empty_svg(title: str) -> str:
         f'<title>{xml.escape(title)}</title>'
         '<text x="180" y="45" text-anchor="middle" font-family="sans-serif" font-size="16">'
         f'{xml.escape(EMPTY_TEXT)}</text></svg>')
+
+
+def too_big_svg(title: str, n: int | None = None, map_hint: bool = False) -> str:
+    """The placeholder for a diagram that is not drawn: n states (when known), and with
+    map_hint a pointer to the top view. The root has class="too-big" (the page centres it)."""
+    text = TOO_BIG_TEXT + (f"（{n} 状態）" if n is not None else "") + "。" + (MAP_HINT_TEXT if map_hint else "")
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" class="too-big" width="520" height="80" viewBox="0 0 520 80">'
+        f'<title>{xml.escape(title)}</title>'
+        '<text x="260" y="45" text-anchor="middle" font-family="sans-serif" font-size="14">'
+        f'{xml.escape(text)}</text></svg>')
 
 
 def _pipe_svg(g: graphviz.Digraph) -> str:
@@ -56,6 +72,8 @@ def _label(events: list[str]) -> str:
 
 def render_svg(a: Automaton, title: str, highlight_state: int | None = None,
                highlight_events: Sequence[tuple[int, str]] = ()) -> str:
+    if a.size > MAX_DRAW_STATES:
+        return too_big_svg(title, a.size)
     if a.size == 0:
         return _empty_svg(title)
     hl = set(highlight_events)
