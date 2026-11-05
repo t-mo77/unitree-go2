@@ -22,7 +22,8 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   立っているつもりで転んだら error_code を 1001（伏せ扱い）にし、速度を 0 にする。起き上がらせはしない。
 
 物（box_1・chair_1）の部品も持つ：logical camera が見た model を世界（= odom）の位置に直し（compose）、
-名前で絞り（object_label）、LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
+名前で絞り（object_label）、画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）
+LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
 /go2/objects の形は voice_ltl/objects.py。
 """
 
@@ -98,6 +99,8 @@ SIZE_RADIUS = 0.6          # 物の中心から水平にこの距離より近い
 SIZE_MIN_POINTS = 10       # これより点が少なければ測らない
 SIZE_MAX_YAW_SPEED = 0.1   # 回る速さがこれ以下のときだけ測る（点群と位置の時刻のずれで広がるので）[rad/s]
 SIZE_MIN = 0.1             # 測った大きさの下限 [m]（上限は objects.MAX_SIZE）
+SIZE_BOX_MARGIN = 0.05     # 画面のボタンで置いた箱の点を除くとき、箱をこれだけ広げる [m]
+SIZE_BOX_GRACE_S = 2.0     # 箱を消すよう頼んでからこの秒数（実際の時間）は、まだ点群に写りうるので点を除き続ける
 OBJECT_SPAWN_Z = {"box": 0.25, "chair": 0.45}   # 出す高さ = model の原点の高さ [m]（箱は中心、椅子は座面の上）
 
 _EPS = 1e-6
@@ -367,28 +370,47 @@ def box_sdf(name: str, box: Box) -> str:
 
 
 class BoxWorld:
-    """Gazebo に出した箱の控え。/sim/world の中身（にせ Go2 と同じ形）を作る。"""
+    """Gazebo に出した箱の控え。/sim/world の中身（にせ Go2 と同じ形）を作る。
+    物（box_1・chair_1）の大きさを測るときに除く箱（sizing_boxes）も持つ。"""
 
     def __init__(self):
         self._boxes: Dict[str, Box] = {}
+        self._pending: Dict[str, Box] = {}      # 置くよう頼んで、まだ返事の来ていない箱
+        self._gone: List[Tuple[float, Box]] = []   # (消すよう頼んだ時刻, 箱)
         self._count = 0
 
     def place(self, where: str, x: float, y: float, yaw: float,
               distance: float = BOX_DISTANCE) -> Tuple[str, Box]:
-        """Go2 の今の位置 (x, y)・向き yaw から前（"front"）か後ろ（"back"）に置く箱と名前。まだ控えには入れない。"""
+        """Go2 の今の位置 (x, y)・向き yaw から前（"front"）か後ろ（"back"）に置く箱と名前。
+        /sim/world の控えにはまだ入れない（add で入れる）が、返事を待つ間に Gazebo が出すこともあるので、
+        大きさを測る点からは今から除く（sizing_boxes）。置けなかったら failed を呼ぶ。"""
         sign = 1.0 if where == "front" else -1.0
         self._count += 1
-        return (f"sim_box_{self._count}",
-                Box(x + sign * distance * math.cos(yaw), y + sign * distance * math.sin(yaw)))
+        name = f"sim_box_{self._count}"
+        box = Box(x + sign * distance * math.cos(yaw), y + sign * distance * math.sin(yaw))
+        self._pending[name] = box
+        return name, box
 
     def add(self, name: str, box: Box) -> None:
+        self._pending.pop(name, None)
         self._boxes[name] = box
 
-    def clear(self) -> List[str]:
-        """控えを空にし、消す箱の名前を返す。"""
+    def failed(self, name: str) -> None:
+        """place した箱を置けなかった。"""
+        self._pending.pop(name, None)
+
+    def clear(self, now: float = -math.inf) -> List[str]:
+        """控えを空にし、消す箱の名前を返す。Gazebo が消すのは後なので、消した箱の点は now（実際の時間）から
+        SIZE_BOX_GRACE_S 秒のあいだ大きさを測る点から除き続ける（now を省くと除き続けない）。"""
         names = list(self._boxes)
+        self._gone += [(now, b) for b in self._boxes.values()]
         self._boxes.clear()
         return names
+
+    def sizing_boxes(self, now: float) -> List[Box]:
+        """物の大きさを測る点から除く箱：置いた箱、返事を待っている箱、消してまだ SIZE_BOX_GRACE_S 秒たたない箱。"""
+        self._gone = [(t, b) for t, b in self._gone if now - t < SIZE_BOX_GRACE_S]
+        return [*self._boxes.values(), *self._pending.values(), *(b for _, b in self._gone)]
 
     def world(self, x: float, y: float) -> dict:
         """{"boxes": [[x, y, size], ...], "collided": 中心から箱までが FOOTPRINT 未満か}"""
@@ -434,6 +456,20 @@ def lidar_points_world(points_lidar: np.ndarray, base_pos: Sequence[float],
     """LiDAR 座標の点（N×3）を世界の座標にする：R(base_quat)·(p + LIDAR_IN_BODY) + base_pos。"""
     p = np.asarray(points_lidar, dtype=np.float64).reshape(-1, 3) + np.asarray(LIDAR_IN_BODY)
     return p @ quat_to_matrix(base_quat).T + np.asarray(base_pos, dtype=np.float64)
+
+
+def drop_box_points(points_world: np.ndarray, boxes: Sequence[Box],
+                    margin: float = SIZE_BOX_MARGIN) -> np.ndarray:
+    """世界の点（N×3）から、画面のボタンで置いた箱（向きは世界の軸、高さ BOX_HEIGHT。box_sdf と同じ）の中の点を除く。
+    箱は水平に margin、上に margin だけ広げる。footprint_size の前に使う：箱が物の近くにあると、その点で物の
+    大きさが膨らみ、set_size が大きい方を残すのでずっと戻らない（近い帯が無くなり「〜まで歩いて」が NO_PATH になる）。"""
+    p = np.asarray(points_world, dtype=np.float64).reshape(-1, 3)
+    keep = np.ones(len(p), dtype=bool)
+    for b in boxes:
+        h = b.size / 2.0 + margin
+        keep &= ~((np.abs(p[:, 0] - b.x) <= h) & (np.abs(p[:, 1] - b.y) <= h)
+                  & (p[:, 2] <= BOX_HEIGHT + margin))
+    return p[keep]
 
 
 def footprint_size(points_world: np.ndarray, cx: float, cy: float, radius: float = SIZE_RADIUS,

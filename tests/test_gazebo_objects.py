@@ -8,8 +8,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gazebo.bridge_core import (OBJECT_SPAWN_Z, ObjectMemory, compose, footprint_size,
+from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_BOX_GRACE_S, SIZE_BOX_MARGIN, BoxWorld,
+                                ObjectMemory, compose, drop_box_points, footprint_size,
                                 lidar_points_world, object_label, object_sdf, quat_to_matrix)
+from sim.sim_core import BOX_HEIGHT, Box
 from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_HZ, CAMERA_IN_BODY, CAMERA_NEAR,
                                DEFAULT_LAYOUT, DEFAULT_SIZE, parse)
 
@@ -62,6 +64,79 @@ def test_memory_remembers_flags_visibility_and_keeps_the_largest_size():
     m.set_size("nope_1", (1, 1))
     assert m.objects()[0].size == (0.45, 0.6)
     assert parse(m.message(12.0)) == tuple(m.objects())
+
+
+def side_points(cx, cy, sx, sy, top, bottom=0.1, step=0.05):
+    """The points a LiDAR can hit on the four sides of an axis-aligned box, every 0.1 m from bottom to top."""
+    us, vs = np.arange(-sx / 2, sx / 2 + 1e-9, step), np.arange(-sy / 2, sy / 2 + 1e-9, step)
+    ring = ([(cx + u, cy + v) for u in us for v in (-sy / 2, sy / 2)]
+            + [(cx + u, cy + v) for u in (-sx / 2, sx / 2) for v in vs])
+    return np.array([(x, y, z) for x, y in ring for z in np.arange(bottom, top + 1e-9, 0.1)])
+
+
+def test_drop_box_points_keeps_what_is_outside_a_sim_box():
+    box = Box(1.0, 2.0)                      # 0.3 m, 0.4 m high, axis-aligned like box_sdf
+    h = box.size / 2 + SIZE_BOX_MARGIN
+    pts = np.array([[1.0, 2.0, 0.2], [1.0 + h - 0.01, 2.0, 0.1], [1.0, 2.0 - h + 0.01, BOX_HEIGHT],
+                    [1.0 + h + 0.01, 2.0, 0.2], [1.0, 2.0 + h + 0.01, 0.2],
+                    [1.0, 2.0, BOX_HEIGHT + SIZE_BOX_MARGIN + 0.01]])   # above the box: a taller object's points
+    assert drop_box_points(pts, [box]).tolist() == pts[3:].tolist()
+    assert drop_box_points(pts, []).tolist() == pts.tolist()
+    assert drop_box_points(np.empty((0, 3)), [box]).shape == (0, 3)
+
+
+def test_a_sim_box_beside_box_1_leaves_its_size_unchanged():
+    m = ObjectMemory()
+    m.update([("box_1", "box", 2.5, 1.5)], 10.0)
+    box_1 = side_points(2.5, 1.5, 0.5, 0.5, top=0.5)
+    m.set_size("box_1", footprint_size(box_1, 2.5, 1.5))
+    assert m.objects()[0].size == pytest.approx((0.5, 0.5), abs=0.03)
+    w = BoxWorld()
+    _, sim = w.place("front", x=3.0, y=0.3, yaw=math.pi / 2)   # 「前に箱を置く」: 0.1 m from box_1's side
+    assert (sim.x, sim.y) == pytest.approx((3.0, 1.5))
+    frame = np.vstack([box_1, side_points(sim.x, sim.y, sim.size, sim.size, top=BOX_HEIGHT)])
+    assert footprint_size(frame, 2.5, 1.5)[0] > 1.0                # unfiltered, box_1 would grow for good
+    m.set_size("box_1", footprint_size(drop_box_points(frame, w.sizing_boxes(11.0)), 2.5, 1.5))
+    assert m.objects()[0].size == pytest.approx((0.5, 0.5), abs=0.03)
+
+
+def test_a_box_put_in_front_at_the_chair_keeps_its_near_band():   # Review Focus 4
+    chair = DEFAULT_LAYOUT[1]
+    m = ObjectMemory()
+    m.update([(chair.id, chair.label, chair.x, chair.y)], 10.0)
+    points = np.vstack([side_points(chair.x + dx, chair.y + dy, 0.04, 0.04, top=0.4)        # legs
+                        for dx in (-0.2, 0.2) for dy in (-0.2, 0.2)]
+                       + [side_points(chair.x, chair.y, 0.45, 0.45, top=0.43, bottom=0.43),  # seat
+                          side_points(chair.x - 0.205, chair.y, 0.04, 0.45, top=0.9, bottom=0.5)])  # back
+    m.set_size(chair.id, footprint_size(points, chair.x, chair.y))
+    before = m.objects()[0].size
+    assert before == pytest.approx((0.45, 0.45), abs=0.03)
+    w = BoxWorld()
+    # 「椅子まで歩いて」 ended in the near band (1.07-1.4 m, heading within 40°), then 「前に箱を置く」
+    for dist, yaw in ((1.4, 0.0), (1.1, 0.0), (1.2, math.radians(30)), (1.3, math.radians(-25))):
+        _, sim = w.place("front", x=chair.x - dist, y=chair.y, yaw=yaw)
+        frame = np.vstack([points, side_points(sim.x, sim.y, sim.size, sim.size, top=BOX_HEIGHT)])
+        grown = footprint_size(frame, chair.x, chair.y)
+        assert max(grown) > max(before) + 0.04, (dist, yaw)          # unfiltered, the chair would grow
+        m.set_size(chair.id, footprint_size(drop_box_points(frame, w.sizing_boxes(11.0)), chair.x, chair.y))
+        assert m.objects()[0].size == pytest.approx(before), (dist, yaw)
+    r = math.hypot(*m.objects()[0].size) / 2
+    assert min(r + 1.5, 1.4) - (r + 0.75) > 0.3                      # the near band stays open
+
+
+def test_sim_boxes_stay_out_of_sizing_until_they_are_gone_from_the_cloud():
+    w = BoxWorld()
+    n1, b1 = w.place("front", x=0.0, y=0.0, yaw=0.0)   # asked for: Gazebo may draw it before the answer
+    n2, b2 = w.place("back", x=0.0, y=0.0, yaw=0.0)
+    assert w.sizing_boxes(0.0) == [b1, b2]
+    assert w.world(5.0, 5.0)["boxes"] == []            # /sim/world still shows only the placed boxes
+    w.add(n1, b1)
+    w.failed(n2)
+    assert w.sizing_boxes(1.0) == [b1]
+    assert w.world(5.0, 5.0)["boxes"] == [[1.2, 0.0, 0.3]]
+    assert w.clear(now=10.0) == [n1] and w.world(5.0, 5.0)["boxes"] == []
+    assert w.sizing_boxes(10.0 + SIZE_BOX_GRACE_S - 0.1) == [b1]   # removal is asynchronous; clouds in flight
+    assert w.sizing_boxes(10.0 + SIZE_BOX_GRACE_S + 0.1) == []
 
 
 def test_object_sdf_is_static_xml_of_the_right_size():

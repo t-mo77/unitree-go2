@@ -16,7 +16,8 @@
   （すでにあれば、あるものとして扱う）。
 - logical camera（/gazebo/logical_camera、ros_gz_interfaces/LogicalCameraImage）が見た model を名前で絞り
   （box_<n>・chair_<n> だけ。ground_plane・robot・sim_box_<n> は除く）、世界（= odom）の位置に直して覚え、
-  ほとんど回っていないとき（|yaw_speed| ≤ 0.1 rad/s）に LiDAR の点で底面の大きさを測る。覚えている物を 2 Hz で /go2/objects
+  ほとんど回っていないとき（|yaw_speed| ≤ 0.1 rad/s）に LiDAR の点で底面の大きさを測る（画面のボタンで置いた箱の
+  点は除く）。覚えている物を 2 Hz で /go2/objects
   （std_msgs/String の JSON、voice_ltl/objects.py の形）に出す。時刻（stamp・seen）は実際の時間（time.time()）。
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
@@ -56,8 +57,8 @@ from unitree_go.msg import SportModeState
 from go2_nl_control.actions import MOVE
 from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_MAX_YAW_SPEED, BoxWorld, BridgeCore,
                                 ControllerInput, ObjectMemory, api_name, box_sdf, compose,
-                                drop_ground_and_self_points, footprint_size, lidar_points_world,
-                                object_label, object_sdf)
+                                drop_box_points, drop_ground_and_self_points, footprint_size,
+                                lidar_points_world, object_label, object_sdf)
 from sim.sim_core import BOX_HEIGHT
 from voice_ltl.objects import DEFAULT_LAYOUT, OBJECTS_HZ, OBJECTS_TOPIC
 
@@ -209,11 +210,13 @@ class GazeboBridge(Node):
 
     # ---------- 物（box_1・chair_1） ----------
     def _measure_sizes(self, kept: np.ndarray) -> None:
-        """覚えている物ごとに、近くの LiDAR の点で底面の大きさを測って入れる。"""
+        """覚えている物ごとに、近くの LiDAR の点で底面の大きさを測って入れる。画面のボタンで置いた箱の点は
+        先に除く（箱が物のそばにあると、物の大きさが膨らんだまま戻らないので）。"""
         objects = self.memory.objects()
         if not objects or len(kept) == 0:
             return
-        world = lidar_points_world(kept, self._pose[0:3], self._quat)
+        world = drop_box_points(lidar_points_world(kept, self._pose[0:3], self._quat),
+                                self.boxes.sizing_boxes(time.time()))
         for o in objects:
             size = footprint_size(world, o.x, o.y)
             if size is not None:
@@ -294,12 +297,13 @@ class GazeboBridge(Node):
                 self.get_logger().info(f"箱を置きました（{where}）: {name} x={box.x:.2f} y={box.y:.2f}")
                 self._publish_world()
             else:
+                self.boxes.failed(name)
                 self.get_logger().warning(f"箱を置けませんでした（{where}）: {name}")
 
         self._create.call_async(req).add_done_callback(done)
 
     def _clear_boxes(self) -> None:
-        for name in self.boxes.clear():
+        for name in self.boxes.clear(time.time()):   # 消えるまでの点群は、しばらく大きさを測る点から除く
             req = DeleteEntity.Request()
             req.entity.name = name
             req.entity.type = Entity.MODEL
