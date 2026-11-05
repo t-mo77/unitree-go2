@@ -16,44 +16,9 @@ from voice_ltl.diagrams import MAX_DRAW_STATES, render_svg, too_big_svg
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.world import PlantState, go2_world
 
-# The lecture's 3 x 3 room, copied from tests/test_automata.py (grid_world there).
-WIDTH, HEIGHT = 3, 3
-GOAL, OBSTACLE, START = (2, 1), (1, 1), (0, 1)
-MOVES = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
-
-
-def grid_label(cell) -> frozenset[str]:
-    if cell == GOAL:
-        return frozenset({"at_goal"})
-    if cell == OBSTACLE:
-        return frozenset({"collide"})
-    return frozenset()
-
-
-def lecture_world() -> World:
-    """The lecture room as a World: START is state 0, the goal is absorbing and the only marked cell."""
-    cells = [START] + [(x, y) for x in range(WIDTH) for y in range(HEIGHT) if (x, y) != START]
-    transitions = []
-    event_label = {}
-    for x, y in cells:
-        if (x, y) == GOAL:
-            continue
-        for action, (dx, dy) in MOVES.items():
-            nxt = (x + dx, y + dy)
-            if 0 <= nxt[0] < WIDTH and 0 <= nxt[1] < HEIGHT:
-                label = grid_label(nxt)
-                event = f"{action}_to_" + ("_".join(sorted(label)) or "free")
-                event_label[event] = label
-                transitions.append(((x, y), event, nxt, "c"))
-    return World(
-        states=cells,
-        initial=START,
-        transitions=transitions,
-        marked=[GOAL],
-        event_label=event_label,
-        initial_label=grid_label(START),
-        propositions=("at_goal", "collide"),
-    )
+# The lecture's 3 x 3 room: the one fixture in tests/test_automata.py, imported (not copied) so the
+# pinned numbers here and there always test the same world. The alias keeps it apart from grid.py's world.
+from test_automata import GOAL, OBSTACLE, START, grid_world as lecture_world
 
 
 def canonical(size: int, trans, marked) -> tuple[int, list, list]:
@@ -93,6 +58,15 @@ def old_supcon(formula: str, world: World, tmp: Path) -> tuple[int, list, list]:
         pitct.supcon("SUP", "PRODUCT", "TRIMMED")
         trans = [(s, e, d) for s, e, d, *_ in pitct.trans("SUP")]
         return canonical(pitct.statenum("SUP"), trans, pitct.marker("SUP"))
+
+
+def test_lecture_world_is_the_test_automata_fixture():
+    """One source of truth: a copy here could drift from test_automata.grid_world."""
+    import test_automata
+
+    assert lecture_world is test_automata.grid_world
+    w = lecture_world()
+    assert (w.initial, w.marked, len(w.states)) == (START, [GOAL], 9) and OBSTACLE in w.states
 
 
 def test_sup_pairs_map_every_sup_state(tmp_path):
