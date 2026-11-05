@@ -137,8 +137,9 @@ def formula_object_props(formula: str) -> frozenset[str]:
 
 
 def label_in(text: str) -> str | None:
-    """LABEL_WORDS の語を含む最初のラベル（LABEL_WORDS の順）。"""
-    return next((label for label, words in LABEL_WORDS.items() if any(w in text for w in words)), None)
+    """LABEL_WORDS の語を 1 語として含む最初のラベル（LABEL_WORDS の順）。
+    アイス・アドバイス・かわいすぎる・ボックスステップ・箱根のように、長い語の一部なら当てない（R16）。"""
+    return next((label for label, pattern in _LABEL_RES.items() if pattern.search(text)), None)
 
 
 def where(obj: Obj, pose: Pose | None) -> str | None:
@@ -224,6 +225,33 @@ def msg_ambiguous(label: str, n: int) -> str:
 
 
 # ---- 内部 ----
+
+_KATAKANA = "ァ-ヺー"                     # the long-vowel mark too, but not the middle dot ・
+_HIRAGANA = "ぁ-ゖ"
+_KANJI = "々一-鿿"
+_PARTICLES_BEFORE = "のとやもをにへがはで"
+_PARTICLES_AFTER = "まで|から|[のとやもをにへがはで]"
+
+
+def _script(ch: str) -> str | None:
+    return next((name for name, chars in (("kata", _KATAKANA), ("hira", _HIRAGANA), ("kanji", _KANJI))
+                 if re.fullmatch(f"[{chars}]", ch)), None)
+
+
+def _word_pattern(word: str) -> str:
+    """word が長い語の一部でないときだけ当たる正規表現。カタカナの端はカタカナと続かない（チェアー は可）。
+    ひらがなの端は、ひらがなでない字か助詞と続く（このいす・いすまで は可、かわいすぎる は不可）。
+    漢字で終わる語は漢字と続かない（箱根・椅子取り は不可）。"""
+    head = {"kata": f"(?<![{_KATAKANA}])",
+            "hira": f"(?:(?<![{_HIRAGANA}])|(?<=[{_PARTICLES_BEFORE}]))"}.get(_script(word[0]), "")
+    tail = {"kata": f"ー?(?![{_KATAKANA}])",
+            "hira": f"(?:(?={_PARTICLES_AFTER})|(?![{_HIRAGANA}]))",
+            "kanji": f"(?![{_KANJI}])"}.get(_script(word[-1]), "")
+    return head + re.escape(word) + tail
+
+
+_LABEL_RES = {label: re.compile("|".join(_word_pattern(w) for w in words)) for label, words in LABEL_WORDS.items()}
+
 
 def _mm(v: float) -> float:
     return round(float(v), 3)

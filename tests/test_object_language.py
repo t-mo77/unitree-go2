@@ -169,6 +169,15 @@ def test_object_handling_words_are_never_object_items():  # R16, design §3
         assert t.message == f"「{item}」は単語帳にないので、まだできません。", item
 
 
+def test_words_that_only_contain_a_label_word_keep_todays_message():   # R16, review I1
+    t = translate("x", FakeLLM([{"formula": None, "unsupported": ["アイスを取ってくる"]}]), scene=Scene())
+    assert t.message == "「アイスを取ってくる」は単語帳にないので、まだできません。"
+    for item in ("アイスを取ってくる", "アドバイスする", "かわいすぎるダンス", "ボックスステップ", "箱根に行く"):
+        for scene in (None, Scene(), Scene(tuple(Obj(f"chair_{k}", "chair", 2, k) for k in (1, 2)), (0, 0, 0))):
+            t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=scene)
+            assert t.message == f"「{item}」は単語帳にないので、まだできません。", (item, scene)
+
+
 def test_far_object_is_refused_early():                   # P5
     far = Scene((Obj("box_1", "box", 7.0, 0.0),), (0, 0, 0))
     t = translate("箱まで歩いて", FakeLLM([{"formula": "F near_box_1", "unsupported": []}]), scene=far)
