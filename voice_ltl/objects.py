@@ -242,7 +242,13 @@ def _wrap_rad(a: float) -> float:
 
 
 def _number(v: object) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    """A finite int or float (not bool) that float() can hold; never raises (R21)."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:   # an int too large for a float, e.g. a 400-digit JSON number
+        return False
 
 
 def _parse_row(row: object) -> Obj | None:

@@ -51,8 +51,12 @@ def test_parse_checks_size_visible_and_seen():
     rows = [{**good, "id": "box_2", "size": [0.5]}, {**good, "id": "box_3", "size": [0.5, 3.5]},
             {**good, "id": "box_4", "size": "0.5 0.5"}, {**good, "id": "box_5", "visible": "yes"},
             {**good, "id": "box_6", "seen": float("inf")}, {**good, "id": "box_7", "seen": False},
-            {**good, "id": "box_8", "size": [3.0, 0.1], "visible": False, "seen": 7}]
-    assert [o.id for o in parse_rows(rows)] == ["box_8"]
+            {**good, "id": "box_8", "size": [3.0, 0.1], "visible": False, "seen": 7},
+            {**good, "id": "box_9", "x": 10**400}, {**good, "id": "box_10", "seen": 10**400},
+            {**good, "id": "box_11", "y": -10**400}, {**good, "id": "box_12", "size": [10**400, 0.5]}]
+    assert [o.id for o in parse_rows(rows)] == ["box_8"]   # an int too big for a float drops, never raises
+    huge = '{"frame":"odom","objects":[{"id":"box_1","label":"box","x":1' + "0" * 400 + ',"y":0}]}'
+    assert parse(json.loads(huge)) == ()
     (o,) = parse_rows([good])
     assert (o.size, o.visible, o.seen) == (DEFAULT_SIZE, True, None)
     assert parse_rows(None) == () and parse_rows({"objects": [good]}) == ()
