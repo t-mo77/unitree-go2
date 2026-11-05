@@ -2,12 +2,17 @@
 
 実機の状態表（actions._ERROR_CODE_TO_STATE）に合わせた error_code の遷移、
 速度の積分、箱との衝突、箱の LiDAR 点群を持つ。時刻は呼び出し側が渡す。
+
+名前つきの物（SimGo2.objects：box_1・chair_1 など）は、画面のボタンで置く箱（boxes）とは別に持つ。
+物も衝突と LiDAR 点群には入るが、/sim/world と clear_boxes には入らない（R22）。
+FakeCamera は Gazebo の logical camera と同じ視野（120°、0.1〜8 m）で物を見て、見た物を覚えておく。
 """
 
 import json
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 import numpy as np
 
@@ -16,6 +21,8 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     STAND_UP, STANDING, STOP_MOVE, STRETCH,
                                     state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
+from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_IN_BODY, CAMERA_NEAR,
+                               DEFAULT_LAYOUT, Obj)
 
 FOOTPRINT = 0.35      # 体の前後の半分の長さ（本物の Go2 は約 0.70 m）[m]
 FOOTPRINT_HALF_WIDTH = 0.16   # 体の左右の半分の幅（本物の Go2 は約 0.31 m）[m]
@@ -58,11 +65,44 @@ def _polygon_gap(p, q) -> float:
                for a, b in ((p, q), (q, p)) for v in a for i in range(4))
 
 
+def _wrap(a: float) -> float:
+    """(−π, π] に折り返す。"""
+    a %= 2 * math.pi
+    return a - 2 * math.pi if a > math.pi else a
+
+
 @dataclass
 class Box:
     x: float
     y: float
     size: float = 0.3
+
+
+@dataclass
+class SimObject:
+    """名前つきの物。底面は軸に平行な sx × sy の長方形（odom の x 方向・y 方向の長さ）。"""
+    id: str
+    label: str
+    x: float
+    y: float
+    sx: float
+    sy: float
+
+
+def in_camera_view(pose: tuple[float, float, float], x: float, y: float) -> bool:
+    """位置 pose = (x, y, yaw) の Go2 の前カメラ（CAMERA_IN_BODY）から (x, y) が見えるか。
+
+    カメラからの距離が CAMERA_NEAR〜CAMERA_FAR で、向きの差が CAMERA_HFOV/2 以内。
+    SimGo2.yaw は折り返さないので、差は (−π, π] に折り返してから比べる。
+    """
+    px, py, yaw = pose
+    c, s = math.cos(yaw), math.sin(yaw)
+    bx, by = CAMERA_IN_BODY[0], CAMERA_IN_BODY[1]
+    dx = x - (px + c * bx - s * by)
+    dy = y - (py + s * bx + c * by)
+    if not CAMERA_NEAR <= math.hypot(dx, dy) <= CAMERA_FAR:
+        return False
+    return abs(_wrap(math.atan2(dy, dx) - yaw)) <= CAMERA_HFOV / 2
 
 
 class SimGo2:
@@ -74,6 +114,7 @@ class SimGo2:
         self.error_code = _START_CODE[posture]
         self.collided = False
         self.boxes: List[Box] = []
+        self.objects: List[SimObject] = []    # 名前つきの物（boxes とは別。/sim/world・clear_boxes に入らない）
         self.accepted: List[int] = []
         self._vel = (0.0, 0.0, 0.0)
         self._vel_t0 = 0.0          # 速度を設定した時刻
@@ -175,24 +216,29 @@ class SimGo2:
         if new > old:                           # 箱から離れる動きが実際に進んだときだけ解除
             self.collided = False
 
+    def _rects(self) -> List[tuple[float, float, float, float]]:
+        """ぶつかる物すべて（箱と名前つきの物）を、軸に平行な長方形 (中心 x, 中心 y, 半幅 x, 半幅 y) で。"""
+        return ([(b.x, b.y, b.size / 2.0, b.size / 2.0) for b in self.boxes]
+                + [(o.x, o.y, o.sx / 2.0, o.sy / 2.0) for o in self.objects])
+
     def _moving_out_of_overlap(self, nx: float, ny: float, old: float, new: float) -> bool:
-        """すでに重なっている（隙間 0）とき、いちばん近い箱の中心から遠ざかる動きか。"""
-        if old > 0.0 or new > 0.0 or not self.boxes:
+        """すでに重なっている（隙間 0）とき、いちばん近い箱（または物）の中心から遠ざかる動きか。"""
+        rects = self._rects()
+        if old > 0.0 or new > 0.0 or not rects:
             return False
-        b = min(self.boxes, key=lambda k: math.hypot(k.x - self.x, k.y - self.y))
-        return math.hypot(b.x - nx, b.y - ny) > math.hypot(b.x - self.x, b.y - self.y)
+        bx, by, _, _ = min(rects, key=lambda r: math.hypot(r[0] - self.x, r[1] - self.y))
+        return math.hypot(bx - nx, by - ny) > math.hypot(bx - self.x, by - self.y)
 
     def _nearest_box_dist(self, px: float, py: float, yaw: float) -> float:
-        """体（位置 px, py・向き yaw の長方形）と箱の隙間の最小値 [m]。重なっていれば 0。"""
+        """体（位置 px, py・向き yaw の長方形）と箱・物の隙間の最小値 [m]。重なっていれば 0。"""
         c, s = math.cos(yaw), math.sin(yaw)
         body = [(px + c * u - s * v, py + s * u + c * v)
                 for u, v in ((FOOTPRINT, FOOTPRINT_HALF_WIDTH), (FOOTPRINT, -FOOTPRINT_HALF_WIDTH),
                              (-FOOTPRINT, -FOOTPRINT_HALF_WIDTH), (-FOOTPRINT, FOOTPRINT_HALF_WIDTH))]
         best = math.inf
-        for b in self.boxes:
-            h = b.size / 2.0
-            box = [(b.x + h, b.y + h), (b.x - h, b.y + h), (b.x - h, b.y - h), (b.x + h, b.y - h)]
-            best = min(best, _polygon_gap(body, box))
+        for x, y, hx, hy in self._rects():
+            rect = [(x + hx, y + hy), (x - hx, y + hy), (x - hx, y - hy), (x + hx, y - hy)]
+            best = min(best, _polygon_gap(body, rect))
         return best
 
     # ---- 箱と点群 ----
@@ -204,20 +250,26 @@ class SimGo2:
         return box
 
     def clear_boxes(self) -> None:
+        """画面のボタンで置いた箱だけをどける（名前つきの物はそのまま）。"""
         self.boxes.clear()
         self.collided = False
 
+    def place_objects(self, layout: Iterable[Obj] = DEFAULT_LAYOUT) -> None:
+        """名前つきの物を layout の通りに置き直す（それまでの物は消える。何度呼んでも同じ）。"""
+        self.objects[:] = [SimObject(o.id, o.label, o.x, o.y, o.size[0], o.size[1]) for o in layout]
+
     def cloud_lidar(self) -> np.ndarray:
-        """箱の4側面（0.05 m 間隔、高さ 0〜0.4 m）を LiDAR 座標の点群にする（N×3）。"""
-        if not self.boxes:
+        """箱と物の4側面（0.05 m 間隔、高さ 0〜0.4 m）を LiDAR 座標の点群にする（N×3）。"""
+        rects = self._rects()
+        if not rects:
             return np.zeros((0, 3))
         hs = np.arange(0.0, BOX_HEIGHT + _EPS, POINT_STEP)
         world = []
-        for b in self.boxes:
-            h = b.size / 2.0
-            u = np.arange(-h, h + _EPS, POINT_STEP)
-            edges = ([(b.x + e, b.y - h) for e in u] + [(b.x + e, b.y + h) for e in u]
-                     + [(b.x - h, b.y + e) for e in u[1:-1]] + [(b.x + h, b.y + e) for e in u[1:-1]])
+        for x, y, hx, hy in rects:
+            ux = np.arange(-hx, hx + _EPS, POINT_STEP)
+            uy = np.arange(-hy, hy + _EPS, POINT_STEP)
+            edges = ([(x + e, y - hy) for e in ux] + [(x + e, y + hy) for e in ux]
+                     + [(x - hx, y + e) for e in uy[1:-1]] + [(x + hx, y + e) for e in uy[1:-1]])
             for ex, ey in edges:
                 for z in hs:
                     world.append((ex, ey, z))
@@ -234,3 +286,26 @@ class SimGo2:
         ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
         rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
         return body @ (rz @ ry)
+
+
+class FakeCamera:
+    """SimGo2 の前カメラ（in_camera_view）で物を見て、一度見た物を覚えておく。
+
+    いま見えている物は visible True・seen = now、前に見た物は visible False・seen = 最後に見た時刻。
+    一度も見ていない物は出さない。並びは id 順。
+    """
+
+    def __init__(self) -> None:
+        self._last_seen: Dict[str, float] = {}
+
+    def see(self, sim: SimGo2, now: float) -> List[Obj]:
+        pose = (sim.x, sim.y, sim.yaw)
+        out = []
+        for o in sorted(sim.objects, key=lambda k: k.id):
+            visible = in_camera_view(pose, o.x, o.y)
+            if visible:
+                self._last_seen[o.id] = now
+            seen = self._last_seen.get(o.id)
+            if seen is not None:
+                out.append(Obj(o.id, o.label, o.x, o.y, (o.sx, o.sy), visible, seen))
+        return out
