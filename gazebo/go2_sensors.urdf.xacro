@@ -1,12 +1,16 @@
 <?xml version="1.0"?>
 <!--
-  Gazebo Harmonic に出す Go2。go2_description の robot.xacro（GAZEBO=true）に、橋渡しが使う 2 つを足す。
+  Gazebo Harmonic に出す Go2。go2_description の robot.xacro（GAZEBO=true）に、橋渡しが使う 3 つを足す。
   - LiDAR（gpu_lidar）：base から x=0.28、z=0.10、傾きなし（perception.py の既定 lidar_x・lidar_z・lidar_pitch と同じ）。
     水平 360 度・垂直 −30〜+30 度、10 Hz、0.05〜10 m。Gazebo のトピック gazebo/lidar/points（frame utlidar_lidar）。
     橋渡しが自分の体の点を除いて /utlidar/cloud に出し直す。
+  - logical camera：実機の前のカメラ（go2_description の front_camera）と同じ位置
+    （voice_ltl/objects.py の CAMERA_IN_BODY）。水平 120 度・0.1〜8 m・5 Hz。画像は出さず、視野に原点が入っている
+    model の名前と位置だけを出す（描画しないので CPU だけで済む）。Gazebo のトピック gazebo/logical_camera。
+    橋渡しが box_<n>・chair_<n> だけを残し、/go2/objects に出す。
   - OdometryPublisher：base の本当の位置と向き（50 Hz、/model/robot/odometry）。/sportmodestate の position・rpy にする。
-  D435 と前のカメラは付けない（EXTERNAL_SENSORS は false のまま）。カメラがあると RTF が 0.13 まで落ちる
-  （docs/reference/gazebo_feasibility_jazzy.md）。
+  画像を出すカメラ（D435 と前のカメラ）は付けない（EXTERNAL_SENSORS は false のまま）。画像を出すカメラがあると
+  RTF が 0.13 まで落ちる（docs/reference/gazebo_feasibility_jazzy.md）。
 -->
 <robot name="go2" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- robot.xacro より先に決めた値が使われる -->
@@ -55,6 +59,32 @@
     </sensor>
   </gazebo>
 
+  <!-- 実機の前のカメラ（go2_description.urdf の front_camera）と同じ位置。画像は出さず、見えている model の名前と位置だけ -->
+  <joint name="logical_camera_joint" type="fixed">
+    <parent link="base"/>
+    <child link="logical_camera"/>
+    <origin xyz="0.32715 -0.00003 0.04297" rpy="0 0 0"/>
+  </joint>
+
+  <link name="logical_camera">
+  </link>
+
+  <gazebo reference="logical_camera">
+    <sensor name="front_logical_camera" type="logical_camera">
+      <logical_camera>
+        <near>0.1</near>
+        <far>8.0</far>
+        <!-- 120 度（upstream の front_camera と同じ）。16:9 なので縦は約 88 度（伏せていても立っていても物の原点が入る） -->
+        <horizontal_fov>2.094</horizontal_fov>
+        <aspect_ratio>1.778</aspect_ratio>
+      </logical_camera>
+      <always_on>true</always_on>
+      <update_rate>5</update_rate>
+      <visualize>false</visualize>
+      <topic>gazebo/logical_camera</topic>
+    </sensor>
+  </gazebo>
+
   <gazebo>
     <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
       <odom_frame>odom</odom_frame>
@@ -62,5 +92,7 @@
       <odom_publish_frequency>50</odom_publish_frequency>
       <dimensions>3</dimensions>
     </plugin>
+    <!-- logical camera を動かす system（world でなく model に付けても動く） -->
+    <plugin filename="gz-sim-logical-camera-system" name="gz::sim::systems::LogicalCamera"/>
   </gazebo>
 </robot>

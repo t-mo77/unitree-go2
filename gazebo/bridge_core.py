@@ -20,11 +20,16 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   ただし「歩くに入った」ことだけは、橋渡しのノードが controller のログ（/rosout）で知らせる（trot_entered）。
 - 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
   立っているつもりで転んだら error_code を 1001（伏せ扱い）にし、速度を 0 にする。起き上がらせはしない。
+
+物（box_1・chair_1）の部品も持つ：logical camera が見た model を世界（= odom）の位置に直し（compose）、
+名前で絞り（object_label）、LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
+/go2/objects の形は voice_ltl/objects.py。
 """
 
 import json
 import math
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -33,6 +38,7 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     RISE_SIT, SCRAPE, SIT, STAND_DOWN, STAND_UP, STANDING,
                                     STOP_MOVE, STRETCH, state_from_error_code)
 from sim.sim_core import BOX_HEIGHT, FOOTPRINT, Box
+from voice_ltl.objects import DEFAULT_SIZE, ID_RE, MAX_SIZE, Obj, format_message
 
 # ---- /control_input の command（unitree_guide controller） ----
 STAND_CMD = 2    # 伏せ → 立つ
@@ -86,6 +92,13 @@ SELF_HALF_Y = 0.20
 SELF_Z = (-0.35, 0.15)
 GROUND_Z = 0.05                     # 世界の z がこれ未満の点は地面とみなして除く（Ruling R23）[m]
 BOX_DISTANCE = 1.2                  # 箱は Go2 の今の位置から前（後ろ）にこの距離 [m]
+
+# ---- 物（box_1・chair_1）。位置は logical camera、大きさは LiDAR の点で測る ----
+SIZE_RADIUS = 0.6          # 物の中心から水平にこの距離より近い点を、その物の点とみなす [m]
+SIZE_MIN_POINTS = 10       # これより点が少なければ測らない
+SIZE_MAX_YAW_SPEED = 0.1   # 回る速さがこれ以下のときだけ測る（点群と位置の時刻のずれで広がるので）[rad/s]
+SIZE_MIN = 0.1             # 測った大きさの下限 [m]（上限は objects.MAX_SIZE）
+OBJECT_SPAWN_Z = {"box": 0.25, "chair": 0.45}   # 出す高さ = model の原点の高さ [m]（箱は中心、椅子は座面の上）
 
 _EPS = 1e-6
 _API_NAMES = {
@@ -387,3 +400,122 @@ class BoxWorld:
 def _dist_to_box(px: float, py: float, b: Box) -> float:
     h = b.size / 2.0
     return math.hypot(max(abs(px - b.x) - h, 0.0), max(abs(py - b.y) - h, 0.0))
+
+
+# ---- 物（box_1・chair_1） ----
+def quat_to_matrix(q: Tuple[float, float, float, float]) -> np.ndarray:
+    """四元数 (w, x, y, z) の回転行列（3×3）。"""
+    w, x, y, z = (float(v) for v in q)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def compose(parent_pos: Sequence[float], parent_quat: Tuple[float, float, float, float],
+            rel_pos: Sequence[float]) -> Tuple[float, float, float]:
+    """親の座標で rel_pos にある点の、世界の位置：parent_pos + R(parent_quat)·rel_pos。
+    logical camera では、親 = カメラの世界の位置と向き、rel_pos = model の原点（カメラから見た位置）。"""
+    p = np.asarray(parent_pos, dtype=np.float64) + quat_to_matrix(parent_quat) @ np.asarray(
+        rel_pos, dtype=np.float64)
+    return float(p[0]), float(p[1]), float(p[2])
+
+
+def object_label(name: str) -> Optional[str]:
+    """Gazebo の model の名前が物（box_<n>・chair_<n>、R21）なら "box" か "chair"。
+    ground_plane・robot・画面のボタンで置く sim_box_<n> などは None。"""
+    m = ID_RE.fullmatch(name) if isinstance(name, str) else None
+    return m.group(1) if m else None
+
+
+def lidar_points_world(points_lidar: np.ndarray, base_pos: Sequence[float],
+                       base_quat: Tuple[float, float, float, float]) -> np.ndarray:
+    """LiDAR 座標の点（N×3）を世界の座標にする：R(base_quat)·(p + LIDAR_IN_BODY) + base_pos。"""
+    p = np.asarray(points_lidar, dtype=np.float64).reshape(-1, 3) + np.asarray(LIDAR_IN_BODY)
+    return p @ quat_to_matrix(base_quat).T + np.asarray(base_pos, dtype=np.float64)
+
+
+def footprint_size(points_world: np.ndarray, cx: float, cy: float, radius: float = SIZE_RADIUS,
+                   min_points: int = SIZE_MIN_POINTS) -> Optional[Tuple[float, float]]:
+    """中心 (cx, cy) から水平に radius より近く、地面より上（世界の z ≥ GROUND_Z）の点で測った底面の大きさ
+    (x の幅, y の幅) = (2·max|dx|, 2·max|dy|)。中心は分かっているので、手前の面しか見えなくても測れる。
+    点が min_points より少なければ None。"""
+    p = np.asarray(points_world, dtype=np.float64).reshape(-1, 3)
+    d = p[:, :2] - np.array([cx, cy])
+    near = d[(np.hypot(d[:, 0], d[:, 1]) < radius) & (p[:, 2] >= GROUND_Z)]
+    if len(near) < min_points:
+        return None
+    sx, sy = 2 * np.abs(near).max(axis=0)
+    return float(sx), float(sy)
+
+
+def object_sdf(obj_id: str, label: str) -> str:
+    """Gazebo に出す物（動かない・ぶつかる）の SDF。見た目はぶつかる形と同じ。
+    - box：0.5 m 角の立方体。原点は中心（出す高さ 0.25 m）。
+    - chair：原点は座面の上（出す高さ 0.45 m）。座面 0.45 × 0.45、脚 4 本、背もたれは −x 側で 0.9 m まで。"""
+    if label == "box":
+        parts = (("box", (0.0, 0.0, 0.0), (0.5, 0.5, 0.5)),)
+        color = "0.65 0.48 0.28 1"    # 段ボールの色（ボタンで置く sim_box の橙と分ける）
+    elif label == "chair":
+        parts = (("seat", (0.0, 0.0, -0.02), (0.45, 0.45, 0.04)),
+                 ("leg_fl", (0.2, 0.2, -0.245), (0.04, 0.04, 0.41)),
+                 ("leg_fr", (0.2, -0.2, -0.245), (0.04, 0.04, 0.41)),
+                 ("leg_rl", (-0.2, 0.2, -0.245), (0.04, 0.04, 0.41)),
+                 ("leg_rr", (-0.2, -0.2, -0.245), (0.04, 0.04, 0.41)),
+                 ("back", (-0.205, 0.0, 0.225), (0.04, 0.45, 0.45)))
+        color = "0.45 0.3 0.18 1"     # 木の色
+    else:
+        raise ValueError(f"unknown object label: {label!r}")
+    material = f"<material><ambient>{color}</ambient><diffuse>{color}</diffuse></material>"
+    shapes = ""
+    for name, pos, size in parts:
+        pose = "<pose>{:g} {:g} {:g} 0 0 0</pose>".format(*pos)
+        geometry = "<geometry><box><size>{:g} {:g} {:g}</size></box></geometry>".format(*size)
+        shapes += (f'<collision name="{name}">{pose}{geometry}</collision>'   # link の中で名前は重ねない
+                   f'<visual name="{name}_visual">{pose}{geometry}{material}</visual>')
+    return (f'<?xml version="1.0"?><sdf version="1.6"><model name="{obj_id}"><static>true</static>'
+            f'<link name="link">{shapes}</link></model></sdf>')
+
+
+class ObjectMemory:
+    """logical camera が見た物の控え（物は動かないので、見えなくなっても覚えておく。R20）。
+    /go2/objects の中身（voice_ltl/objects.py の形、odom = Gazebo の世界）を作る。"""
+
+    def __init__(self):
+        self._objects: Dict[str, Obj] = {}
+        self._measured: set = set()   # LiDAR で大きさを測った物の id
+
+    def update(self, seen: Sequence[Tuple[str, str, float, float]], now: float) -> None:
+        """カメラの 1 枚分：見えた物 (id, label, x, y)。見えた物は visible・seen = now、
+        ほかの物は visible False（seen は最後に見た時刻のまま）。初めての物の大きさは DEFAULT_SIZE。"""
+        ids = set()
+        for obj_id, label, x, y in seen:
+            ids.add(obj_id)
+            old = self._objects.get(obj_id)
+            size = DEFAULT_SIZE if old is None else old.size
+            self._objects[obj_id] = Obj(obj_id, label, float(x), float(y), size, True, float(now))
+        for obj_id, o in list(self._objects.items()):
+            if obj_id not in ids and o.visible:
+                self._objects[obj_id] = replace(o, visible=False)
+
+    def set_size(self, obj_id: str, size: Tuple[float, float]) -> None:
+        """LiDAR で測った大きさ (x の幅, y の幅) を [SIZE_MIN, MAX_SIZE] に収めて入れる。
+        初めて測ったら DEFAULT_SIZE と置き換え（0.45 m の椅子を 0.5 のままにしない）、その後は軸ごとに
+        測った中で大きい方を残す（一方からは手前の面しか見えないので）。知らない id は無視する。"""
+        o = self._objects.get(obj_id)
+        if o is None or not all(math.isfinite(v) for v in size):
+            return
+        sx, sy = (min(max(float(v), SIZE_MIN), MAX_SIZE) for v in size)
+        if obj_id in self._measured:
+            sx, sy = max(sx, o.size[0]), max(sy, o.size[1])
+        self._measured.add(obj_id)
+        self._objects[obj_id] = replace(o, size=(sx, sy))
+
+    def objects(self) -> List[Obj]:
+        """覚えている物（id の順）。"""
+        return [self._objects[k] for k in sorted(self._objects)]
+
+    def message(self, stamp: float) -> dict:
+        """/go2/objects に出す dict（json.dumps して std_msgs/String に入れる）。"""
+        return format_message(self.objects(), stamp)
