@@ -276,7 +276,7 @@ def test_prompt_writes_out_repeated_blocks_and_caps_the_total():
     from voice_ltl.prompt import _chain, _repeat
     p = build_prompt("x")
     assert "「A を N 回繰り返して」は、A を N 回、中身を変えずにすべて書き出します" in p
-    assert "合わせて 60 回までです。超えるときは N を減らし、A の中身は減らしません" in p
+    assert "N が 12 を超えるときは、まず N を 12 にします" in p and "合わせて 60 回までです。それでも超えるときは、さらに N を減らします" in p
     assert example("1メートル進んで右を向く、を4回繰り返して",
                    _chain(*(["moved_forward", "moved_forward", "turned_right"] * 4)), [], []) in p
     assert example("右に一周して", _repeat("turned_right", 4), [], []) in p
