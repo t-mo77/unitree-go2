@@ -1,6 +1,7 @@
 """Pick the next move on a supervisor: shortest controllable path to a marked state."""
 
 from collections import deque
+from typing import Sequence
 
 from voice_ltl.automata import Automaton
 
@@ -69,3 +70,22 @@ class Runtime:
         if nxt is None:
             raise PlanError(f"{event} is not allowed in state {self.state}")
         self.state = nxt
+
+    def jump(self, state: int) -> None:
+        """Move to `state` without an event (the Go2 was found elsewhere, Ruling R10)."""
+        if not 0 <= state < self.sup.size:
+            raise ValueError(f"no state {state} in a supervisor of {self.sup.size} states")
+        self.state = state
+
+    def walk(self, events: Sequence[str]) -> list[int]:
+        """The states after each of `events` from the current state, which stays as it is.
+        Raises PlanError on an event that is not allowed where it comes."""
+        states = []
+        state = self.state
+        for event in events:
+            nxt = self._out.get(state, {}).get(event)
+            if nxt is None:
+                raise PlanError(f"{event} is not allowed in state {state}")
+            states.append(nxt)
+            state = nxt
+        return states
