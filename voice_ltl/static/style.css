@@ -35,6 +35,10 @@
   --spin-track: #C7C7CC;
   --topbar: rgba(245, 245, 247, 0.82);
   --map-grid: #ECECEF;
+  --map-cell: #D9D9DE;       /* the lines of the plan's 0.5 m cells */
+  --map-blocked: #E3E3E8;    /* cells a plan never enters: between --map-grid and --map-cell, so they keep their lines */
+  --obj-fill: #DCE6D5;       /* an object that is not a box (a chair) */
+  --obj-line: #8DA37E;
   --robot: #1D1D1F;
   --box-fill: #E8DCCB;
   --box-line: #B9A385;
@@ -88,6 +92,10 @@
     --spin-track: #48484A;
     --topbar: rgba(11, 11, 12, 0.78);
     --map-grid: #2E2E31;
+    --map-cell: #3A3A3D;
+    --map-blocked: #343437;
+    --obj-fill: #44533C;
+    --obj-line: #9DB58C;
     --robot: #F5F5F7;
     --box-fill: #6B5A43;
     --box-line: #B39B76;
@@ -589,7 +597,9 @@ details > summary:focus-visible { border-radius: 8px; }
   border: 1px solid var(--line);
 }
 .diagram-box img { display: block; margin: 0 auto; max-width: none; }
-.diagram-box.fit img { max-width: 100%; height: auto; }
+.diagram-box.fit img:not(.placeholder) { max-width: 100%; height: auto; }
+/* P10: a placeholder (class="too-big") is a short message, centred in the box, never fitted */
+.diagram-box img.placeholder { position: absolute; inset: 0; margin: auto; max-width: 100%; height: auto; }
 .diagram-empty { margin: 0; padding: 96px 24px; text-align: center; color: #6E6E73; }   /* on the white box */
 
 .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; font-size: 13px; color: var(--text-2); }
@@ -631,8 +641,9 @@ details > summary:focus-visible { border-radius: 8px; }
 
 .map-figure { margin: 0; display: flex; flex-direction: column; gap: 10px; }
 .map-box { border-radius: var(--r-md); background: var(--surface-3); border: 1px solid var(--line); overflow: hidden; }
-.map { display: block; width: 100%; height: 240px; }
+.map { display: block; width: 100%; height: 320px; }
 .map-figure figcaption { font-size: 12px; color: var(--muted); }
+.objects-seen { margin: -8px 0 0; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
 .box-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
 
 /* ---------------- log ---------------- */
@@ -672,6 +683,7 @@ details > summary:focus-visible { border-radius: 8px; }
   .tiles { gap: 8px; }
   .tile { padding: 12px; }
   .tile-value { font-size: 18px; }
+  .map { height: 240px; }
   .page { padding: 24px var(--gutter) 48px; }
   .card { padding: 20px; border-radius: 20px; }
   .log-card { padding: 18px 20px; }

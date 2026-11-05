@@ -17,6 +17,8 @@ from starlette.testclient import WebSocketDenialResponse
 import voice_ltl.server as server
 from sim.sim_core import SimGo2
 from voice_ltl.llm import MSG_LOGIN, FakeLLM
+from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,
+                               msg_ambiguous, msg_not_found, msg_too_far)
 from voice_ltl.server import control_loop, create_app
 from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
                                MSG_POSTURE_CHANGED, MSG_POSTURE_UNKNOWN,
@@ -94,6 +96,39 @@ def test_index_has_the_designed_parts(tmp_path):
         'role="status"', 'role="alert"',                                   # the messages
     ]:
         assert text in html, text
+
+
+def test_index_has_the_objects_line(tmp_path):
+    c, _ = make_client(tmp_path)
+    html = c.get("/").text
+    for text in ['id="objects-seen"', "見えている物", "上から見た図", "/go2/objects"]:
+        assert text in html, text
+
+
+MAP_TOKENS = ("--map-blocked", "--map-cell", "--obj-fill", "--obj-line")
+
+
+def theme_tokens(css):
+    """{token: colour} of the light :root block and of the dark one."""
+    light, _, rest = css.partition("@media (prefers-color-scheme: dark)")
+    dark = rest[:rest.index("\n}")]
+    pick = lambda block: dict(re.findall(r"(--[\w-]+):\s*(#[0-9A-Fa-f]{6})\s*;", block))
+    return pick(light[light.index(":root"):]), pick(dark)
+
+
+def luminance(colour):
+    return sum(k * int(colour[i:i + 2], 16) for k, i in ((0.2126, 1), (0.7152, 3), (0.0722, 5)))
+
+
+def test_style_defines_the_new_map_tokens_in_both_themes():
+    css = (server.STATIC / "style.css").read_text(encoding="utf-8")
+    for token in MAP_TOKENS:
+        assert css.count(f"{token}:") >= 2, token
+    for theme in theme_tokens(css):
+        assert set(MAP_TOKENS) <= set(theme), theme
+        # a blocked cell lies between the background grid and the cell lines: it keeps its outline
+        grid, blocked, cell = (luminance(theme[t]) for t in ("--map-grid", "--map-blocked", "--map-cell"))
+        assert min(grid, cell) < blocked < max(grid, cell), theme
 
 
 @pytest.mark.parametrize("env,address", [
@@ -415,6 +450,12 @@ NOTICE_KINDS = [
     ("error", MSG_POSTURE_CHANGED, "error"),    # stopped; the page says 続けられませんでした
     ("error", "「キッチン」は単語帳にないので、式にできません", "error"),
     ("error", "15秒待っても進めません", "error"),
+    # objects (voice_ltl/objects.py; session.py uses them)
+    ("error", MSG_NO_POSE, "error"), ("error", MSG_TOO_SPREAD, "error"),
+    ("error", MSG_POSITION_DRIFT, "error"), ("executing", MSG_POSITION_DRIFT, "error"),   # R11
+    ("error", MSG_UNSATISFIABLE + NO_PATH_REASON, "unsat"),                               # R15
+    ("error", msg_not_found("box"), "error"), ("error", msg_too_far("chair"), "error"),
+    ("error", msg_ambiguous("box", 2), "error"),
     ("idle", "", None),
     ("executing", "", None),
 ]
@@ -516,7 +557,8 @@ needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 # and call with itself (so drawing and listeners do nothing); getElementById keeps what the
 # page writes to an element; fetch is recorded in `sent`; MediaRecorder hands over one chunk
 # of Recorder.size bytes when it stops. Timers never fire. replaceChildren keeps the children
-# in `kids` (created elements keep their className and textContent).
+# in `kids` (created elements keep their className and textContent). A script whose value is
+# a promise gives what the promise resolves to.
 HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const [appJs, testJs] = process.argv.slice(1);
@@ -548,7 +590,8 @@ const ctx = {
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(appJs, "utf8"), ctx, { filename: "app.js" });
-process.stdout.write(JSON.stringify(vm.runInContext(testJs, ctx, { filename: "test.js" })));
+Promise.resolve(vm.runInContext(testJs, ctx, { filename: "test.js" }))
+  .then((value) => process.stdout.write(JSON.stringify(value)));
 """
 
 
@@ -666,3 +709,149 @@ def test_page_has_the_substitutions_box(tmp_path):
     c, _ = make_client(tmp_path)
     html = c.get("/").text
     assert 'id="substitutions-box"' in html and 'id="substitutions"' in html and "こう受け取りました" in html
+
+
+# ---------------- the top view: objects, 0.5 m cells, blocked cells, the plan ----------------
+# Rows as Session.snapshot() sends them (Shared shapes of the objects plan).
+BOX = {"id": "box_1", "label": "box", "name": "箱", "x": 2.5, "y": 1.5, "size": [0.5, 0.5],
+       "visible": True, "seen": 10.0, "where": "左前 2.9 m"}
+CHAIR = {"id": "chair_1", "label": "chair", "name": "椅子", "x": 2.5, "y": -1.5, "size": [0.45, 0.45],
+         "visible": False, "seen": 8.0, "where": "右前 2.9 m"}
+GRID = {"cell": 0.5, "origin": [0, 0], "yaw": 0, "i": [-1, 10], "j": [-2, 8],
+        "blocked": [[5, 3], [4, 3]], "robot": [0, 0, 0], "goal": [3, 0, 0]}
+PLAN_CELLS = [[1, 0, 0], [2, 0, 0], [3, 0, 0]]
+
+# A 480 x 320 canvas whose 2D context records each call, with the style it was made in, in
+# `ops`; save/restore keep the style as a canvas does. A colour is its token's name.
+CANVAS = r"""
+const ops = [], saved = [];
+const pen = { fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1, dash: [] };
+const style = () => ({ fill: pen.fillStyle, stroke: pen.strokeStyle, width: pen.lineWidth,
+                       alpha: pen.globalAlpha, dash: pen.dash });
+const rec = new Proxy(pen, {
+  get: (t, k) => k in t ? t[k]
+    : k === "setLineDash" ? (d) => { t.dash = d; }
+    : k === "save" ? () => { saved.push({ ...t }); }
+    : k === "restore" ? () => { Object.assign(t, saved.pop()); }
+    : (...a) => { ops.push([k, ...a, style()]); },
+  set: (t, k, v) => { t[k] = v; return true; },
+});
+getComputedStyle = () => ({ getPropertyValue: (name) => name });
+byId.map = { clientWidth: 480, clientHeight: 320, width: 0, height: 0, getContext: () => rec,
+             setAttribute(k, v) { this[k] = v; } };
+"""
+
+
+@needs_node
+def test_page_lists_only_visible_objects(tmp_path):
+    snap = page_snapshot(tmp_path, objects=[BOX, CHAIR])
+    r = run_page("render(snap); [objectsLine(objs), objectsLine([]), byId['objects-seen'].textContent]",
+                 objs=[BOX, CHAIR], snap=snap)
+    assert r == ["見えている物：箱（左前 2.9 m）", "見えている物：なし", "見えている物：箱（左前 2.9 m）"]
+
+
+@needs_node
+def test_cell_center_follows_the_grid_frame():
+    r = run_page("const g = { cell: 0.5, origin: [1, 2], yaw: Math.PI / 2 };"
+                 " [cellCenter(g, 1, 0), cellCenter(g, 0, 1), cellCorners(g, 1, 0)]")
+    assert r[0] == pytest.approx([1, 2.5]) and r[1] == pytest.approx([0.5, 2])
+    corners = sorted(tuple(round(v, 9) for v in p) for p in r[2])
+    assert corners == [(0.75, 2.25), (0.75, 2.75), (1.25, 2.25), (1.25, 2.75)]
+
+
+@needs_node
+def test_map_view_is_frozen_while_a_grid_exists():
+    r = run_page("""
+      const inside = (v, pts) => pts.every(([x, y]) => {
+        const px = 240 + (x - v.cx) * v.scale, py = 160 - (y - v.cy) * v.scale;
+        return px >= 0 && px <= 480 && py >= 0 && py <= 320; });
+      const g = grid, [i0, i1] = g.i, [j0, j1] = g.j;
+      const corners = [[i0 - 0.5, j0 - 0.5], [i1 + 0.5, j0 - 0.5], [i1 + 0.5, j1 + 0.5], [i0 - 0.5, j1 + 0.5]]
+        .map(([i, j]) => cellCenter(g, i, j));
+      const edge = [box.x + box.size[0] / 2, box.y + box.size[1] / 2];
+      const a = mapView({ pose: [0, 0, 0], grid: g, objects: [box] }, 480, 320);
+      const b = mapView({ pose: [2, 1, 1], grid: g, objects: [box] }, 480, 320);
+      const free = mapView({ pose: [2, 1, 1], grid: null, objects: [] }, 480, 320);
+      const seen = mapView({ pose: [0, 0, 0], grid: null, objects: [box] }, 480, 320);
+      [a, b, free, inside(a, [...corners, edge]), inside(seen, [[0, 0], edge]), seen.scale];
+    """, grid=GRID, box=BOX)
+    a, b, free, grid_in, objects_in, scale = r
+    assert a == b                                                   # the pose does not move it
+    assert free == pytest.approx({"cx": 2, "cy": 1, "scale": 150})  # today's view: on the Go2
+    assert grid_in and objects_in and scale <= 150
+
+
+@needs_node
+def test_map_draws_objects_cells_and_the_path(tmp_path):
+    snap = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=[BOX, CHAIR], grid=GRID,
+                         plan_cells=PLAN_CELLS)
+    r = run_page(CANVAS + """
+      drawMap(snap);
+      const v = mapView(snap, 480, 320);
+      const [rx, ry] = cellCenter(snap.grid, 0, 0);
+      const px = 240 + (rx - v.cx) * v.scale, py = 160 - (ry - v.cy) * v.scale;
+      const start = ops.findIndex(([k, x, y]) => k === "moveTo" && Math.abs(x - px) < 1e-6 && Math.abs(y - py) < 1e-6);
+      let lines = 0;
+      while (ops[start + 1 + lines]?.[0] === "lineTo") lines += 1;
+      const last = (o) => o[o.length - 1];
+      ({ texts: ops.filter(([k]) => k === "fillText").map((o) => o[1]), label: byId.map["aria-label"],
+         start, lines, path: last(ops.slice(start).find(([k]) => k === "stroke")),
+         fills: ops.filter(([k]) => k === "fill").map(last),
+         strokes: ops.filter(([k]) => k === "stroke").map(last) });
+    """, snap=snap)
+    assert "箱" in r["texts"] and "椅子" in r["texts"]
+    assert r["label"] == "上から見た図：箱 1 個、椅子 1 個。計画の道 3 手"
+    assert r["start"] >= 0 and r["lines"] >= 3
+    assert r["path"]["stroke"] == "--accent-text" and r["path"]["width"] == 3
+    assert any(f["fill"] == "--map-blocked" for f in r["fills"])
+    assert any(s["stroke"] == "--map-cell" for s in r["strokes"])
+    assert any(s["stroke"] == "--ok" for s in r["strokes"])                        # the goal cell
+    assert any(f["fill"] == "--box-fill" and f["alpha"] == 1 for f in r["fills"])  # seen now
+    assert any(s["stroke"] == "--box-line" and s["dash"] == [] for s in r["strokes"])
+    assert any(f["fill"] == "--obj-fill" and f["alpha"] == 0.45 for f in r["fills"])  # not seen now
+    assert any(s["stroke"] == "--obj-line" and s["dash"] for s in r["strokes"])
+
+
+@needs_node
+def test_map_label_without_objects_is_todays(tmp_path):
+    snap = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], world={"boxes": [[1.2, 0, 0.3]], "collided": True})
+    both = {**snap, "objects": [BOX]}
+    r = run_page(CANVAS + "drawMap(snap); const one = byId.map['aria-label']; drawMap(both);"
+                 " [one, byId.map['aria-label']]", snap=snap, both=both)
+    assert r == ["上から見た図：箱 1 個。箱にぶつかりました", "上から見た図：箱 2 個。箱にぶつかりました"]
+
+
+@needs_node
+def test_map_redraws_when_only_the_plan_changes(tmp_path):
+    a = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=[BOX], grid=GRID, plan_cells=PLAN_CELLS)
+    b = {**a, "plan_cells": PLAN_CELLS[1:]}
+    r = run_page("let draws = 0; const real = drawMap; drawMap = (s) => { draws += 1; real(s); };"
+                 " render(a); render(a); const once = draws; render(b);"
+                 " [once, draws, JSON.parse(shown.map)[4]]", a=a, b=b)
+    assert r == [1, 2, PLAN_CELLS[1:]]
+
+
+def graphviz_svg():
+    from voice_ltl.automata import Automaton
+    from voice_ltl.diagrams import render_svg
+    return render_svg(Automaton("SUP", 2, [(0, "stand_to_x", 1)], {1}, set()), "SUP", highlight_state=0)
+
+
+@needs_node
+def test_placeholder_svg_is_recognised():
+    r = run_page("[isPlaceholder('<svg class=\"too-big\">'), isPlaceholder(graphviz)]", graphviz=graphviz_svg())
+    assert r == [True, False]
+
+
+@needs_node
+def test_page_marks_a_placeholder_diagram():
+    """P10: the placeholder gets class "placeholder", which CSS centres and 幅に合わせる leaves alone."""
+    r = run_page("""
+      const marks = [];
+      byId.diagram = { classList: { toggle: (name, on) => { marks.push([name, on]); } }, removeAttribute() {} };
+      diagramNames = ["FOCUS"];
+      let body = '<svg xmlns="http://www.w3.org/2000/svg" class="too-big" width="520" height="80"></svg>';
+      fetch = async () => ({ ok: true, text: async () => body });
+      (async () => { await loadDiagram(false); body = graphviz; await loadDiagram(false); return marks; })();
+    """, graphviz=graphviz_svg())
+    assert r == [["placeholder", True], ["placeholder", False]]
