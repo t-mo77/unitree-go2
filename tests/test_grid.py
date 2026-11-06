@@ -86,8 +86,8 @@ def test_near_cells_face_the_object_within_the_band():    # R4
 
 
 def test_the_default_layout_keeps_near_cells_for_both_objects():   # R4 with ruling N1 (1.3 m)
-    """The outer bound min(r + 1.5, 1.3) still holds the four cells 0.5·√5 m (1.118 m) from each
-    object of the default layout, two headings each; the cells 1.414 m away are out now."""
+    """The outer bound min(r + 1.5, 1.3) still holds the eight cells 0.5·√5 m (1.118 m) from each
+    object of the default layout, one heading each; the cells 1.414 m away are out now."""
     for prop in ("near_box_1", "near_chair_1"):
         gw = gw_of({prop})
         o = next(obj for obj in DEFAULT_LAYOUT if prop == f"near_{obj.id}")
