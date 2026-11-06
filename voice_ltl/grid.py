@@ -116,7 +116,7 @@ class GridError(Exception):
 
 @dataclass
 class GridWorld:
-    world: World
+    world: World = field(init=False)       # the PLANT; grid_world sets it after the BFS, which needs step()
     grid: Grid
     objects: tuple[Obj, ...]               # the Scene's objects, odom
     atoms: frozenset[str]
@@ -156,7 +156,10 @@ class GridWorld:
         return event_name(action, self.label(dst, action))
 
     def observe(self, src: GridState, action: str, cell: tuple[int, int], heading: int) -> GridState | None:
-        """src から action をして、実際には (cell, heading) にいたときの状態（R10）。"""
+        """src から action をして、実際には (cell, heading) にいたときの状態（R10）。
+        できない動作、入れないマス、0〜3 でない向きなら None。"""
+        if heading not in range(4):
+            return None
         dst = self._dst(src, action)
         if dst is None or not self._enterable(src.cell, cell):
             return None
@@ -225,6 +228,7 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
     """式の物の命題に合わせたマス目と、その上の PLANT（到達できる状態だけ）。
 
     物が見つからない・6 m より遠い・長方形が MAX_CELLS を超えるときは GridError。
+    同じ id の行が複数あれば、その物は最初の行（objects.parse_rows と同じ）。どの行もマスをふさぐ（R7）。
     """
     atoms = frozenset(atoms)
     objects = tuple(objects)
@@ -246,8 +250,8 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
             raise GridError(msg_too_far(o.label))
 
     probe = Grid(anchor, (0, 0), (0, 0), frozenset())
-    local = [(o, probe.local(o.x, o.y)) for o in objects]
-    where = {o.id: g for o, g in local}
+    local = [(o, probe.local(o.x, o.y)) for o in objects]   # every row blocks cells (R7)
+    where = {obj_id: probe.local(o.x, o.y) for obj_id, o in by_id.items()}   # the same row as by_id
     i_lo = i_hi = j_lo = j_hi = 0                        # the robot's cell
     for obj_id, kinds in uses.items():
         r = by_id[obj_id].radius
@@ -283,7 +287,7 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
             ring.update((p, sectors) for p in laps)
     lap_props = tuple(sorted(ring))
 
-    gw = GridWorld(None, grid, objects, atoms, lap_props, near, ring, _START in covered)
+    gw = GridWorld(grid, objects, atoms, lap_props, near, ring, _START in covered)
     on_feet = posture == STANDING
     initial = GridState(_START, 0, posture, front and on_feet, back and on_feet, (0,) * len(lap_props))
     gw.world = _explore(gw, initial)
