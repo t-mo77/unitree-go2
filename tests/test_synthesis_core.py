@@ -100,6 +100,10 @@ def test_empty_sup_has_no_pairs(tmp_path):
     assert s.sup_state_for(s.world.initial, 0) is None
 
 
+# a bug path only, in the usual form and without internal state numbers
+CANNOT_BUILD = r"^監督器を作れませんでした（[^0-9（）]+）$"
+
+
 def test_pairs_refuse_a_sup_outside_plant_x_spec():
     plant = Automaton("PLANT", 3, [(0, "a", 1), (0, "b", 2)], {1, 2}, set())
     spec = Automaton("SPEC", 1, [(0, "a", 0), (0, "b", 0)], {0}, set())
@@ -108,8 +112,18 @@ def test_pairs_refuse_a_sup_outside_plant_x_spec():
     for bad in ([(0, "a", 1), (0, "b", 1)],   # one SUP state, two plant states
                 [(0, "a", 1), (1, "c", 2)],   # an event the plant does not have there
                 [(0, "a", 1)]):               # state 2 cannot be reached
-        with pytest.raises(SpecError):
+        with pytest.raises(SpecError, match=CANNOT_BUILD):
             automata._sup_pairs(Automaton("SUP", 3, bad, {1}, set()), plant, spec)
+
+
+def test_pairs_refuse_two_sup_states_on_one_pair():   # R10: sup_state_for can never return the wrong state
+    plant = Automaton("PLANT", 2, [(0, "a", 1), (0, "b", 1)], {1}, set())
+    spec = Automaton("SPEC", 1, [(0, "a", 0), (0, "b", 0)], {0}, set())
+    sup = Automaton("SUP", 3, [(0, "a", 1), (0, "b", 2)], {1, 2}, set())   # SUP 1 and 2 are both (1, 0)
+    with pytest.raises(SpecError, match=CANNOT_BUILD):
+        automata._sup_pairs(sup, plant, spec)
+    one = Automaton("SUP", 2, [(0, "a", 1), (0, "b", 1)], {1}, set())       # the same moves on one state: fine
+    assert automata._sup_pairs(one, plant, spec) == [(0, 0), (1, 0)]
 
 
 @pytest.mark.parametrize("formula", ["F hello", "F(hello & X F danced) & G !sitting",
@@ -136,6 +150,11 @@ def test_big_estimate_is_refused_before_pitct(tmp_path, monkeypatch):
     with pytest.raises(SpecError, match="式が大きすぎます"):
         synthesize("F hello", go2_world(PlantState(LYING, False, False)), tmp_path)
     assert called == []
+
+
+def test_size_limits():                                # plan Global Constraints and Ruling R9
+    assert automata.MAX_SUP_STATES == 50_000 and automata.MAX_PRODUCT_ESTIMATE == 400_000
+    assert automata.PRODUCT_DRAW_LIMIT == 5_000
 
 
 def test_sup_over_the_cap_is_refused_before_it_is_read(tmp_path, monkeypatch):
