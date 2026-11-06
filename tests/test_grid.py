@@ -118,6 +118,13 @@ def test_sensor_events_are_self_loops_unless_standing():  # R1
             assert (dst.front, dst.back) == (False, False)
 
 
+def test_no_sitting_or_lying_down_while_an_obstacle_is_seen():   # R1: getting up would forget it
+    down = [(src, ev) for src, ev, dst, kind in gw_of(NEAR | {"sitting"}, posture=STANDING).world.transitions
+            if kind == "c" and src.posture == STANDING and dst.posture != STANDING]
+    assert {ev.split("_to_")[0] for _, ev in down} == {"sit", "lie_down"}
+    assert all((src.front, src.back) == (False, False) for src, _ in down)
+
+
 def test_too_far_too_spread_and_not_found():
     far = (Obj("box_1", "box", 6.1, 0.0),)
     with pytest.raises(GridError, match="遠すぎます"):

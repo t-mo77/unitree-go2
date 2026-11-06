@@ -4,6 +4,8 @@
 向き 0 が anchor の yaw。マス (i, j) の中心は (x0, y0) + R(yaw0)·(0.5 i, 0.5 j)、向き h は yaw0 + h·90°。
 距離・角度はすべてマス目の座標（local）で測るので、anchor を回しても動かしても同じマスになる。
 状態は (マス, 向き, 姿勢, 前の物, 後ろの物, 周回の進み)。前後の物のビットは立っているときだけ持つ（R1）。
+物が見えている（ビットが立っている）間は座らない・伏せない。座って立ち直すとビットが消えるので、
+そうすれば物が消えると計画しないため。
 """
 
 from __future__ import annotations
@@ -170,6 +172,8 @@ class GridWorld:
         posture = ACTIONS[action].transitions.get(state.posture)
         if posture is None or posture not in POSTURE_PROP:
             return None
+        if state.posture == STANDING and posture != STANDING and (state.front or state.back):
+            return None      # sitting or lying down and getting up again would forget the obstacle (R1)
         cell, heading, laps = state.cell, state.heading, state.laps
         if action in _MOVES:
             di, dj = HEADINGS[heading]
