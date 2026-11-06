@@ -287,6 +287,11 @@ def test_sup_drawing_does_not_block_tick(tmp_path, monkeypatch):
     deadline = time.monotonic() + 30
     while session.snapshot()["status"] == "thinking" and time.monotonic() < deadline:
         drive(session, link, 0.1); time.sleep(0.02)
+    # R13: the diagrams of a new supervisor are drawn on the worker after its plan has started
+    deadline = time.monotonic() + 30
+    while not session.diagrams and time.monotonic() < deadline:
+        drive(session, link, 0.1); time.sleep(0.02)
+    assert session.diagrams
     v_start = session.diagram_version
     drive(session, link, 20)                   # the whole plan, while every SUP redraw is held
     assert session.snapshot()["status"] == "done"

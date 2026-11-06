@@ -5,11 +5,15 @@ starts, and the grid and the plan's cells in the snapshot (Task G of the objects
 import dataclasses
 import math
 import threading
+import time
 
 from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, STAND_UP, STOP_MOVE
 from go2_nl_control.supervisor import SENSOR_LOST
 
+import voice_ltl.automata as automata
+import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
+from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
@@ -423,3 +427,62 @@ def test_objects_arriving_after_a_refusal_work_on_the_next_instruction(tmp_path)
     assert "- box_1（箱）：左前 2.9 m" in llm.prompts[1]
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "done", snap["message"]
+
+
+# ---------------- G4: the plan does not wait for the diagrams (R13, R14) ----------------
+DIAGRAM_KEYS = {"FOCUS", "PLANT", "SPEC", "TRIMMED", "SUP"}
+
+
+def test_plan_starts_before_the_diagrams_are_drawn(tmp_path, monkeypatch):
+    real_render = session_mod.render_svg
+    gate = threading.Event()
+
+    def held_render(a, title, *rest):
+        if title == "SPEC" and threading.current_thread().name == "session-worker":
+            gate.wait(30)
+        return real_render(a, title, *rest)
+
+    monkeypatch.setattr(session_mod, "render_svg", held_render)
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"), background=True)
+    sess.submit_text("椅子まで歩いて")
+    deadline = time.monotonic() + 30
+    while STAND_UP not in link.sim.accepted and time.monotonic() < deadline:
+        drive(sess, link, 0.1); time.sleep(0.01)
+    try:
+        assert STAND_UP in link.sim.accepted and not gate.is_set()
+        assert sess.diagrams == {} and sess.snapshot()["status"] == "executing"
+    finally:
+        gate.set()
+    deadline = time.monotonic() + 30
+    while set(sess.diagrams) != DIAGRAM_KEYS and time.monotonic() < deadline:
+        drive(sess, link, 0.1); time.sleep(0.01)
+    assert set(sess.diagrams) == DIAGRAM_KEYS
+
+
+def test_grid_diagrams_are_placeholders(tmp_path):
+    sess, link = make_objects(tmp_path, llm_for("F around_box_1"))
+    sess.submit_text("箱の周りを一周して")
+    drive(sess, link, 0.1)
+    assert set(sess.diagrams) == DIAGRAM_KEYS
+    for name in ("PLANT", "SUP", "TRIMMED"):
+        assert TOO_BIG_TEXT in sess.diagrams[name] and MAP_HINT_TEXT in sess.diagrams[name], name
+        assert 'class="too-big"' in sess.diagrams[name]
+    assert f"（{sess.synthesis.plant.size} 状態）" in sess.diagrams["PLANT"]
+    assert 'class="hl"' in sess.diagrams["FOCUS"] and "<svg" in sess.diagrams["SPEC"]
+    focus = sess.diagrams["FOCUS"]
+    drive(sess, link, 10.0)                                # past the stand: FOCUS follows, SUP stays
+    assert sess.diagrams["FOCUS"] != focus and MAP_HINT_TEXT in sess.diagrams["SUP"]
+
+
+def test_a_go2_formula_without_trimmed_still_gets_its_diagrams(tmp_path, monkeypatch):
+    """R14: PRODUCT and TRIMMED are skipped when big (here: always); the other four are drawn."""
+    monkeypatch.setattr(automata, "PRODUCT_DRAW_LIMIT", 0)
+    sess, link = make_objects(tmp_path, llm_for("F hello"))
+    sess.submit_text("挨拶して")
+    drive(sess, link, 0.1)
+    assert sess.synthesis.trimmed is None and sess._grid is None
+    assert set(sess.diagrams) == DIAGRAM_KEYS
+    assert TOO_BIG_TEXT in sess.diagrams["TRIMMED"] and MAP_HINT_TEXT not in sess.diagrams["TRIMMED"]
+    for name in ("PLANT", "SPEC", "SUP", "FOCUS"):
+        assert TOO_BIG_TEXT not in sess.diagrams[name] and 'class="node' in sess.diagrams[name], name
+    assert run_to_the_end(sess, link)["status"] == "done"

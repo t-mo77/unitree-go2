@@ -54,7 +54,7 @@ from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
-from voice_ltl.diagrams import render_focus_svg, render_svg
+from voice_ltl.diagrams import MAX_DRAW_STATES, render_focus_svg, render_svg, too_big_svg
 from voice_ltl.grid import GridError, GridWorld, grid_world
 from voice_ltl.grid_executor import GridExecutor, GridStep
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
@@ -260,6 +260,15 @@ class _Outcome:
 
 
 @dataclass
+class _Drawn:
+    """The five diagrams of a synthesis, drawn on the worker after its plan was handed to
+    tick() (R13: the plan does not wait for the drawings)."""
+
+    synthesis: Synthesis
+    svgs: dict
+
+
+@dataclass
 class _Prep:
     """A translation waiting for the Go2 to be ready before its supervisor is made."""
 
@@ -283,12 +292,9 @@ def _blocked(reading: Reading | None, posture: str) -> tuple[bool, bool]:
 
 def _sup_highlight(rt: Runtime) -> tuple[int, list[tuple[int, str]]]:
     """The runtime's state and the (state, event) arrows of its remaining plan."""
-    state, events = rt.state, []
-    out: dict[tuple[int, str], int] = {(s, e): d for s, e, d in rt.sup.trans}
-    for event in rt.plan() or []:
-        events.append((state, event))
-        state = out[(state, event)]
-    return rt.state, events
+    path = rt.plan() or []
+    sources = [rt.state] + rt.walk(path)[:-1]
+    return rt.state, list(zip(sources, path))
 
 
 def _backend(llm: LLM) -> str | None:
@@ -492,7 +498,11 @@ class Session:
         elif kind == "translate":   # (text, the Scene frozen for it)
             self._produce(key, self._translate, *payload)
         else:  # "synthesize": (translation, initial state, pose) once the Go2 is ready
-            self._produce(key, self._synthesize, key, *payload)
+            outcome = self._produce(key, self._synthesize, key, *payload)
+            # R13: the plan is on its way already; the drawings follow (dot can take long)
+            if outcome is not None and outcome.synthesis is not None and not self._stale(key):
+                svgs = self._draw_all(outcome.synthesis, grid=outcome.grid is not None)
+                self._results.put((key, _Drawn(outcome.synthesis, svgs)))
 
     def _stale(self, gen: int) -> bool:
         with self._lock:
@@ -529,10 +539,10 @@ class Session:
         if self._transcribing == n:
             self._transcribing = None
 
-    def _produce(self, gen: int, make: Callable[..., Optional[_Outcome]], *args) -> None:
-        """Run one step of planning for `gen` and hand its outcome to tick()."""
+    def _produce(self, gen: int, make: Callable[..., Optional[_Outcome]], *args) -> Optional[_Outcome]:
+        """Run one step of planning for `gen` and hand its outcome to tick(); also return it."""
         if self._stale(gen):
-            return
+            return None
         try:
             outcome = make(*args)
         except Exception as exc:  # a bug must not leave the session thinking forever
@@ -540,6 +550,7 @@ class Session:
             outcome = _Outcome(error=f"処理の途中でエラーが起きました（{type(exc).__name__}）")
         if outcome is not None:
             self._results.put((gen, outcome))
+        return outcome
 
     def _translate(self, text: str, scene: Scene | None) -> _Outcome:
         """A translation alone: tick() makes its supervisor once the Go2 is ready."""
@@ -573,10 +584,9 @@ class Session:
             return _Outcome(tr, error=str(exc), grid=gw)
         if self._stale(gen):  # a newer instruction or a stop came during synthesis: no drawing
             return None
-        diagrams = self._draw_all(syn)
         if syn.empty:
-            return _Outcome(tr, syn, initial, self._empty_message(props, gw), diagrams, gw)
-        return _Outcome(tr, syn, initial, diagrams=diagrams, grid=gw)
+            return _Outcome(tr, syn, initial, self._empty_message(props, gw), grid=gw)
+        return _Outcome(tr, syn, initial, grid=gw)
 
     @staticmethod
     def _empty_message(props: frozenset[str], gw: GridWorld | None) -> str:
@@ -589,16 +599,24 @@ class Session:
         return MSG_UNSATISFIABLE
 
     @staticmethod
-    def _draw_all(syn: Synthesis) -> dict[str, str]:
-        """The five diagrams of a new synthesis (on the worker thread). {} if drawing fails."""
+    def _draw_all(syn: Synthesis, grid: bool = False) -> dict[str, str]:
+        """The five diagrams of a new synthesis (on the worker thread). {} if drawing fails.
+        R14: PLANT, TRIMMED and SUP are not drawn when they are missing (TRIMMED is not built
+        when big) or above MAX_DRAW_STATES; a placeholder says so, and on the grid it points to
+        the top view."""
+        def full(a, title: str, *highlight) -> str:
+            if a is None or a.size > MAX_DRAW_STATES:
+                return too_big_svg(title, a.size if a is not None else None, map_hint=grid)
+            return render_svg(a, title, *highlight)
+
         try:
             state, events = _sup_highlight(Runtime(syn.sup)) if not syn.empty else (None, [])
             return {
                 "FOCUS": render_focus_svg(syn.sup, FOCUS_TITLE, state, events),
-                "PLANT": render_svg(syn.plant, "PLANT"),
+                "PLANT": full(syn.plant, "PLANT"),
                 "SPEC": render_svg(syn.spec, "SPEC"),
-                "TRIMMED": render_svg(syn.trimmed, "TRIMMED"),
-                "SUP": render_svg(syn.sup, "SUP", state, events),
+                "TRIMMED": full(syn.trimmed, "TRIMMED"),
+                "SUP": full(syn.sup, "SUP", state, events),
             }
         except Exception:  # a missing `dot` must not stop the robot from following the plan
             _logger.exception("drawing diagrams failed")
@@ -629,6 +647,11 @@ class Session:
             except queue.Empty:
                 return
             if gen != self._gen:
+                continue
+            if isinstance(outcome, _Drawn):   # the diagrams of the running synthesis (R13)
+                if self.synthesis is outcome.synthesis:
+                    self._set_diagrams(outcome.svgs)
+                    self._redraw_sup()
                 continue
             if outcome.synthesis is None and not outcome.error:  # translated: wait for the Go2
                 self._show_translation(outcome.translation)
@@ -995,13 +1018,15 @@ class Session:
                     _logger.exception("drawing SUP failed")
 
     def _draw_sup(self, request: tuple) -> None:
-        """FOCUS and SUP of one request, shown together (they always show the same state)."""
+        """FOCUS and SUP of one request, shown together (they always show the same state).
+        A SUP above MAX_DRAW_STATES keeps its placeholder (R14); FOCUS is drawn still."""
         syn_id, sup, state, events = request
-        focus = render_focus_svg(sup, FOCUS_TITLE, state, events)
-        svg = render_svg(sup, "SUP", state, events)
+        drawn = {"FOCUS": render_focus_svg(sup, FOCUS_TITLE, state, events)}
+        if sup.size <= MAX_DRAW_STATES:
+            drawn["SUP"] = render_svg(sup, "SUP", state, events)
         with self._lock:
             if syn_id == self._syn_id and self.diagrams:  # not for an older instruction
-                self._set_diagrams({**self.diagrams, "FOCUS": focus, "SUP": svg})
+                self._set_diagrams({**self.diagrams, **drawn})
 
     def _take_executor_events(self) -> None:
         while self._exec.events:
