@@ -1,18 +1,20 @@
 # Gazebo での物の確認：箱の一周と椅子まで（Task I）
 
-設計書 `docs/superpowers/specs/2026-11-05-go2-objects-design.md` の §2 の合格の条件を Gazebo で測り、操作画面を本物の Claude で動かした記録。2 つに分かれる：
+設計書 `docs/superpowers/specs/2026-11-05-go2-objects-design.md` の §2 の合格の条件を Gazebo で測り、操作画面を本物の Claude で動かした記録。3 つに分かれる：
 
 - **第 1 部**（計画の Task I の手順 4〜6）：`objects/i` のフォルダで、LLM を通さずに、物の一覧・RTF・箱の一周・椅子までを測った。実行器と橋渡しを調整したのもここ。
 - **第 2 部**（手順 4〜7）：wave 3 を merge した後の本体のフォルダで、静かなときの RTF を測り、一周と椅子を 1 回ずつ流し、操作画面から本物の Claude で動かした（上から見た図の絵もここ）。
+- **第 3 部**（いちばん新しい。下のすぐ次の節）：実行器を 3 回変えて（`4783846`、M1 の止まらずにつなぐ動き、角もつなぐ動き）、そのたびに一周 3 回・椅子 3 回を測った。**最後のコード（`c2641ce`）で一周 2/3・椅子 3/3・挨拶つき 1/1。**
 
 - 日付：2026-11-06。場所：この Mac の Docker Desktop（arm64、CPU 8、メモリ 7.7 GiB）。
-- 回は 3 つの時間帯に分かれる：
+- 回は 4 つの時間帯に分かれる：
   - **第 1 部・最初の回（13:11〜14:10）**：実行器の値を変えながら 15 回の一周と 5 回の椅子。この間、別の担当（Task H・Task L）がそれぞれのフォルダでテストを流していた
     （`obj-h-app-run-*`・`obj-l-app-run-*` が 100〜120 %）。とくに 13:14 と 13:34 は重かった（下の「負荷が重いとき」）。
   - **第 1 部・修正 1 回目（14:37〜14:46）**：レビューを受けて、実行器を計画の P7 に戻し、橋渡しを直して（下の「最初の動作の速度を 0 から上げる」）、手順 5・6 の 7 回を流し直した。
     ほかのコンテナは動いていなかった（各回の `docker stats` は `go2-objects-gz` と `go2-objects-rec` だけ）。
   - **第 2 部（15:13〜15:39）**：本体のフォルダ（`~/work/physicalAI/go2`、ブランチ `feat/voice-ltl-gazebo`、commit `69aa06c`＝wave 1〜3 を merge した後）。
     実行器・橋渡しの中身は修正 1 回目と同じ。ほかのタスクは動いていなかった（`docker ps` は、自分で起動した使い捨てのコンテナだけ）。
+  - **第 3 部（16:28〜17:30）**：組 A（16:28〜16:36）・組 B（17:01〜17:08）・組 C（17:23〜17:30）。中身は「第 3 部」の節。
 - 使ったもの：app は `go2-voice-ltl:dev`（ROS 2 Humble）、gazebo は `go2-voice-ltl-gazebo:dev`（ROS 2 Jazzy + Gazebo Harmonic、`docker/patches/` の 0001・0002 入り。作り直していない）。
   第 1 部のコードは `objects/i` のフォルダ（`../.go2-worktrees/obj-i`、compose の project は `obj-i`）。修正 1 回目は commit `97c3c64`：
   実行器（`voice_ltl/grid_executor.py`）は計画の P7 の値のまま、橋渡し（`gazebo/bridge_core.py`）は大きさの `StillGate` と、待たせた速度を 0 から上げる `RELEASE_ACC` 入り。
@@ -34,7 +36,297 @@ docker compose --profile gazebo run -d --rm --no-deps -T -e ROS_DOMAIN_ID=77 --n
   - 橋渡しが controller に送った値は、Gazebo のコンテナのログ（`controller へ: command …`）で見た。
   - 第 2 部の操作画面は Playwright（Chromium、幅 1400）で開き、ページの文字（記録・札・図の説明）を読み、絵を撮った。
 
+## 第 3 部：止まる回数を減らした後（2026-11-06 16:28〜17:30）
+
+第 2 部の後で実行器を 3 回変え、そのたびに一周 3 回・椅子 3 回を `objects_check.py` で測った（組 A・B・C）。組 C は最後のコードで、`F(near_chair_1 & X F hello)` も 1 回流した。
+
+- どの回も Gazebo を使い捨てのコンテナで起動し直し（画面なし `gui:=false`）、手順 4（`objects`、R1 だけ `rtf --seconds 20`）の後に `motion_log.py record` を並べて `objects_check.py run` を流し、走った後にもう一度 `objects` を流した。
+  コマンドは第 2 部の手順 4〜6 と同じで、コンテナの名前だけ違う（組 A `gz-go2`・`rec-go2`、組 B `gz-obj-m`・`rec-obj-m`、組 C `gz-go2-corners`・`rec-go2-corners`）。controller が起動するまで 6〜9 秒。
+- 組 A・C は本体のフォルダ（`feat/voice-ltl-gazebo`）。組 B は `objects/m` のフォルダ（`../.go2-worktrees/obj-m`、compose の project は `obj-m`）。イメージは作り直していない。controller・橋渡しは第 2 部と同じ。
+- 転んだ時刻は、Gazebo のコンテナのログの橋渡しの `伏せ扱い（error_code 1001）…`（|roll| か |pitch| が 1.0 rad を越えた所）。「StopMove の N 秒後」は、その時刻から記録（`motion_log.py`）の直前の StopMove までの実際の時間。
+- 下の JSON の塊の `$ … objects_check.py` は `docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID=77 app python3 gazebo/tools/objects_check.py` を縮めたもの（`run` には `-e SIM_KIND=gazebo` も付く）。`#` の行の時刻は、その回の Gazebo を起動した時刻。
+- 生の記録（gitignore の `.superpowers/sdd/2026-11-05-go2-objects/` の下）：組 A `gazebo-measure-go2-runs/`、組 B `gazebo-measure-obj-m-runs/`、組 C `gazebo-measure-corners-runs/`（回ごとの `result.json`・`run.err`・`motion.jsonl`・`gz.log`、流した道具、数えた道具）。
+
+### 変えたこと
+
+| 組 | commit | 変えたこと |
+|---|---|---|
+| A | `4783846`（`f590bdd` で測った） | `GridExecutor.load()` が加速を 0 からやり直す。何も送らない間の後の最初の Move が 1 周期で全速（0.3 m/s・0.5 rad/s）になっていたのを直した（最終レビューの Important 2。上の「結論」の下） |
+| B | M1：`a730c0d`（`objects/m`。後で merge `c22c94f`） | 続く前進は StopMove なしでつなぐ（マスの中心を 0.3 m/s のまま過ぎる）。旋回の次が前進なら、旋回は StopMove なしで終わり、前進は旋回の z（±0.15 rad/s ほど）から続けて歩き出す。止めるのはまっすぐの列の終わり（曲がる前と計画の終わり）だけ。止めた後の待ち `GRID_SETTLE_S` は 0.5 → 0.2 秒 |
+| C | 角：`c2641ce`（最後のコード） | 前進の次が、その前進が着くマスでの旋回なら、それもつなぐ。前進は今までどおり行き先の手前で遅くなり（終わりは 0.08 m/s ほど）、StopMove も待ちもなしに 1 手を終え、旋回はその速さから続ける（x を 0 へ下げながら z を上げる）。旋回 → 旋回はつながない。計画が変わって全速で過ぎた前進の後に旋回が来たときは、今までどおり先に StopMove。これで、前進と 1 回ずつの旋回だけの計画は、終わりで 1 回だけ止まる |
+
+C にしたわけ：組 A・B の転び 7 回のうち、旋回の 3 回（A L1、B L2・L3）はどれも「まっすぐの列の終わりの StopMove の後の旋回」で、z が 0.5 rad/s に上がった所（回り始めて 0.6〜0.9 秒）で倒れた。B で残った StopMove はこの所だけだった。B の動作ごとの傾きでも、StopMove の後の旋回（21 回、上位 10 % 0.91、転んだ 2）が、つないだ前進（50 回、上位 10 % 0.52〜0.56、転んだ 1）より悪かった。止まってから動き出す所が転びやすいのは第 1 部・第 2 部と同じ。
+
+### 結果
+
+| 組 | 時刻 | RTF（R1、20 秒） | 一周 | 椅子 | 挨拶つき | 実行器の StopMove（終えた回） | 転んだ動作 / 動作 |
+|---|---|---|---|---|---|---|---|
+| A（`f590bdd`、4783846 入り） | 16:28〜16:36 | 0.87 | 0/3 | 2/3 | — | 1 動作ごと（椅子 6〜7 回） | 4 / 66 |
+| B（`a730c0d`、M1） | 17:01〜17:08 | 0.94 | 0/3 | **3/3** | — | まっすぐの列ごと（椅子 2 回） | 3 / 77 |
+| **C（`c2641ce`、M1 + 角）** | 17:23〜17:30 | **1.0** | **2/3** | **3/3** | **1/1** | **計画の終わりの 1 回だけ** | **1 / 108** |
+
+- **§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）は、最後のコードでもまだ満たしていない：一周は 3 回のうち 2 回（L2・L3）。** 椅子は 3/3、挨拶つきは 1/1（「開始：挨拶」「完了：挨拶」まで）。
+  一周の 1 回（C L1）は 5/41 動作目、旋回の後の前進の歩き出しで転んだ（下）。一周を最後まで終えたのは、この記録の全部で 34 回のうち 3 回（第 1 部 lap1、C L2・L3）。
+- 組 B は、一周 0/3 が組 A と同じで、椅子 3/3 が組 A の 2/3 以上。レビューは承認で、残っていたのは小さな指摘だけだったので、merge した（`c22c94f`）。その上に C を入れた。
+- 組 C の 2 回の一周：巻き数 1.040・1.036、箱の縁まで 0.758・0.828 m、`max_tilt` 0.818・0.842、立つから終わりまで 98・105 秒（実際の時間）。走った後 3 秒あまりの記録でも、傾きは 0.45 以下で立っていた。
+- 組 C の 25 回の角（前進 → 旋回、StopMove なし）で、旋回の最初の Move は前進の最後の速さ（x の中央値 0.08、最大 0.15 m/s）、x は 0.1〜0.27 秒で 0 になり、z が上がった。速さ 0 で待つ周期・StopMove は無かった。
+  旋回の後の前進（M1）は、旋回の z から続けて x を 0.06 ずつ上げた。実行器の StopMove は、終えた 6 回とも計画の終わりの 1 回だけ（L3 はほかに、センサーが途切れた一時停止で 1 回）。記録の StopMove がこれより 3 回多いのは、`run_formula` が終わるときに送る分。
+- 動作ごとの最大傾き（`開始：` から次の `開始：` まで、max(|roll|, |pitch|)。立つを除く。M1 の後は `motion_log.py table` の「動作」（StopMove で区切る）が一周まるごとになるので、`開始：` で区切った）：
+
+| 組 | 動作 / 始まり方 | 数 | 中央値 | 上位 10 % | 0.5〜1.0 | 転んだ |
+|---|---|---|---|---|---|---|
+| A | 前進 / StopMove の後 | 43 | 0.27 | 0.61 | 3 | 3（L2#21・L3#22・N3#4） |
+| A | 旋回 / StopMove の後 | 17 | 0.36 | 0.73 | 4 | 1（L1#10） |
+| A | 旋回 / 立った後 | 5 | 0.52 | 0.90 | 3 | 0 |
+| B | 前進 / 前進からつないだ | 28 | 0.34 | 0.56 | 4 | 1（L1#27） |
+| B | 前進 / 旋回からつないだ | 22 | 0.34 | 0.52 | 3 | 0 |
+| B | 旋回 / StopMove の後 | 21 | 0.37 | 0.91 | 4 | 2（L2#10・L3#25） |
+| C | 前進 / 前進からつないだ | 46 | 0.31 | 0.46 | 4 | 0 |
+| C | 前進 / 旋回からつないだ | 29 | 0.21 | 0.57 | 2 | 1（L1#5） |
+| C | 旋回 / 前進からつないだ（角） | 25 | 0.31 | 0.49 | 2 | 0 |
+| C | 旋回 / StopMove の後 | 1 | 0.58 | 0.58 | 1 | 0 |
+
+  （B の「立った後」は前進 3・旋回 3、C は前進 3・旋回 4 で、どれも転んでいない。C の「旋回 / StopMove の後」は L3 の一時停止の後の 1 回。）
+- 3 回ずつは少ないので、組の間の差をはっきりとは言えない。言えるのは、C では止まってから動き出す所がほぼ無くなり（一周で 1 回）、旋回で転んだ回が無く、一周を 2 回終えたことまで。
+
+### 組 C（最後のコード `c2641ce`、17:23〜17:30）
+
+| 回 | 時刻 | 式 | 計画 | 結果 | 値 | 動作 | 手順 4 の大きさ（箱 / 椅子） | 走った後の大きさ |
+|---|---|---|---|---|---|---|---|---|
+| R1 | 17:23:09 | — | — | RTF **1.0** | — | — | 0.511×0.527 / 0.462×0.449 | — |
+| L1 | 17:23:50 | `F around_box_1` | 41 | 不合格：winding、max_tilt、exit_code（転んだ：旋回の後の前進の歩き出し） | 回転数 −0.100、箱の縁 2.178 m、max_tilt 3.096 | 5/41 | 0.511×0.514 / 0.469×0.467 | 0.511×0.526 / 0.469×0.471 |
+| L2 | 17:24:25 | `F around_box_1` | 40 | **合格** | 回転数 1.040、箱の縁 0.758 m、椅子の縁 1.268 m、max_tilt 0.818 | 40/40 | 0.511×0.527 / 0.462×0.454 | 0.512×0.527 / 0.462×0.466 |
+| L3 | 17:26:23 | `F around_box_1` | 41 | **合格** | 回転数 1.036、箱の縁 0.828 m、椅子の縁 1.099 m、max_tilt 0.842 | 41/41 | 0.511×0.514 / 0.469×0.467 | 0.517×0.529 / 0.469×0.478 |
+| N1 | 17:28:27 | `F near_chair_1` | 7：前進 ×4 → 右 → 前進 | **合格** | 椅子まで 1.142 m・26.2°、椅子の縁 0.805 m、max_tilt 0.628 | 7/7 | 0.5×0.5 / 0.5×0.5（測る前） | 0.512×0.527 / 0.462×0.477 |
+| N2 | 17:29:03 | `F near_chair_1` | 7：前進 ×5 → 右 | **合格** | 椅子まで 1.369 m・2.6°、椅子の縁 1.066 m、max_tilt 0.46 | 7/7 | 0.514×0.515 / 0.469×0.454 | 0.515×0.515 / 0.469×0.458 |
+| N3 | 17:29:39 | `F near_chair_1` | 8：右 → 前進 ×2 → 左 → 前進 ×3 | **合格** | 椅子まで 1.14 m・24.4°、椅子の縁 0.808 m、max_tilt 0.411 | 8/8 | 0.511×0.515 / 0.469×0.467 | 0.514×0.527 / 0.469×0.471 |
+| H1 | 17:30:18 | `F(near_chair_1 & X F hello)` | 8：前進 ×4 → 右 → 前進 → 挨拶 | **合格**（「開始：挨拶」「完了：挨拶」） | 椅子まで 1.071 m・25.3°、椅子の縁 0.763 m、max_tilt 0.513 | 8/8 | 0.5×0.5 / 0.5×0.5（測る前） | 0.511×0.527 / 0.462×0.466 |
+
+「計画」は立つを含む動作の数、「動作」は `開始：` の数 / 計画の動作の数。どの回も最初の動作は「立つ」。椅子の 3 回の計画が違うのは、立った向きと測った大きさの少しの違いで道の選び方が変わったため（どれも R4 の帯の中に着いた）。
+
+```text
+# R1 17:23:09
+$ … objects_check.py objects
+{"frame": "odom", "stamp": 1793953397.8684564, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793953397.695, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.449], "seen": 1793953397.695, "visible": true}]}
+$ … objects_check.py rtf --seconds 20
+{"rtf": 1.0}
+# L1 17:23:40
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953427.5909834, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.514], "seen": 1793953427.397, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793953427.397, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": -0.1, "min_edge_box_1": 2.178, "min_edge_chair_1": 2.536, "final_dist_chair_1": 4.088, "final_angle_chair_1_deg": 115.3, "max_tilt": 3.096, "passed": false, "failures": ["winding: -0.100 not in [0.9, 1.5)", "max_tilt: 3.096 >= 1", "exit_code: 1 != 0"], "samples": 951}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953452.5911367, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.526], "seen": 1793953452.447, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.471], "seen": 1793953449.604, "visible": false}]}
+# L2 17:24:14
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953462.3554168, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793953462.296, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.454], "seen": 1793953462.296, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.04, "min_edge_box_1": 0.758, "min_edge_chair_1": 1.268, "final_dist_chair_1": 2.087, "final_angle_chair_1_deg": 39.5, "max_tilt": 0.818, "passed": true, "failures": [], "samples": 4977}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953570.3557065, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.527], "seen": 1793953557.971, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.466], "seen": 1793953570.325, "visible": true}]}
+# L3 17:26:11
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953580.5328524, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.514], "seen": 1793953580.416, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793953580.416, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.036, "min_edge_box_1": 0.828, "min_edge_chair_1": 1.099, "final_dist_chair_1": 2.243, "final_angle_chair_1_deg": 58.7, "max_tilt": 0.842, "passed": true, "failures": [], "samples": 5246}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953695.0331974, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.517, 0.529], "seen": 1793953694.946, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.478], "seen": 1793953693.487, "visible": false}]}
+# N1 17:28:16
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953703.8682387, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": 1793953703.729, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.5, 0.5], "seen": 1793953703.729, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.122, "min_edge_box_1": 1.038, "min_edge_chair_1": 0.805, "final_dist_chair_1": 1.142, "final_angle_chair_1_deg": 26.2, "max_tilt": 0.628, "passed": true, "failures": [], "samples": 1044}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953730.3682032, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.527], "seen": 1793953718.328, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.477], "seen": 1793953730.253, "visible": true}]}
+# N2 17:28:51
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953740.1367753, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.514, 0.515], "seen": 1793953739.941, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.454], "seen": 1793953739.941, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.17, "min_edge_box_1": 1.267, "min_edge_chair_1": 1.066, "final_dist_chair_1": 1.369, "final_angle_chair_1_deg": 2.6, "max_tilt": 0.46, "passed": true, "failures": [], "samples": 1013}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953766.1375175, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.515, 0.515], "seen": 1793953754.523, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.458], "seen": 1793953766.09, "visible": true}]}
+# N3 17:29:27
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953776.0537016, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.515], "seen": 1793953776.02, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793953776.02, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.101, "min_edge_box_1": 2.302, "min_edge_chair_1": 0.808, "final_dist_chair_1": 1.14, "final_angle_chair_1_deg": 24.4, "max_tilt": 0.411, "passed": true, "failures": [], "samples": 1215}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953806.0534673, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.514, 0.527], "seen": 1793953798.859, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.471], "seen": 1793953805.962, "visible": true}]}
+# H1 17:30:07
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793953814.8711805, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": 1793953814.732, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.5, 0.5], "seen": 1793953814.732, "visible": true}]}
+$ … objects_check.py run --expect near "F(near_chair_1 & X F hello)"; echo "exit=$?"
+{"formula": "F(near_chair_1 & X F hello)", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.125, "min_edge_box_1": 1.131, "min_edge_chair_1": 0.763, "final_dist_chair_1": 1.071, "final_angle_chair_1_deg": 25.3, "max_tilt": 0.513, "passed": true, "failures": [], "samples": 1302}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793953847.371315, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793953828.919, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.466], "seen": 1793953847.215, "visible": true}]}
+```
+
+- **L1 の転び**（5/41 動作目の前進。計画は「立つ → 左に回る → 前進 → 右に回る → 前進 → …」）：
+  - 3 動作目の前進から 4 動作目の右に回るへは、StopMove なしでつながった（旋回の最初の Move は x 0.08 のまま。z は 0.2 秒ごとに −0.17・−0.37・−0.50 と上がった。回り始めの 1 秒の roll は ±0.22 以下）。
+  - 旋回の終わりに z が −0.5 から −0.15 へ下がる間（前進の 0.6〜0.2 秒前）に、roll が +0.15・+0.38・+0.24 と振れた。
+  - 前進（旋回の z −0.15 から続け、x 0.06 ずつ）を始めて 0.2 秒で roll −0.14、0.4 秒で −0.63、0.6 秒で −0.91。始めて 0.71 秒（x が 0.30 に届いた所、z −0.17）で橋渡しが roll −1.03 で検知し、記録では始めて 1.4 秒で −2.0 になって倒れた（3.14）。
+  - StopMove はこの回、転ぶまで 1 回も送っていない。B で 0/22 だった「旋回からつないだ前進」の歩き出しで、旋回の終わりの揺れの中で倒れた形。
+- **L3 の一時停止**：3 動作目の前進の途中で odometry が 0.66 秒止まり（このころ Mac の 1 分の loadavg が 15〜21。Docker は自分のコンテナだけだった。何が重かったかは調べていない）、`センサー（LiDAR か /sportmodestate）が途切れています` で StopMove、0.14 秒後に再開した（設計どおり。前後とも SENSOR_LOST になったので `前方に物が出た`・`後方に物が出た` が同時に出た）。その後の右に回るは StopMove の 0.94 秒後に始まり、傾き 0.58 で転ばなかった。
+- L2 は 2 動作目の左に回る（立った後、傾き 0.80）で `後方に物が出た`・`前方に物が出た` が 0.2 秒ほど出て消えた（傾いた LiDAR の地面。一時停止にはならなかった）。
+- 負荷：各回の前の `docker stats --no-stream` は空。走っている間（30 秒ごと）は `gz-go2-corners` 157〜233 %、`rec-go2-corners` 2〜5 %、自分の app のコンテナ 5〜10 %、ほかのコンテナは無し。Mac の 1 分の loadavg は 2.9〜8.2（L3 の間だけ 8.9〜21.5）。
+  記録の odometry の時刻と実際の時間の比（立つから終わりまで）は 0.96〜0.99。0.3 秒より長い odometry の途切れは L2 で 1 回（0.39 秒）、L3 で 2 回（0.39・0.66 秒）、H1 で 2 回（0.43・0.31 秒）。どれも転びとは重なっていない。
+
+### 組 B（M1 `a730c0d`、`objects/m` のフォルダ、17:01〜17:08）
+
+- 一周 0/3、椅子 3/3、RTF 0.94。計画は一周 39・41・41（前進 28、旋回 10〜12）、椅子はどれも「立つ → 前進 ×4 → 右 → 前進」。
+- 旋回はどれも StopMove なしで前進へつながり、列の中の前進はマスの中心を 0.30 m/s で過ぎた。列の終わりの前進は 0.08 m/s まで遅くなって StopMove。列の終わりの後の旋回は StopMove の 0.30〜0.41 秒後に、z を 0 から上げて始まった。全速の最初の Move は無かった。
+- 転び：
+  - L1：27/39 動作目の前進（左に回って始まった列の 2 つ目、前進からつないだ）。巡航 x 0.30、歩くときの向きの直しの z が +0.10 → +0.27 と揺れに合わせて育った。前の StopMove から 7.34 秒（この前進を始めて 0.82 秒、マスの中心を過ぎた所）。roll +1.01。
+    `objects_check.py` の max_tilt は 1.071（終わって 1 秒しか見ない）、記録では一度起き直り、約 2 秒後に速度 0 のまま倒れた（3.08）。
+  - L2：10/41 動作目の左に回る（右に回ってつながった前進 1 回の、列の終わりの StopMove の後）。z が 0 から 0.5 rad/s に上がった所、StopMove の 1.20 秒後（回り始めて 0.89 秒）。roll −1.02。max_tilt 1.265（倒れきらず、立ち直った）。
+  - L3：25/41 動作目の右に回る（同じ形）。StopMove の 0.90 秒後（回り始めて 0.59 秒）、roll +0.10 から 0.4 秒で +1.10。roll +1.03。max_tilt 3.093（倒れた）。
+- 負荷：静か（`docker stats` は空、走っている間は自分のコンテナだけ、loadavg 3.7〜5.5、odometry の 0.3 秒より長い途切れも一時停止も無し）。N2・N3 の走る前の大きさは 0.5×0.5（測る前の既定）。
+
+```text
+# R1 17:01:35
+$ … objects_check.py objects
+{"frame": "odom", "stamp": 1793952105.1841552, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.528], "seen": 1793952105.07, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.467], "seen": 1793952105.07, "visible": true}]}
+$ … objects_check.py rtf --seconds 20
+{"rtf": 0.94}
+# L1 17:02:07
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952136.59471, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.511], "seen": 1793952136.456, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.467], "seen": 1793952136.456, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.601, "min_edge_box_1": 0.836, "min_edge_chair_1": 1.112, "final_dist_chair_1": 4.989, "final_angle_chair_1_deg": 96.7, "max_tilt": 1.071, "passed": false, "failures": ["winding: 0.601 not in [0.9, 1.5)", "max_tilt: 1.071 >= 1", "exit_code: 1 != 0"], "samples": 3592}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952216.0911958, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.511], "seen": 1793952216.065, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.469], "seen": 1793952173.557, "visible": false}]}
+# L2 17:03:37
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952226.2007809, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.515], "seen": 1793952226.091, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793952226.091, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.101, "min_edge_box_1": 0.997, "min_edge_chair_1": 1.095, "final_dist_chair_1": 1.494, "final_angle_chair_1_deg": 8.8, "max_tilt": 1.265, "passed": false, "failures": ["winding: 0.101 not in [0.9, 1.5)", "max_tilt: 1.265 >= 1", "exit_code: 1 != 0"], "samples": 1563}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952263.7046719, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.527], "seen": 1793952253.403, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.471], "seen": 1793952263.623, "visible": true}]}
+# L3 17:04:25
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952273.4132035, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.514], "seen": 1793952273.341, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793952273.341, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.561, "min_edge_box_1": 0.732, "min_edge_chair_1": 1.197, "final_dist_chair_1": 4.853, "final_angle_chair_1_deg": 68.6, "max_tilt": 3.093, "passed": false, "failures": ["winding: 0.561 not in [0.9, 1.5)", "max_tilt: 3.093 >= 1", "exit_code: 1 != 0"], "samples": 3521}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952350.4144192, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.528], "seen": 1793952350.313, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.475], "seen": 1793952310.727, "visible": false}]}
+# N1 17:05:51
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952360.0852969, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793952359.967, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.475], "seen": 1793952359.967, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.126, "min_edge_box_1": 1.205, "min_edge_chair_1": 0.746, "final_dist_chair_1": 1.052, "final_angle_chair_1_deg": 26.5, "max_tilt": 0.684, "passed": true, "failures": [], "samples": 1052}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952386.5856864, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793952373.679, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.478], "seen": 1793952386.479, "visible": true}]}
+# N2 17:06:27
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952395.0387282, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": 1793952394.968, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.5, 0.5], "seen": 1793952394.968, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.123, "min_edge_box_1": 1.149, "min_edge_chair_1": 0.819, "final_dist_chair_1": 1.139, "final_angle_chair_1_deg": 24.3, "max_tilt": 0.301, "passed": true, "failures": [], "samples": 1033}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952421.0387022, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.527], "seen": 1793952408.655, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.477], "seen": 1793952420.966, "visible": true}]}
+# N3 17:07:02
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793952429.4980414, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": 1793952429.266, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.5, 0.5], "seen": 1793952429.266, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.134, "min_edge_box_1": 1.105, "min_edge_chair_1": 0.707, "final_dist_chair_1": 1.03, "final_angle_chair_1_deg": 21.3, "max_tilt": 0.482, "passed": true, "failures": [], "samples": 1035}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793952453.998022, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793952441.907, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.478], "seen": 1793952453.997, "visible": true}]}
+```
+
+### 組 A（`f590bdd`、4783846 入り、本体のフォルダ、16:28〜16:36）
+
+- 一周 0/3、椅子 2/3、RTF 0.87。計画は一周 41・40・41、椅子は N1 が 7 動作（立つ → 前進 ×4 → 右 → 前進）、N2・N3 が 8 動作（立つ → 右 → 前進 ×2 → 左 → 前進 ×3）。
+- 67 の動作のどれでも、StopMove の後（と立った後）の最初の Move は x 0・z 0 で、そこから 0.06 m/s・0.1 rad/s ずつ上がった（全速の最初の Move は無かった。一時停止の後の再開も同じ）。
+  `objects_check.py` の回では、計画の中の歩き出しは直す前から 0.06 から上がっていたので、4783846 で変わったのは 0 の周期が 1 つ増えたことだけ。直したかった間の後（2 つ目の指示、長い待ち）は、ここではほとんど通っていない。
+- 転び：
+  - L1：10/41 動作目の左に回る（前進の後）。旋回の最初の Move は前の StopMove の 0.70 秒後、z は 0.1 ずつ 0 → 0.5。StopMove の 1.45 秒後（回り始めて 0.75 秒）、roll +1.00・pitch −0.13。max_tilt 1.118（倒れきらず、1.4 秒で 0.5 に戻った）。
+  - L2：21/40 動作目の前進（左に回った後の前進 2 回の 2 つ目）。歩き出しは前の StopMove の 0.71 秒後。StopMove の 3.05 秒後（歩き出して 2.34 秒）、前進の終わりのゆっくりの所（x 0.09、z が +0.22 から −0.12 へ振れた）。roll −1.02。max_tilt 3.138（倒れた）。
+  - L3：22/41 動作目の前進（左に回った後の前進 3 回の 3 つ目）。歩き出しは StopMove の 0.70 秒後。StopMove の 1.40 秒後（歩き出して 0.69 秒）、x が 0.30 に届いた所（z 0.04 以下）。roll −1.06。max_tilt 3.049（記録 3.09、倒れた）。
+  - N3：4/8 動作目の前進（右に回った後の前進 2 回の 2 つ目）。歩き出しは StopMove の 0.60 秒後。StopMove の 2.61 秒後（歩き出して 2.01 秒）、巡航（x 0.27〜0.30、z −0.14〜+0.07）。roll +1.00。
+    `objects_check.py` の max_tilt は 1.478、記録では約 1.2 秒後に 3.14（倒れた）。検知の 0.03 秒後に `前方に物が出た`（傾いた LiDAR が地面を見た。転んだ結果）。
+  - どれも、止めた後の 1.2〜1.6 秒の周期の横揺れが StopMove と 0.5 秒の待ちを越えて続き、半周期 1〜2 回で育った形。立っているだけ・立つ途中・最初の動作では転んでいない。L2・L3 は箱の東側のほぼ同じ所（3.9〜4.0, 1.4）、向き +92〜96° で転んだ。
+- 負荷：重め。各回の前の `docker stats` は空だったが、走っている間に別の担当のコンテナ（`obj-m-app-run-*`）が L3・N1 の間 100 % ほど、Mac の 1 分の loadavg は 7.9〜13.7（R1 の直後 15.6）、Docker の外でほかのアプリが 150 % ほど。
+  記録の時刻の比は 0.83〜0.95。L3 で 0.5 秒の途切れによる 0.06 秒の一時停止（再開した）、N1 は終わった後に 0.76・0.38 秒の途切れ。どれも転びとは重なっていない。
+
+```text
+# R1 16:28:35
+$ … objects_check.py objects
+{"frame": "odom", "stamp": 1793950129.0215645, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.511], "seen": 1793950128.881, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.467], "seen": 1793950128.881, "visible": true}]}
+$ … objects_check.py rtf --seconds 20
+{"rtf": 0.87}
+# L1 16:29:28
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950176.7477388, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.515], "seen": 1793950176.722, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793950176.722, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.054, "min_edge_box_1": 0.995, "min_edge_chair_1": 1.376, "final_dist_chair_1": 1.943, "final_angle_chair_1_deg": 27.7, "max_tilt": 1.118, "passed": false, "failures": ["winding: 0.054 not in [0.9, 1.5)", "max_tilt: 1.118 >= 1", "exit_code: 1 != 0"], "samples": 1844}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950220.7504163, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.517, 0.527], "seen": 1793950209.457, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.471], "seen": 1793950220.748, "visible": true}]}
+# L2 16:30:22
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950230.6764052, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793950230.647, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.456], "seen": 1793950230.647, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.314, "min_edge_box_1": 0.173, "min_edge_chair_1": 1.134, "final_dist_chair_1": 2.727, "final_angle_chair_1_deg": 171.1, "max_tilt": 3.138, "passed": false, "failures": ["winding: 0.314 not in [0.9, 1.5)", "min_edge_box_1: 0.173 < 0.6", "max_tilt: 3.138 >= 1", "exit_code: 1 != 0"], "samples": 3698}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950314.1774037, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.518, 0.527], "seen": 1793950313.948, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.469], "seen": 1793950273.669, "visible": false}]}
+# L3 16:31:56
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950326.405403, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.514], "seen": 1793950326.065, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.467], "seen": 1793950326.065, "visible": true}]}
+$ … objects_check.py run --expect lap "F around_box_1"; echo "exit=$?"
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.363, "min_edge_box_1": 0.186, "min_edge_chair_1": 1.104, "final_dist_chair_1": 2.888, "final_angle_chair_1_deg": 172.0, "max_tilt": 3.049, "passed": false, "failures": ["winding: 0.363 not in [0.9, 1.5)", "min_edge_box_1: 0.186 < 0.6", "max_tilt: 3.049 >= 1", "exit_code: 1 != 0"], "samples": 3928}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950420.4036663, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.519, 0.528], "seen": 1793950393.428, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.474, 0.473], "seen": 1793950371.805, "visible": false}]}
+# N1 16:33:42
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950430.8130484, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.527], "seen": 1793950430.722, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.454], "seen": 1793950430.722, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.13, "min_edge_box_1": 1.17, "min_edge_chair_1": 0.769, "final_dist_chair_1": 1.063, "final_angle_chair_1_deg": 24.5, "max_tilt": 0.476, "passed": true, "failures": [], "samples": 1260}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950467.3135712, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.512, 0.527], "seen": 1793950450.403, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.462, 0.466], "seen": 1793950467.174, "visible": true}]}
+# N2 16:34:29
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950479.087658, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.509], "seen": 1793950478.961, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.467], "seen": 1793950478.961, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.099, "min_edge_box_1": 2.348, "min_edge_chair_1": 0.862, "final_dist_chair_1": 1.184, "final_angle_chair_1_deg": 23.6, "max_tilt": 0.495, "passed": true, "failures": [], "samples": 1518}
+exit=0
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950518.5876858, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.526, 0.527], "seen": 1793950510.639, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.469, 0.475], "seen": 1793950518.535, "visible": true}]}
+# N3 16:35:21
+$ … objects_check.py objects                       # 走る前
+{"frame": "odom", "stamp": 1793950531.4264536, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.511], "seen": 1793950531.413, "visible": true}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.467], "seen": 1793950531.413, "visible": true}]}
+$ … objects_check.py run --expect near "F near_chair_1"; echo "exit=$?"
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 1, "first_action": "立つ", "winding_box_1": 0.055, "min_edge_box_1": 2.443, "min_edge_chair_1": 1.813, "final_dist_chair_1": 2.08, "final_angle_chair_1_deg": 68.1, "max_tilt": 1.478, "passed": false, "failures": ["final_dist_chair_1: 2.080 > 1.5", "final_angle_chair_1_deg: 68.121 > 45", "max_tilt: 1.478 >= 1", "exit_code: 1 != 0"], "samples": 815}
+exit=1
+$ … objects_check.py objects                       # 走った後
+{"frame": "odom", "stamp": 1793950556.4275594, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.511, 0.512], "seen": 1793950543.646, "visible": false}, {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.468, 0.469], "seen": 1793950546.431, "visible": false}]}
+```
+
+### 残ること
+
+- **一周の 1 回（C L1）は、旋回からつないだ前進の歩き出しで転んだ。** 旋回の終わり（z を 0.5 から 0.15 へ下げる所）で揺れが始まり、前進の x を上げる間に育った。B・C を合わせて、旋回からつないだ前進は 51 回で 1 回転んだ。
+- **まっすぐ歩いている途中の転び**（B L1、A N3）も残る：歩くときの向きの直しの z が、揺れに合わせて ±0.1〜0.27 rad/s で振れ、揺れを育てる形（第 1 部の「歩くときの向きの直しが揺れを育てる」と同じ）。C では 46 回で 0 だった。
+- 転ぶのは今も Gazebo の unitree_guide controller の中。止まる回数を減らすと転びは減ったが、無くなってはいない。3 回ずつでは、2/3 が続くかは言えない。
+- この部では、操作画面（本物の Claude）からの一周と、一周を終えた所からの 2 つ目の指示（Review Focus 1）は流し直していない。
+- `objects_check.py run` の `max_tilt` は、終わって 1 秒（`TAIL_S`）しか見ない。A N3（1.478 に対して記録 3.14）・B L1（1.071 に対して 3.08）は、その後で倒れた。C の合格の 6 回は、終わった後 3 秒あまりの記録でも傾き 0.45 以下だった。
+
 ## 結論
+
+第 1 部・第 2 部（止まっては動く計画）の結論。そのあとの第 3 部（止まる回数を減らした後）は上の節：最後のコードで一周 2/3・椅子 3/3・挨拶つき 1/1、§2 はまだ満たしていない。
 
 | 確かめたこと | 結果 |
 |---|---|
@@ -53,12 +345,13 @@ docker compose --profile gazebo run -d --rm --no-deps -T -e ROS_DOMAIN_ID=77 --n
 計画を立てる側（Claude の翻訳・監督器・計画・Session）は、転ぶまでどの回も計画どおりに動いた（`位置のずれ` で止まった回は 0）。
 転ぶのは Gazebo の controller の問題。実行器の値（P7 と試した値）と橋渡しの直し（大きさ・最初の動作の上げ方、止めた後に立たせる形も試した）では無くならなかった。
 残る手は controller にパッチを当ててイメージを作り直すこと（このタスクの決まりではしない。最後の「気づいたこと」）。
+→ その後、実行器で止まる回数を減らすと（第 3 部の M1・角）、転ぶのはだいぶ減り、一周を 3 回のうち 2 回終えた。それでも 1 回は転んだ。
 
 **この記録の後に直したこと（最終レビューの Important 2、commit `4783846`）：** `GridExecutor` は、何も送らない間の後の最初の Move を、1 周期で全速にしていた
 （前の周期からの時間を 0.5 秒で切ってそのまま加速に使うため。前進 0.3 m/s・旋回 0.5 rad/s。設計書 §6.5・P7 に反する）。今は `load()` で加速を 0 からやり直す。
-この記録の回はどれも直す前。A7・A11 の 2 つ目の指示は「止める」の数秒後に始まったので、コードから言えば最初の「右に回る」の Move は z −0.5 から入った
+第 1 部・第 2 部の回はどれも直す前。A7・A11 の 2 つ目の指示は「止める」の数秒後に始まったので、コードから言えば最初の「右に回る」の Move は z −0.5 から入った
 （橋渡しの `RELEASE_ACC` は、controller の状態を変えた後の最初の速度だけを上げる。StopMove の後は「歩く」のままなので効かない。橋渡しのログでは確かめていない）。
-どちらもその旋回では転ばなかった。直した後は Gazebo で流し直していない。
+どちらもその旋回では転ばなかった。直した後の回は第 3 部の組 A（一周 0/3・椅子 2/3）。
 
 ## 第 2 部：本体のフォルダで（手順 4〜7、15:13〜15:39）
 
@@ -644,12 +937,17 @@ lapE・lapF（橋渡しで止めた後に立つ）は別の作りなので入れ
 | 椅子（`objects_check.py`、第 1 部） | 9 | 7 | 1（RN2）。FN2 は距離 1.538 m で不合格 | P7・調整した値 |
 | 椅子（`objects_check.py`、第 2 部） | 1 | 0 | 1 | P7 + 上げ方 |
 | 椅子（操作画面、一周の途中で止めた所から、第 2 部） | 2 | 1（A11） | 1（A7） | 同上 |
+| 一周（`objects_check.py`、第 3 部の組 A・B） | 6 | 0 | 6 | 4783846 入り（A）、M1（B） |
+| **一周（`objects_check.py`、第 3 部の組 C）** | 3 | **2（L2・L3）** | 1（L1） | M1 + 角（最後のコード） |
+| 椅子（`objects_check.py`、第 3 部の組 A・B） | 6 | 5 | 1（A N3） | 4783846 入り（A）、M1（B） |
+| **椅子（`objects_check.py`、第 3 部の組 C、挨拶つき 1 回を含む）** | 4 | **4** | 0 | M1 + 角（最後のコード） |
 
-- 一周は 25 回で 1 回。どの設定でも、一周の 39〜41 動作のどこかで転ぶことが多い。
+- 一周は第 1 部・第 2 部の 25 回で 1 回。どの設定でも、一周の 39〜41 動作のどこかで転ぶことが多い。第 3 部を合わせると 34 回で 3 回（そのうち 2 回は組 C）。
 - RTF（`objects_check.py rtf --seconds 20`、画面なし）：
 
 | いつ・どこで | RTF |
 |---|---|
+| 第 3 部、組 C（17:23）・組 B（17:01）・組 A（16:28、負荷あり） | 1.0・0.94・0.87 |
 | 第 2 部、本体のフォルダ、静か（15:14・15:17） | 0.93・0.93 |
 | 第 1 部・修正 1 回目、`obj-i`、静か | 0.99〜1.0 |
 | 第 1 部・最初の回、`obj-i`、手順 4 のとき | 0.96〜1.0 |
@@ -668,7 +966,7 @@ lapE・lapF（橋渡しで止めた後に立つ）は別の作りなので入れ
   - 「歩く」に入るときの足の置き場所を、決まった立ち方（`feet_pos_normal_stand_`）から取る（今は入った時の足の置き場所。歩いた後に入り直すとずれる）。
   - 回る目標の向き `yaw_cmd_` を、本当の向きから離れすぎないように切る（`gazebo_turn_fix.md` の H2）。
 - **一周の計画は回る回数が多い。** BFS の同じ長さの道の選び方で、出だしが「左 → 前 → 右 → 前 → 前 → 前 → 右 → 前 → 左 …」の階段になり、一周 39〜41 動作のうち 10〜12 回が 90 度の旋回（Task B・A の planner。持ち主でないので触っていない）。
-  止まって動き出す回数（動作の数）が減れば、Gazebo では転びにくくなるはず。
+  止まって動き出す回数（動作の数）が減れば、Gazebo では転びにくくなるはず。→ 計画は変えずに、実行器で動作の間を止まらずにつないだ（第 3 部）。転ぶのは減った。
 - **傾いた LiDAR の地面。** 胴が大きく傾いた（0.88）一瞬に `前方に物が出た` が出ることがある（lapC・RN3）。地面の点を除く `drop_ground_and_self_points`（R23）は、点群の時刻と胴の向きの時刻がずれると地面の点を残すことがある（大きさの膨らみと同じずれ）。
   第 1 部では計画が変わっただけで合否には響かなかった（RN3 は合格）。直すなら、点群を撮った時刻の胴の向きを使う（`gazebo_bridge.py` の `_on_cloud` は今の `self._pose` を使っている）。
   第 2 部では多く出た：P2L1 で 1 回、P2N1 で前進 2 回の間に 3 回、A1 で 4 回の一時停止。一時停止のたびに StopMove → 歩き出しが増え、揺れと転ぶ機会が増える（P2N1 は 3 回止まった後の回る所で転んだ）。
