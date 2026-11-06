@@ -11,8 +11,10 @@
 - 断る指示は、formula が null で、決まった言葉（見つかりません・決められません・遠すぎます・単語帳にない）が
   メッセージにあれば正しい。
 - 出力：1 行目に使った LLM、1 件ごとに 1 行の JSON、最後の行に {"summary": {グループ: [正しい数, 件数]}, "pass": …}。
-- 終了コード：lap と near がどちらも 9/10 以上なら 0（設計書 §2）、そうでなければ 1。
+- 終了コード：lap と near がどちらも 9/10 以上なら 0（設計書 §2）、どちらかが届かなければ 1。
+  --groups で lap か near を外したら、§2 の条件を測っていないので "pass" は null、終了コードは 2。
   ほかのグループの数は報告するだけ（9/10 未満は利用者に伝えること）。
+- 1 件の翻訳や判定で例外が出ても、その件を誤りに数えて（理由に例外の文を残して）続ける。
 """
 
 from __future__ import annotations
@@ -30,9 +32,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for _path in (ROOT / "nl_control", ROOT):           # this checkout first (e.g. /wt), as tests/conftest.py does
-    if str(_path) not in sys.path:
-        sys.path.insert(0, str(_path))
+
+
+def _checkout_first(path: list[str]) -> None:
+    """This checkout, then its nl_control, at the front of `path` (sys.path): moved there when they are
+    already further back, so another checkout earlier on PYTHONPATH is never the one imported."""
+    for entry in (str(ROOT / "nl_control"), str(ROOT)):
+        while entry in path:
+            path.remove(entry)
+        path.insert(0, entry)
+
+
+_checkout_first(sys.path)
 
 from go2_nl_control.actions import LYING  # noqa: E402
 
@@ -194,13 +205,21 @@ class Result:
 
 
 def _run_case(llm: LLM, group: str, case: Case, workdir: Path) -> Result:
+    """One case. An exception from translate or judge fails this case only, with its text as the reason,
+    so one crash does not lose the other cases and the summary."""
     start = time.monotonic()
     instruction, scene, _, _ = case
     try:
         tr = translate(instruction, llm, scene=scene)
     except LLMError as exc:
         return Result(group, case, False, f"LLM の失敗：{exc}", None, time.monotonic() - start)
-    ok, reason = judge(case, tr, workdir)
+    except Exception as exc:  # an odd reply or a bug: this case is wrong, the run goes on
+        return Result(group, case, False, f"翻訳の失敗：{type(exc).__name__}: {exc}", None,
+                      time.monotonic() - start)
+    try:
+        ok, reason = judge(case, tr, workdir)
+    except Exception as exc:
+        return Result(group, case, False, f"判定の失敗：{type(exc).__name__}: {exc}", tr, time.monotonic() - start)
     return Result(group, case, ok, reason, tr, time.monotonic() - start)
 
 
@@ -221,9 +240,12 @@ def run_groups(llm: LLM, groups: dict[str, list[Case]], workdir: Path, *, worker
     return {group: (right, total) for group, (right, total) in counts.items()}
 
 
-def passed(counts: dict[str, tuple[int, int]]) -> bool:
-    """lap and near (those that ran) at 9/10 or more."""
-    return all(right >= PASS_RATIO * total for group, (right, total) in counts.items() if group in PASS_GROUPS)
+def passed(counts: dict[str, tuple[int, int]]) -> bool | None:
+    """Whether lap and near both have 9/10 or more right; None when either did not run (the design §2
+    condition was not measured)."""
+    if not all(group in counts for group in PASS_GROUPS):
+        return None
+    return all(counts[group][0] >= PASS_RATIO * counts[group][1] for group in PASS_GROUPS)
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:
@@ -259,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     ok = passed(counts)
     print(json.dumps({"summary": {g: list(c) for g, c in counts.items()}, "pass": ok}, ensure_ascii=False),
           flush=True)
-    return 0 if ok else 1
+    return 2 if ok is None else 0 if ok else 1
 
 
 if __name__ == "__main__":
