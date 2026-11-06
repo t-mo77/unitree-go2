@@ -4,6 +4,7 @@ and the zip's holds and timeouts (R11, R12, P7)."""
 import json
 import math
 
+import pytest
 from go2_nl_control.actions import MOVE, STANDING, STOP_MOVE
 from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 
@@ -131,6 +132,28 @@ def test_backward_corrects_a_sideways_offset():
     run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("backward", 0.5, (-0.5, 0.0), 0.0),
                                           GridStep("backward", 0.5, (-1.0, 0.0), 0.0)])
     assert abs(sim.y) < 0.1 and abs(sim.x + 1.0) <= 0.06
+
+
+@pytest.mark.parametrize("step", [GridStep("forward", 0.5, (1.0, 0.0), 0.0),
+                                  GridStep("turn_right", 90.0, (0.5, 0.0), -math.pi / 2)],
+                         ids=["forward", "turn_right"])
+def test_a_step_loaded_after_an_idle_gap_ramps_from_zero(step):
+    """Design §6.5 and P7 (final review, Important 2): the session ticks the executor only while
+    a step is loaded, so the next step (a second instruction, the move after the R1-amendment
+    wait or after a posture settle) can come long after the last tick. load() starts the ramp
+    afresh: the first Move is not the full speed that a capped 0.5 s dt would give."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    cmds, t = run_until_done(sim, ex, GridStep("forward", 0.5, (0.5, 0.0), 0.0))
+    ex.load([step])                          # 10 s with no tick: the Go2 stood still
+    cmds = []
+    for k in range(30):
+        _tick(sim, ex, round(t + 10.0 + k * 0.1, 6), CLEAR, cmds)
+    moves = [c.parameter for _, c in cmds if c.api_id == MOVE]
+    acc_x, _, acc_z = (a * 0.1 for a in GRID_EXEC_CONFIG.acc)   # one 10 Hz tick of acceleration
+    assert abs(moves[0]["x"]) <= acc_x + 1e-9 and abs(moves[0]["z"]) <= acc_z + 1e-9
+    assert all(abs(b["x"] - a["x"]) <= acc_x + 1e-3 and abs(b["z"] - a["z"]) <= acc_z + 1e-3
+               for a, b in zip(moves, moves[1:]))
+    assert max(abs(m["x"]) + abs(m["z"]) for m in moves) > acc_z    # and it does get going
 
 
 def test_forward_is_held_by_a_blocked_front_and_times_out_as_the_executor():

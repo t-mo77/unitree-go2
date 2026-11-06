@@ -9,6 +9,8 @@ towards it from the Go2's pose (closed loop), so errors do not add up from step 
 - turn_left / turn_right: turn on the spot towards the goal yaw, slower near it.
 - When the goal is reached: StopMove once, then nothing for GRID_SETTLE_S (the Go2 coasts),
   and only then is the step done, so the session snaps a Go2 that has stopped (R11).
+- load() forgets the last tick's time, so each step's ramp starts from 0 however long the
+  executor went unticked before it.
 - Everything else is the Executor's: gestures and posture changes, the holds (a blocked front,
   a lost sensor, no pose; they apply in the settle too), and the timeouts. A GridStep keeps
   Step's action and value (step_value), so its text() and the param names "distance" and
@@ -56,6 +58,14 @@ def _clip(v: float, lo: float, hi: float) -> float:
 class GridExecutor(Executor):
     def __init__(self, cat: Dict[str, ActionSpec], cfg: ExecConfig = GRID_EXEC_CONFIG):
         super().__init__(cat, cfg)
+
+    def load(self, steps: List[Step]):
+        """The session ticks the executor only while a step is loaded, so the last tick can be
+        long ago (a second instruction, the R1-amendment wait, a posture settle). The first tick
+        after load() then has dt 0, and the ramp starts from 0 (design §6.5, P7): a stale dt,
+        capped at 0.5 s, would ramp to the full speed in one tick."""
+        super().load(steps)
+        self._last_now = None
 
     def _reset_step(self):
         super()._reset_step()

@@ -16,6 +16,7 @@ import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
 from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
 from voice_ltl.grid import GridWorld
+from voice_ltl.grid_executor import GRID_EXEC_CONFIG
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
@@ -275,6 +276,21 @@ class Records(DirectSimLink):
         super().send(cmd)
 
 
+def assert_moves_ramp(sent):
+    """Design §6.5 and P7: every Move in `sent` is within one 10 Hz tick of acceleration of the
+    command before it, starting from 0 (a StopMove, sent at each goal by design (R11), is 0)."""
+    acc_x, _, acc_z = (a * 0.1 for a in GRID_EXEC_CONFIG.acc)
+    x0, z0, moves = 0.0, 0.0, 0
+    for c in sent:
+        if c.api_id == STOP_MOVE:
+            x0, z0 = 0.0, 0.0
+        elif c.api_id == MOVE:
+            x, z = c.parameter["x"], c.parameter["z"]
+            assert abs(x - x0) <= acc_x + 1e-3 and abs(z - z0) <= acc_z + 1e-3, (moves, c, x0, z0)
+            x0, z0, moves = x, z, moves + 1
+    assert moves > 0
+
+
 def test_drift_out_of_the_grid_stops(tmp_path):
     sim = SimGo2()
     sim.place_objects()
@@ -393,6 +409,25 @@ def test_sensor_change_while_standing_up_does_not_abort(tmp_path):
     assert not getattr(link, "hit", False)
 
 
+def test_the_walk_after_the_wait_for_a_box_ramps_from_zero(tmp_path):
+    """Design §6.5 and P7 (final review, Important 2): while the session waits for an unlisted
+    box (the R1 amendment) nothing ticks the executor; the walk after the box goes still starts
+    from 0 at the executor's acceleration."""
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"), link=Records(sim))
+    link.sim.place_box("front", 0.6)
+    sess.submit_text("椅子まで歩いて")
+    drive_until(sess, link, lambda s: s["status"] == "waiting")
+    drive(sess, link, 3.0)
+    assert sess.snapshot()["status"] == "waiting"
+    n = len(link.sent)
+    link.sim.clear_boxes()
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done" and no_supervisor_complaint(snap)
+    assert_moves_ramp(link.sent[n:])
+
+
 def test_box_on_the_route_during_a_grid_plan(tmp_path):
     sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
     sess.submit_text("椅子まで歩いて")
@@ -434,6 +469,23 @@ def test_second_instruction_from_where_the_lap_ended(tmp_path):
     assert distance <= 1.5 and angle <= 45
     assert min(edge_distance(x, y, CHAIR) for x, y in path) >= 0.45
     assert not getattr(link, "hit", False)
+
+
+def test_a_second_instruction_after_an_idle_gap_ramps_every_move(tmp_path):
+    """Design §6.5 and P7 (final review, Important 2): after 「椅子まで歩いて」 and 5 idle seconds
+    (nothing ticks the executor), the lap starts from 0 at the executor's acceleration, and so
+    does every step of it (assert_moves_ramp)."""
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1", "F around_box_1"), link=Records(sim))
+    sess.submit_text("椅子まで歩いて")
+    assert run_to_the_end(sess, link)["status"] == "done"
+    drive(sess, link, 5.0)
+    n = len(link.sent)
+    sess.submit_text("箱の周りを一周して")
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    assert_moves_ramp(link.sent[n:])
 
 
 def test_a_lap_from_a_rotated_off_origin_start(tmp_path):     # Review Focus 1 at session level
