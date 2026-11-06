@@ -116,7 +116,7 @@ GROUPS: dict[str, list[Case]] = {
 
 
 class TrialError(Exception):
-    """The formula has no plan (it cannot be satisfied from lying)."""
+    """The formula has no plan: SUP is empty or no path reaches a marked state from lying."""
 
 
 _plans: dict[tuple[str, Scene], tuple[str, ...]] = {}
@@ -136,8 +136,8 @@ def plan_actions(formula: str, scene: Scene, workdir: Path) -> list[str]:
     else:
         world = go2_world(PlantState(LYING, False, False))
     syn = synthesize(formula, world, Path(workdir))
-    events = None if syn.empty else Runtime(syn.sup).plan()
-    if not events:
+    events = None if syn.empty else Runtime(syn.sup).plan()    # [] when already done
+    if events is None:
         raise TrialError("計画がありません（この指示は満たせません）")
     actions = tuple(event_action(e) for e in events)
     with _plans_lock:

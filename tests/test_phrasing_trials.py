@@ -67,6 +67,9 @@ def test_plan_actions_uses_the_grid_only_for_object_formulas(tmp_path):
     assert walk[0] == "stand" and "forward" in walk and set(walk) <= {"stand", "forward", "turn_left", "turn_right"}
     lap = plan_actions("F around_box_1", SCENE, tmp_path)
     assert lap[0] == "stand" and lap != plan_actions("F around_cw_box_1", SCENE, tmp_path)
+    assert plan_actions("F lying", SCENE, tmp_path) == []                  # already true while lying: no step
+    with pytest.raises(trials.TrialError):
+        plan_actions("F(hello & !hello)", SCENE, tmp_path)
 
 
 def test_groups_follow_the_plan():

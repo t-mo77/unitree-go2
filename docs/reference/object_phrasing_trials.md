@@ -81,6 +81,8 @@ cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_I
 {"summary": {"lap": [10, 10], "near": [10, 10], "objects": [7, 7], "refusals": [7, 7], "regression": [12, 12]}, "pass": true}
 ```
 
+2 回目の後、道具の `plan_actions` を 1 か所直した：初めからもう満たされている式（伏せているときの `F lying` など）の計画 `[]` を、計画なしと取り違えていた。どちらの回にもそういう式はなかったので、結果は変わらない。
+
 ## 1 件ずつの答え
 
 「○」は正しい、「×」は誤り。式の指示は Claude が書いた式、断る指示は画面に出るメッセージ。substitutions は画面の「こう受け取りました」に出る行。
