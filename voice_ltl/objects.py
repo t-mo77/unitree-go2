@@ -248,16 +248,27 @@ def _script(ch: str) -> str | None:
                  if re.fullmatch(f"[{chars}]", ch)), None)
 
 
-def _word_pattern(word: str) -> str:
-    """word が長い語の一部でないときだけ当たる正規表現。カタカナの端はカタカナと続かない（チェアー は可）。
-    ひらがなの端は、ひらがなでない字か助詞と続く（このいす・いすまで は可、かわいすぎる は不可）。
-    漢字で終わる語は漢字と続かない（箱根・椅子取り は不可）。"""
-    head = {"kata": f"(?<![{_KATAKANA}])",
+def word_start(word: str) -> str:
+    """word の前に置く正規表現：word がそこで語として始まるときだけ当たる（長さ 0）。
+    カタカナで始まる語はカタカナの後ろでは始まらない。ひらがなで始まる語は、ひらがなでない字の後ろか
+    助詞の後ろで始まる（このいす は可、かわいすぎる は不可）。漢字で始まる語はどこでも始まる。
+    物の名前（label_in）と、ひらがなの「持つ・押す…」（translator の OBJECT_ACTION_KANA）が使う。"""
+    return {"kata": f"(?<![{_KATAKANA}])",
             "hira": f"(?:(?<![{_HIRAGANA}])|(?<=[{_PARTICLES_BEFORE}]))"}.get(_script(word[0]), "")
-    tail = {"kata": f"ー?(?![{_KATAKANA}])",
-            "hira": f"(?:(?={_PARTICLES_AFTER})|(?![{_HIRAGANA}]))",
+
+
+def word_end(word: str, after: str = _PARTICLES_AFTER) -> str:
+    """word の後ろに置く正規表現：word がそこで語として終わるときだけ当たる。カタカナで終わる語は
+    カタカナと続かない（チェアー は可）。ひらがなで終わる語は、ひらがなでない字か after（正規表現、
+    既定は助詞）と続く（いすまで は可、いすわる は不可）。漢字で終わる語は漢字と続かない（箱根 は不可）。"""
+    return {"kata": f"ー?(?![{_KATAKANA}])",
+            "hira": f"(?:(?={after})|(?![{_HIRAGANA}]))",
             "kanji": f"(?![{_KANJI}])"}.get(_script(word[-1]), "")
-    return head + re.escape(word) + tail
+
+
+def _word_pattern(word: str) -> str:
+    """word が長い語の一部でないときだけ当たる正規表現。"""
+    return word_start(word) + re.escape(word) + word_end(word)
 
 
 _LABEL_RES = {label: re.compile("|".join(_word_pattern(w) for w in words)) for label, words in LABEL_WORDS.items()}
