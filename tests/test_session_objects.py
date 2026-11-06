@@ -7,13 +7,15 @@ import math
 import threading
 import time
 
-from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, SIT, STAND_UP, STOP_MOVE
-from go2_nl_control.supervisor import SENSOR_LOST
+import pytest
+from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, SIT, STAND_DOWN, STAND_UP, STOP_MOVE
+from go2_nl_control.supervisor import BLOCKED, SENSOR_LOST
 
 import voice_ltl.automata as automata
 import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
 from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
+from voice_ltl.grid import GridWorld
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
@@ -258,17 +260,36 @@ def test_drift_in_heading_stops(tmp_path):
     acc = link.sim.accepted
     assert STOP_MOVE in acc[acc.index(HELLO) + 1:]
     assert snap["log"][-1] == MSG_POSITION_DRIFT
+    assert snap["grid"]["goal"] is None and snap["plan_cells"] == []
+
+
+class Records(DirectSimLink):
+    """Keeps every command sent, with its parameters."""
+
+    def __init__(self, sim):
+        super().__init__(sim)
+        self.sent = []
+
+    def send(self, cmd):
+        self.sent.append(cmd)
+        super().send(cmd)
 
 
 def test_drift_out_of_the_grid_stops(tmp_path):
-    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"), link=Records(sim))
     sess.submit_text("椅子まで歩いて")
     drive_until(sess, link, turning)
     link.sim.x, link.sim.y = -3.0, -3.0                 # a cell centre outside the grid
-    n = len(link.sim.accepted)
+    n = len(link.sent)
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "error" and snap["message"] == MSG_POSITION_DRIFT
-    assert link.sim.accepted[-1] == STOP_MOVE and MOVE not in link.sim.accepted[n:][-1:]
+    assert link.sim.accepted[-1] == STOP_MOVE
+    # the turn ends where it is, and no walk goes after the old goal (a turn's Move has x = 0)
+    assert not [c for c in link.sent[n:] if c.api_id == MOVE and c.parameter["x"] != 0]
+    assert any(c.api_id == MOVE and c.parameter["z"] != 0 for c in link.sent[n:])
+    assert snap["grid"]["goal"] is None and snap["plan_cells"] == []
 
 
 class LosesBack(DirectSimLink):
@@ -415,6 +436,38 @@ def test_second_instruction_from_where_the_lap_ended(tmp_path):
     assert not getattr(link, "hit", False)
 
 
+def test_a_lap_from_a_rotated_off_origin_start(tmp_path):     # Review Focus 1 at session level
+    sess, link = make_objects(tmp_path, llm_for("F around_box_1"))
+    link.sim.x, link.sim.y, link.sim.yaw = 0.3, 0.2, 1.2
+    sess.submit_text("箱の周りを一周して")
+    path = [(0.3, 0.2)]
+    snap = run_to_the_end(sess, link, path=path)
+    assert snap["status"] == "done", snap["message"]
+    assert 0.9 <= winding_number(path, (BOX.x, BOX.y)) < 1.5
+    assert min(edge_distance(x, y, BOX) for x, y in path) >= 0.45
+    assert not getattr(link, "hit", False) and not link.sim.collided
+    assert snap["grid"]["yaw"] == pytest.approx(1.2) and snap["grid"]["origin"] == pytest.approx([0.3, 0.2])
+    assert sess._grid.grid.anchor == (0.3, 0.2, 1.2)                # the pose when the plan started (R2)
+    assert no_supervisor_complaint(snap)
+
+
+def test_the_scene_and_the_anchor_are_taken_at_different_times(tmp_path):   # R2
+    sess, link = make_objects(tmp_path, llm_for("F around_box_1"))
+    link.sim.x, link.sim.y, link.sim.yaw = 0.3, 0.2, 0.4
+    jobs = []
+    dispatch = sess._dispatch
+    sess._dispatch = lambda job: (jobs.append(job), dispatch(job))
+    sess.submit_text("箱の周りを一周して")
+    link.sim.yaw = 1.2                                  # the Go2 turns before the first tick
+    drive(sess, link, 0.1)
+    assert sess._scene.pose == (0.3, 0.2, 0.4) and sess._translation.scene.pose == (0.3, 0.2, 0.4)
+    (anchor,) = [payload[2] for kind, _, payload in jobs if kind == "synthesize"]   # _get_ready's pose
+    assert anchor == (0.3, 0.2, 1.2) == sess._grid.grid.anchor
+    snap = sess.snapshot()
+    assert snap["status"] == "executing" and snap["grid"]["yaw"] == pytest.approx(1.2)
+    assert snap["grid"]["robot"] == [0, 0, 0]
+
+
 def test_objects_arriving_after_a_refusal_work_on_the_next_instruction(tmp_path):
     sim = SimGo2()                                       # Gazebo has just started: no objects yet
     llm = FakeLLM([{"formula": None, "unsupported": ["箱"]},
@@ -542,6 +595,28 @@ def test_plan_cells_follow_the_steps_while_a_box_blocks_the_way(tmp_path):
     assert seen_off_path                     # the held forward was off the path for a while
 
 
+def test_a_stop_mid_plan_clears_the_goal(tmp_path):      # R27: no goal without a path to it
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
+    sess.submit_text("椅子まで歩いて")
+    snap = drive_until(sess, link, lambda s: ("forward", "done") in [(st["action"], st["status"]) for st in s["steps"]])
+    assert snap["grid"]["goal"] is not None and snap["plan_cells"]
+    robot, blocked = snap["grid"]["robot"], snap["grid"]["blocked"]
+    sess.stop()
+    snap = sess.snapshot()
+    assert snap["status"] == "idle" and snap["plan_cells"] == [] and snap["grid"]["goal"] is None
+    assert snap["grid"]["robot"] == robot and snap["grid"]["blocked"] == blocked     # the view stays
+
+
+def test_a_move_held_too_long_clears_the_goal(tmp_path):
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
+    sess.submit_text("椅子まで歩いて")
+    drive_until(sess, link, lambda s: ("forward", "done") in [(st["action"], st["status"]) for st in s["steps"]])
+    link.sim.place_box("front", 1.2)                    # the next forward is held until the executor gives up
+    snap = run_to_the_end(sess, link, limit=120)
+    assert snap["status"] == "error" and "秒待っても" in snap["message"]
+    assert snap["plan_cells"] == [] and snap["grid"]["goal"] is None and snap["grid"]["robot"] is not None
+
+
 def test_a_no_path_error_still_shows_the_grid(tmp_path):
     sim = SimGo2()
     sim.objects.append(SimObject("box_1", "box", 2.5, 0.0, 1.0, 1.0))
@@ -586,7 +661,69 @@ def test_an_ignored_sit_with_an_obstacle_seen_is_a_posture_error(tmp_path):
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "error" and snap["message"].startswith("姿勢が計画と違います")
     assert no_supervisor_complaint(snap) and link.sim.accepted[-1] == STOP_MOVE
+    assert "センサー: sit の途中の物は数えません" in snap["debug_log"]
 
+
+class IgnoresStandDown(DirectSimLink):
+    """A Go2 that does not take StandDown: it keeps standing."""
+
+    def send(self, cmd):
+        if cmd.api_id != STAND_DOWN:
+            super().send(cmd)
+
+
+def test_an_ignored_lie_down_with_an_obstacle_seen_is_a_posture_error(tmp_path):
+    """As for sit (R1): lie_down leaves standing, so a box seen while it runs is dropped with the
+    bits and the supervisor follows the lie_down; the plan's cells stay aligned with its steps
+    meanwhile, and the posture check then stops the plan."""
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F(near_chair_1 & X F lying)"), link=IgnoresStandDown(sim))
+    sess.submit_text("椅子まで歩いて伏せて")
+    drive_until(sess, link, lambda s: s["current"] == "lie_down")
+    link.sim.place_box("front", 0.6)
+    while sess.snapshot()["status"] not in FINAL and link.now < 120:
+        drive(sess, link, 0.1)
+        check_cells(sess.snapshot())
+    snap = sess.snapshot()
+    assert snap["status"] == "error" and snap["message"].startswith("姿勢が計画と違います")
+    assert "センサー: front_blocked" in snap["debug_log"] and no_supervisor_complaint(snap)
+    assert "センサー: lie_down の途中の物は数えません" in snap["debug_log"]
+    assert link.sim.accepted[-1] == STOP_MOVE
+
+
+def test_only_sit_and_lie_down_leave_standing():          # the actions whose obstacle bits are dropped (R1)
+    assert session_mod._LEAVE_STANDING == {"sit", "lie_down"}
+
+
+class SeesFront(DirectSimLink):
+    """The front LiDAR reads BLOCKED while `seeing` is set."""
+
+    seeing = False
+
+    def reading(self, now):
+        r = super().reading(now)
+        return dataclasses.replace(r, front=BLOCKED, front_dist=0.6) if self.seeing else r
+
+
+def test_an_action_the_grid_cannot_follow_stops_the_plan(tmp_path, monkeypatch):
+    """Only sit and lie_down drop the obstacle bits. Were the grid to have no turn while an obstacle
+    is seen, one seen during a turn stops the plan with StopMove, as a step the supervisor cannot
+    follow does: the supervisor is not taken back to where the turn began."""
+    real = GridWorld._dst
+    monkeypatch.setattr(GridWorld, "_dst", lambda self, state, action: (
+        None if action in ("turn_left", "turn_right") and state.front else real(self, state, action)))
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"), link=SeesFront(sim))
+    sess.submit_text("椅子まで歩いて")
+    turn = drive_until(sess, link, turning)["current"]
+    link.seeing = True
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "error" and snap["message"] == f"監督器が許していない結果になりました（{turn}）"
+    assert "センサー: front_blocked" in snap["debug_log"]
+    assert not any("途中の物は数えません" in line for line in snap["debug_log"])
+    assert link.sim.accepted[-1] == STOP_MOVE and snap["grid"]["goal"] is None
 
 
 def test_a_supervisor_that_cannot_take_the_bits_back_stops_the_plan(tmp_path, monkeypatch):
