@@ -10,7 +10,9 @@ import math
 import pytest
 
 from go2_nl_control.actions import MOVE, STANDING
+from sim import sim_core
 from sim.sim_core import FakeCamera, SimGo2, SimObject, in_camera_view
+from voice_ltl import objects
 
 
 def standing_sim():
@@ -62,3 +64,7 @@ def test_fake_camera_remembers_what_it_saw():
     sim2.place_objects()
     sim2.yaw = math.pi
     assert cam2.see(sim2, 1.0) == []
+
+
+def test_sim_core_uses_the_shared_wrap():      # one (−π, π] wrap for the whole project (objects.wrap_rad)
+    assert sim_core.wrap_rad is objects.wrap_rad and not hasattr(sim_core, "_wrap")

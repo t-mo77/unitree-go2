@@ -110,6 +110,11 @@ class SpecError(Exception):
     """The formula cannot be read, is too large, or synthesis fails or takes too long."""
 
 
+def _cannot_build(reason: str) -> SpecError:
+    """The user-facing error when synthesis itself fails (pitct, a bad world, or a bug)."""
+    return SpecError(f"監督器を作れませんでした（{reason}）")
+
+
 MAX_SPEC_STATES = 2000  # a SPEC larger than this is refused as too large
 MAX_SUP_STATES = 50_000          # a SUP above this is refused before it is read
 MAX_PRODUCT_ESTIMATE = 400_000   # len(world.states) * spec.size above this is refused before pitct
@@ -207,7 +212,7 @@ def synthesize(formula: str, world: World, workdir: Path, timeout_s: float = 20.
         except SpecError:
             raise
         except Exception as exc:  # pitct, the file system and bad worlds raise many types
-            raise SpecError(f"監督器を作れませんでした（{type(exc).__name__}: {exc}）") from exc
+            raise _cannot_build(f"{type(exc).__name__}: {exc}") from exc
 
 
 def _synthesize(formula: str, world: World, workdir: Path, timeout_s: float) -> Synthesis:
@@ -267,7 +272,11 @@ def _run_pitct(formula, world, folder, plant, spec, check_time) -> Synthesis:
 
 
 def _sup_pairs(sup: Automaton, plant: Automaton, spec: Automaton) -> list[tuple[int, int]]:
-    """(plant state, spec state) of each SUP state, by running SUP's events on both from 0."""
+    """(plant state, spec state) of each SUP state, by running SUP's events on both from 0.
+
+    SUP must be a sub-automaton of PLANT x spec: every SUP state is reached from 0, has one
+    pair, and no two SUP states share a pair (so sup_state_for never picks the wrong one).
+    Otherwise SpecError; that is a bug, so the message shows no state numbers."""
     if sup.size == 0:
         return []
     plant_next = {(s, e): d for s, e, d in plant.trans}
@@ -287,7 +296,9 @@ def _sup_pairs(sup: Automaton, plant: Automaton, spec: Automaton) -> list[tuple[
                 pairs[d] = pair
                 queue.append(d)
             elif pairs[d] != pair:  # SUP is not a sub-automaton of PLANT x spec: a bug
-                raise SpecError(f"監督器の状態が PLANT と要求の組になりません（{d}）")
+                raise _cannot_build("監督器の動きが環境と要求に合いません")
     if None in pairs:  # supcon's result is trim, so every state is reachable from 0
-        raise SpecError("監督器に初めの状態から行けない状態があります")
+        raise _cannot_build("監督器に初めの状態から行けない状態があります")
+    if len(set(pairs)) != len(pairs):  # two SUP states on one pair: the R10 jump could pick either
+        raise _cannot_build("監督器の別々の状態が環境と要求の同じ組になります")
     return pairs

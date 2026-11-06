@@ -22,7 +22,7 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
 from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_IN_BODY, CAMERA_NEAR,
-                               DEFAULT_LAYOUT, Obj)
+                               DEFAULT_LAYOUT, Obj, wrap_rad)
 
 FOOTPRINT = 0.35      # 体の前後の半分の長さ（本物の Go2 は約 0.70 m）[m]
 FOOTPRINT_HALF_WIDTH = 0.16   # 体の左右の半分の幅（本物の Go2 は約 0.31 m）[m]
@@ -65,12 +65,6 @@ def _polygon_gap(p, q) -> float:
                for a, b in ((p, q), (q, p)) for v in a for i in range(4))
 
 
-def _wrap(a: float) -> float:
-    """(−π, π] に折り返す。"""
-    a %= 2 * math.pi
-    return a - 2 * math.pi if a > math.pi else a
-
-
 @dataclass
 class Box:
     x: float
@@ -102,7 +96,7 @@ def in_camera_view(pose: tuple[float, float, float], x: float, y: float) -> bool
     dy = y - (py + s * bx + c * by)
     if not CAMERA_NEAR <= math.hypot(dx, dy) <= CAMERA_FAR:
         return False
-    return abs(_wrap(math.atan2(dy, dx) - yaw)) <= CAMERA_HFOV / 2
+    return abs(wrap_rad(math.atan2(dy, dx) - yaw)) <= CAMERA_HFOV / 2
 
 
 class SimGo2:

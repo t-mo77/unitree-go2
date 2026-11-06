@@ -8,7 +8,9 @@ from collections import deque
 import pytest
 from go2_nl_control.actions import LYING, STANDING
 
-from voice_ltl.grid import CELL, Grid, GridError, grid_world, next_lap
+from voice_ltl import grid, objects
+from voice_ltl.automata import World
+from voice_ltl.grid import CELL, LAP_DONE, Grid, GridError, GridState, GridWorld, grid_world, next_lap, sector
 from voice_ltl.objects import DEFAULT_LAYOUT, Obj, edge_distance, winding_number
 
 LAP = frozenset({"around_box_1"})
@@ -198,3 +200,65 @@ def test_lap_and_chair_world_builds_quickly():
     t0 = time.monotonic()
     gw = gw_of(LAP | NEAR)
     assert time.monotonic() - t0 < 2.0 and len(gw.world.states) < 30_000
+
+
+def test_grid_uses_the_shared_wrap():          # one (−π, π] wrap for the whole project (objects.wrap_rad)
+    assert grid.wrap_rad is objects.wrap_rad and not hasattr(grid, "_wrap")
+
+
+def test_numbers():                            # plan Global Constraints, R4-R8, P4
+    assert CELL == 0.5 and grid.MAX_CELLS == 256 and grid.BLOCK_MARGIN == 0.45 and LAP_DONE == 5
+    assert (grid.NEAR_MIN_MARGIN, grid.NEAR_MAX_MARGIN, grid.NEAR_MAX_DISTANCE, grid.NEAR_MAX_ANGLE_DEG) == \
+        (0.75, 1.5, 1.4, 40.0)
+    assert (grid.RING_MIN_MARGIN, grid.RING_MAX_MARGIN) == (0.75, 1.75)
+
+
+def test_a_duplicated_id_uses_its_first_row_everywhere():   # never one row's radius with another's position
+    first = Obj("box_1", "box", 2.5, 1.5, (0.5, 0.5))
+    later = Obj("box_1", "box", 2.5, -3.0, (1.0, 1.0))      # far below the first row's rectangle
+    one, two = gw_of({"near_box_1"}, objects=(first,)), gw_of({"near_box_1"}, objects=(first, later))
+    assert (two.grid.i_range, two.grid.j_range) == (one.grid.i_range, one.grid.j_range)
+    assert two.near == one.near and two.grid.blocked == one.grid.blocked and two.near["near_box_1"]
+    lap_one, lap_two = gw_of(LAP, objects=(first,)), gw_of(LAP, objects=(first, later))
+    assert lap_two.ring == lap_one.ring
+
+
+def test_observe_refuses_a_heading_outside_0_to_3():
+    gw = gw_of(LAP)
+    src = next(s for s in gw.world.states if s.posture == STANDING and s.cell == (2, 1) and s.heading == 1)
+    assert gw.observe(src, "forward", (2, 2), 1) is not None
+    for bad in (4, -1, 5):
+        assert gw.observe(src, "forward", (2, 2), bad) is None
+
+
+def test_world_is_not_a_constructor_argument():
+    world = next(f for f in dataclasses.fields(GridWorld) if f.name == "world")
+    assert world.init is False
+    gw = gw_of(NEAR)
+    assert isinstance(gw.world, World) and gw.world.initial == GridState((0, 0), 0, LYING)
+    assert gw.grid.inside((0, 0)) and gw.near["near_chair_1"] and gw.lap_props == () \
+        and gw.start_covered is False                                  # the public names are unchanged
+
+
+def test_sector_puts_the_diagonals_in_the_next_sector_counter_clockwise():   # R6, the 1e-6° rounding
+    for obj in ((0.0, 0.0), (2.5, 1.5), (-1.0, 0.5)):                 # objects on the lattice
+        cells = [(obj[0] + CELL * a, obj[1] + CELL * b) for a, b in ((1, 1), (-1, 1), (-1, -1), (1, -1))]
+        assert [sector(obj, c) for c in cells] == [1, 2, 3, 0]
+        sides = [(obj[0] + CELL * a, obj[1] + CELL * b) for a, b in ((1, 0), (0, 1), (-1, 0), (0, -1))]
+        assert [sector(obj, c) for c in sides] == [0, 1, 2, 3]
+
+
+def test_observe_updates_the_lap_from_the_observed_cell():   # R10 with R6: box_1 is cell (5, 3)
+    gw = gw_of(LAP)
+    ring = gw.ring["around_box_1"]
+    assert (ring[(9, 3)], ring[(8, 4)], ring[(8, 5)], ring[(7, 5)]) == (0, 0, 0, 1) and (10, 3) not in ring
+    outside = GridState((10, 3), 2, STANDING, laps=(3,))              # hand-made: progress 3 off the ring
+    assert gw.observe(outside, "forward", (9, 3), 2).laps == (0,)     # entering the ring starts at 0
+    on_ring = GridState((8, 4), 1, STANDING, laps=(2,))
+    assert gw.step(on_ring, "forward")[1].laps == (2,)                # planned: (8, 5), the same sector E
+    assert gw.observe(on_ring, "forward", (8, 5), 1).laps == (2,)
+    assert gw.observe(on_ring, "forward", (7, 5), 1).laps == (3,)     # observed: (7, 5) in N, one sector CCW
+    assert gw.observe(on_ring, "forward", (9, 4), 1).laps == (2,)     # observed back in E: no change
+    assert gw.observe(GridState((7, 5), 2, STANDING, laps=(3,)), "forward", (8, 5), 2).laps == (0,)   # clockwise
+    done = GridState((8, 4), 1, STANDING, laps=(LAP_DONE,))
+    assert gw.observe(done, "forward", (10, 5), 1).laps == (LAP_DONE,)   # a closed lap stays closed

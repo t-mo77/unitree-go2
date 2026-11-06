@@ -18,7 +18,7 @@ from go2_nl_control.actions import ACTIONS, STANDING
 
 from voice_ltl.automata import World
 from voice_ltl.objects import (
-    MAX_OBJECT_DISTANCE, MSG_TOO_SPREAD, Obj, Pose, msg_not_found, msg_too_far, split_prop,
+    MAX_OBJECT_DISTANCE, MSG_TOO_SPREAD, Obj, Pose, msg_not_found, msg_too_far, split_prop, wrap_rad,
 )
 from voice_ltl.world import (
     ACTION_NAMES, ACTION_PROP, POSTURE_PROP, STEP_DISTANCE, UNCONTROLLABLE, UNSAFE_LABELS, PlantState,
@@ -83,7 +83,7 @@ class Grid:
 
     def heading_yaw(self, heading: int) -> float:
         """向き h の yaw（odom）、(−π, π] に折り返す。"""
-        return _wrap(self.anchor[2] + heading * math.pi / 2)
+        return wrap_rad(self.anchor[2] + heading * math.pi / 2)
 
     def local(self, x: float, y: float) -> tuple[float, float]:
         """odom の点をマス目の座標 [m] に：R(−yaw0)·((x, y) − (x0, y0))。"""
@@ -96,9 +96,9 @@ class Grid:
         """いちばん近いマスの中心と向き。yaw は折り返さなくてよい（DirectSimLink の yaw は 2π を超える）。"""
         lx, ly = self.local(pose[0], pose[1])
         cell = (math.floor(lx / CELL + 0.5), math.floor(ly / CELL + 0.5))
-        heading = math.floor(_wrap(pose[2] - self.anchor[2]) / (math.pi / 2) + 0.5) % 4
+        heading = math.floor(wrap_rad(pose[2] - self.anchor[2]) / (math.pi / 2) + 0.5) % 4
         offset = math.hypot(lx - CELL * cell[0], ly - CELL * cell[1])
-        yaw_error = abs(_wrap(pose[2] - self.heading_yaw(heading)))
+        yaw_error = abs(wrap_rad(pose[2] - self.heading_yaw(heading)))
         # rounded to 1e-9, so that the same pose with yaw + 2πk gives an equal Snap
         return Snap(cell, heading, round(offset, 9), round(yaw_error, 9))
 
@@ -118,7 +118,7 @@ class GridError(Exception):
 
 @dataclass
 class GridWorld:
-    world: World
+    world: World = field(init=False)       # the PLANT; grid_world sets it after the BFS, which needs step()
     grid: Grid
     objects: tuple[Obj, ...]               # the Scene's objects, odom
     atoms: frozenset[str]
@@ -158,7 +158,10 @@ class GridWorld:
         return event_name(action, self.label(dst, action))
 
     def observe(self, src: GridState, action: str, cell: tuple[int, int], heading: int) -> GridState | None:
-        """src から action をして、実際には (cell, heading) にいたときの状態（R10）。"""
+        """src から action をして、実際には (cell, heading) にいたときの状態（R10）。
+        できない動作、入れないマス、0〜3 でない向きなら None。"""
+        if heading not in range(4):
+            return None
         dst = self._dst(src, action)
         if dst is None or not self._enterable(src.cell, cell):
             return None
@@ -229,6 +232,7 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
     """式の物の命題に合わせたマス目と、その上の PLANT（到達できる状態だけ）。
 
     物が見つからない・6 m より遠い・長方形が MAX_CELLS を超えるときは GridError。
+    同じ id の行が複数あれば、その物は最初の行（objects.parse_rows と同じ）。どの行もマスをふさぐ（R7）。
     """
     atoms = frozenset(atoms)
     objects = tuple(objects)
@@ -250,8 +254,8 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
             raise GridError(msg_too_far(o.label))
 
     probe = Grid(anchor, (0, 0), (0, 0), frozenset())
-    local = [(o, probe.local(o.x, o.y)) for o in objects]
-    where = {o.id: g for o, g in local}
+    local = [(o, probe.local(o.x, o.y)) for o in objects]   # every row blocks cells (R7)
+    where = {obj_id: probe.local(o.x, o.y) for obj_id, o in by_id.items()}   # the same row as by_id
     i_lo = i_hi = j_lo = j_hi = 0                        # the robot's cell
     for obj_id, kinds in uses.items():
         r = by_id[obj_id].radius
@@ -279,7 +283,7 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
             near[f"near_{obj_id}"] = frozenset(
                 (c, h) for c in free
                 if _in_band(_dist(g, c), r + NEAR_MIN_MARGIN, min(r + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE))
-                for h in range(4) if abs(_wrap(_bearing(c, g) - h * math.pi / 2)) <= _NEAR_ANGLE)
+                for h in range(4) if abs(wrap_rad(_bearing(c, g) - h * math.pi / 2)) <= _NEAR_ANGLE)
         laps = [f"{kind}_{obj_id}" for kind in ("around", "around_cw") if kind in kinds]
         if laps:
             sectors = {c: sector(g, (CELL * c[0], CELL * c[1])) for c in free
@@ -287,7 +291,7 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
             ring.update((p, sectors) for p in laps)
     lap_props = tuple(sorted(ring))
 
-    gw = GridWorld(None, grid, objects, atoms, lap_props, near, ring, _START in covered)
+    gw = GridWorld(grid, objects, atoms, lap_props, near, ring, _START in covered)
     on_feet = posture == STANDING
     initial = GridState(_START, 0, posture, front and on_feet, back and on_feet, (0,) * len(lap_props))
     gw.world = _explore(gw, initial)
@@ -335,12 +339,6 @@ def _explore(gw: GridWorld, initial: GridState) -> World:
         forbidden=frozenset(ev for ev, label in event_label.items()
                             if any(unsafe <= label for unsafe in UNSAFE_LABELS)),
     )
-
-
-def _wrap(a: float) -> float:
-    """(−π, π] に折り返す。"""
-    a %= 2 * math.pi
-    return a - 2 * math.pi if a > math.pi else a
 
 
 def _dist(g: tuple[float, float], cell: tuple[int, int]) -> float:
