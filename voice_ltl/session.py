@@ -19,6 +19,13 @@
   A posture that reads UNKNOWN for a moment there (a real Go2 between two error_codes) is
   waited for, up to POSTURE_SETTLE_S. During a Step too the Go2 must stay in a posture its
   action allows, or the plan ends with StopMove (SAFETY-2).
+- Objects (design §6): the link's object list is frozen with the pose when an instruction
+  arrives (the Scene; the prompt and the check use it). A formula with object propositions
+  (near_box_1, around_box_1, ...) runs on the grid plant (grid.py) anchored at the Go2's pose
+  when the plan starts, and its steps on GridExecutor (to cell centres and grid headings).
+  After each step the Go2 is snapped to the nearest cell and heading, and the supervisor
+  follows where it is: the planned event, a jump to the state it really reached, or a stop
+  (R10, R11). Any other formula runs on go2_world and the zip's Executor, as before.
 - snapshot() is what the page shows: the steps of the plan, what the session is connected to,
   the transcription, the wait, and two logs: "log" in words for people, "debug_log" with the
   session's and the executor's own lines (event names and all). Secret-like text in it (an
@@ -28,6 +35,7 @@
 import dataclasses
 import json
 import logging
+import math
 import queue
 import re
 import threading
@@ -47,8 +55,12 @@ from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import render_focus_svg, render_svg
+from voice_ltl.grid import GridError, GridWorld, grid_world
+from voice_ltl.grid_executor import GridExecutor, GridStep
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
-from voice_ltl.objects import Obj, Scene, parse_rows, snapshot_rows
+# MSG_TOO_SPREAD reaches the page as a GridError's text; it is named here with the other copy
+from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,  # noqa: F401
+                               Obj, Scene, formula_atoms, formula_object_props, parse_rows, snapshot_rows)
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.translator import Translation, translate
@@ -85,11 +97,16 @@ MSG_SETTLING = "Go2 の姿勢が決まるのを待っています"
 MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏せさせてから、もう一度話してください"
 MSG_POSTURE_CHANGED = "姿勢が変わったので止めました"
 MSG_OTHER_SENDERS = "ほかのプログラムが Go2 に指令を送っています。そちらを終了してから指示してください"
+MSG_NO_PATH = MSG_UNSATISFIABLE + NO_PATH_REASON   # R15: an object the plan can never reach
 LOG_LINES = 200
 
 POSTURE_WAIT_S = 3.0   # R27: how long an unknown posture may take to settle before a plan
 POSTURE_SETTLE_S = 1.0  # mid-plan and at the end: how long an UNKNOWN posture is waited for
 STAND_LOCK = 1002      # error_code of Standing Lock: StandUp done, BalanceStand not yet (UNKNOWN)
+# R11: after each step on the grid the Go2 is snapped to the nearest cell centre and heading; it
+# is stopped when it is farther than this from them.
+POSITION_TOLERANCE_M = 0.3
+POSITION_TOLERANCE_DEG = 30.0
 # R28: a posture change or gesture runs to its end in the Go2 (StopMove does not end it). Each
 # such command keeps the Go2 busy for the time its action's sequence waits after it.
 BUSY_S: dict[int, float] = {api: wait for spec in ACTIONS.values() for api, wait in spec.sequence}
@@ -239,6 +256,7 @@ class _Outcome:
     initial: Optional[PlantState] = None
     error: str = ""
     diagrams: dict = field(default_factory=dict)
+    grid: Optional[GridWorld] = None   # the grid plant of a formula with object propositions
 
 
 @dataclass
@@ -295,6 +313,8 @@ class Session:
         self.link_kind = link_kind
         self.llm_backend = _backend(llm)
         self.executor = Executor(EXEC_ACTIONS, ExecConfig())
+        self.grid_executor = GridExecutor(EXEC_ACTIONS)   # for plans on the grid (R12)
+        self._exec: Executor = self.executor              # the one of the running plan; set in _start
         self.synthesis: Synthesis | None = None
         self.runtime: Runtime | None = None
         # SVG strings keyed FOCUS / SUP / TRIMMED / SPEC / PLANT; PLANT, SPEC and TRIMMED are
@@ -334,6 +354,7 @@ class Session:
         self._plan_posture = LYING       # posture the supervisor believes in
         self._sensed = (True, True)      # (front, back) blocked, as told to the supervisor
         self._waiting_since: float | None = None
+        self._snap_wait_since: float | None = None  # R11: a step ended while a sensor was lost
         self._clock: float | None = None  # `now` of the latest tick(): the clock waiting_since is on
         self._unknown_since: float | None = None  # since when a check saw the posture UNKNOWN
 
@@ -343,6 +364,7 @@ class Session:
         self._objects: tuple[Obj, ...] = ()     # what the link lists now (the page's live list)
         self._object_rows: list[dict] = []      # self._objects for the snapshot, made in tick()
         self._scene: Scene | None = None        # the objects and the pose frozen for the instruction
+        self._grid: GridWorld | None = None     # the grid of the plan (None: go2_world, no objects)
 
         if background:
             threading.Thread(target=self._work, name="session-worker", daemon=True).start()
@@ -414,6 +436,7 @@ class Session:
             self._translation = None
             self.synthesis = None
             self.runtime = None
+            self._grid = None
             self._syn_id += 1
             self._set_diagrams({})
             self._note(f"指示: {text}", f"指示：「{text}」")
@@ -468,7 +491,7 @@ class Session:
             self._transcribe_then_translate(key, payload)
         elif kind == "translate":   # (text, the Scene frozen for it)
             self._produce(key, self._translate, *payload)
-        else:  # "synthesize": (translation, initial state) once the Go2 is ready
+        else:  # "synthesize": (translation, initial state, pose) once the Go2 is ready
             self._produce(key, self._synthesize, key, *payload)
 
     def _stale(self, gen: int) -> bool:
@@ -528,18 +551,42 @@ class Session:
             return _Outcome(tr, error=tr.message)
         return _Outcome(tr)
 
-    def _synthesize(self, gen: int, tr: Translation, initial: PlantState) -> _Outcome | None:
+    def _synthesize(self, gen: int, tr: Translation, initial: PlantState,
+                    pose: tuple[float, float, float] | None) -> _Outcome | None:
+        """The supervisor of tr.formula from `initial`. A formula without object propositions
+        runs on go2_world as before; one with them on the grid anchored at `pose` (the Go2 now,
+        R2), with the objects of the Scene frozen for the instruction."""
+        props = formula_object_props(tr.formula)
+        gw = None
         try:
-            # R13: the formula goes in as it is; go2_world's forbidden events keep it safe.
-            syn = synthesize(tr.formula, go2_world(initial), self.workdir / f"{gen:04d}")
-        except SpecError as exc:
-            return _Outcome(tr, error=str(exc))
+            if not props:
+                world = go2_world(initial)
+            elif pose is None:
+                return _Outcome(tr, error=MSG_NO_POSE)
+            else:
+                gw = grid_world(initial.posture, initial.front, initial.back, pose,
+                                tr.scene.objects if tr.scene else (), formula_atoms(tr.formula))
+                world = gw.world
+            # R13: the formula goes in as it is; the world's forbidden events keep it safe.
+            syn = synthesize(tr.formula, world, self.workdir / f"{gen:04d}")
+        except (GridError, SpecError) as exc:
+            return _Outcome(tr, error=str(exc), grid=gw)
         if self._stale(gen):  # a newer instruction or a stop came during synthesis: no drawing
             return None
         diagrams = self._draw_all(syn)
         if syn.empty:
-            return _Outcome(tr, syn, initial, MSG_UNSATISFIABLE, diagrams)
-        return _Outcome(tr, syn, initial, diagrams=diagrams)
+            return _Outcome(tr, syn, initial, self._empty_message(props, gw), diagrams, gw)
+        return _Outcome(tr, syn, initial, diagrams=diagrams, grid=gw)
+
+    @staticmethod
+    def _empty_message(props: frozenset[str], gw: GridWorld | None) -> str:
+        """Why there is no supervisor. R15: on the grid, an object proposition that no state or
+        event can make true (no free cell near the object, or no ring around it) is the reason."""
+        if gw is not None:
+            reachable = set(gw.world.initial_label).union(*gw.world.event_label.values())
+            if any(p not in reachable for p in props):
+                return MSG_NO_PATH
+        return MSG_UNSATISFIABLE
 
     @staticmethod
     def _draw_all(syn: Synthesis) -> dict[str, str]:
@@ -618,7 +665,8 @@ class Session:
         self._prep = None
         self._message = ""
         initial = PlantState(posture, *_blocked(self._reading, posture))
-        self._dispatch(("synthesize", p.gen, (p.translation, initial)))
+        # R2: the grid's cell (0, 0) and heading 0 are the Go2 as it starts the plan
+        self._dispatch(("synthesize", p.gen, (p.translation, initial, self._pose)))
 
     def _tell(self, p: _Prep, message: str) -> None:
         if p.told != message:
@@ -639,6 +687,9 @@ class Session:
 
     def _start(self, outcome: _Outcome) -> None:
         self._show_translation(outcome.translation)
+        self._grid = outcome.grid
+        # the old plan is discarded and its executor's lines taken: only here does it change
+        self._exec = self.grid_executor if outcome.grid is not None else self.executor
         if outcome.synthesis is not None:
             self.synthesis = outcome.synthesis
             self._syn_id += 1
@@ -651,6 +702,7 @@ class Session:
         self._sensed = (outcome.initial.front, outcome.initial.back)
         self._running = True
         self._waiting_since = None
+        self._snap_wait_since = None
         self._unknown_since = None
         self._done = []
         self._status = "executing"
@@ -665,11 +717,15 @@ class Session:
             return
         if self._action is None and not self._load_next(now):
             return
-        for cmd in self.executor.tick(now, self._env(self._action, reading), self._pose):
+        for cmd in self._exec.tick(now, self._env(self._action, reading), self._pose):
             self._send(cmd, now)
         self._take_executor_events()
-        ex = self.executor
+        ex = self._exec
         if len(ex.steps) == 1 and ex.idx == 1:
+            if self._grid is not None and SENSOR_LOST in (reading.front, reading.back):
+                self._wait_to_snap(now)   # R11: the pose may be old; snap once the sensors are back
+                return
+            self._snap_wait_since = None
             self._complete()
         elif not ex.steps:  # the executor gave up (held too long, or a move took too long)
             self._finish("error", self._last_report, note=False)  # already in the log
@@ -731,8 +787,8 @@ class Session:
                 self._status = "waiting"
                 self._message = MSG_WAITING
                 self._note(MSG_WAITING)
-            elif now - self._waiting_since > self.executor.cfg.block_timeout:
-                self._abort(f"{self.executor.cfg.block_timeout:g}秒待っても進めません")
+            elif now - self._waiting_since > self._exec.cfg.block_timeout:
+                self._abort(f"{self._exec.cfg.block_timeout:g}秒待っても進めません")
             return False
         actual = self._settled_posture(now)
         if actual is None:
@@ -744,7 +800,7 @@ class Session:
             self._waiting_since = None
             self._message = ""
         action = event_action(event)
-        self.executor.load([Step(action, step_value(action))])
+        self._exec.load([self._step_for(action)])
         self._take_executor_events()
         self._action = action
         self._status = "executing"
@@ -765,6 +821,25 @@ class Session:
             return None
         return actual
 
+    def _step_for(self, action: str) -> Step:
+        """The Step for `action`. On the grid it also carries where the action ends: the
+        centre of the planned cell and the yaw of the planned heading (R12)."""
+        if self._grid is None:
+            return Step(action, step_value(action))
+        grid = self._grid.grid
+        _, dst = self._grid.step(self.synthesis.plant_state(self.runtime.state), action)
+        return GridStep(action, step_value(action), grid.center(dst.cell), grid.heading_yaw(dst.heading))
+
+    def _wait_to_snap(self, now: float) -> None:
+        """A step on the grid ended while a sensor is lost (R11): its event waits for the
+        sensors, up to block_timeout, as a held move does."""
+        timeout = self._exec.cfg.block_timeout
+        if self._snap_wait_since is None:
+            self._snap_wait_since = now
+            self._note("センサーが途切れているので、位置合わせを待ちます", "")
+        elif now - self._snap_wait_since > timeout:
+            self._abort(f"{timeout:g}秒待っても進めません")
+
     @staticmethod
     def _env(action: str, reading: Reading) -> str:
         if action == "forward":
@@ -776,21 +851,65 @@ class Session:
     def _complete(self) -> None:
         """The loaded Step ended: move the supervisor by the event that happened."""
         action, self._action = self._action, None
-        # The supervisor only offers events of the plant, so go2_step finds this action.
-        event, _ = go2_step(PlantState(self._plan_posture, *self._sensed), action)
-        try:
-            self.runtime.apply(event)
-        except PlanError:  # e.g. an obstacle appeared during a gesture the formula forbids then
-            self._abort(f"監督器が許していない結果になりました（{event}）")
-            return
         before = self._plan_posture
-        self._plan_posture = ACTIONS[action].transitions[before]
+        event = self._grid_event(action) if self._grid is not None else self._go2_event(action)
+        if event is None:   # the plan was aborted
+            return
         self._done.append(action)
         moved = (f"（{POSTURE_JA[before]} → {POSTURE_JA[self._plan_posture]}）"
                  if before != self._plan_posture else "")
         self._note(f"イベント: {event}", f"完了：{_label(action)}{moved}")
         self._refresh_plan()
         self._redraw_sup()
+
+    def _go2_event(self, action: str) -> str | None:
+        """go2_world: the event is the action with the label of the current sensors."""
+        # The supervisor only offers events of the plant, so go2_step finds this action.
+        event, _ = go2_step(PlantState(self._plan_posture, *self._sensed), action)
+        try:
+            self.runtime.apply(event)
+        except PlanError:  # e.g. an obstacle appeared during a gesture the formula forbids then
+            self._abort(f"監督器が許していない結果になりました（{event}）")
+            return None
+        self._plan_posture = ACTIONS[action].transitions[self._plan_posture]
+        return event
+
+    def _grid_event(self, action: str) -> str | None:
+        """The grid (R10, R11): the Go2 is snapped to the nearest cell centre and heading. Where
+        the plan said, the planned event moves the supervisor. In another cell or heading the
+        supervisor jumps to the state of the action landing there (with the event of that
+        label), if it has one. Too far from any cell centre or heading, or no such state: the
+        plan stops with MSG_POSITION_DRIFT."""
+        gw, syn, rt = self._grid, self.synthesis, self.runtime
+        src, q = syn.plant_state(rt.state), syn.spec_state(rt.state)
+        event, planned = gw.step(src, action)
+        s = gw.grid.snap(self._pose) if self._pose is not None else None
+        if (s is None or s.offset > POSITION_TOLERANCE_M
+                or s.yaw_error > math.radians(POSITION_TOLERANCE_DEG)):
+            self._note(f"位置のずれ: {action} の後 {s}" if s else f"位置のずれ: {action} の後、位置がわかりません", "")
+            self._abort(MSG_POSITION_DRIFT)
+            return None
+        if (s.cell, s.heading) == (planned.cell, planned.heading):
+            try:
+                rt.apply(event)
+            except PlanError:
+                self._abort(f"監督器が許していない結果になりました（{event}）")
+                return None
+        else:
+            seen = gw.observe(src, action, s.cell, s.heading)
+            event = gw.event(seen, action) if seen is not None else None
+            q2 = syn.spec_after(q, event) if event is not None else None
+            target = syn.sup_state_for(seen, q2) if q2 is not None else None
+            if target is None:
+                self._note(f"位置のずれ: 計画 {planned.cell},{planned.heading} / 実際 {s.cell},{s.heading}", "")
+                self._abort(MSG_POSITION_DRIFT)
+                return None
+            rt.jump(target)
+            self._note(f"位置合わせ: {planned.cell},{planned.heading} -> {s.cell},{s.heading}", "")
+        new = syn.plant_state(rt.state)
+        self._sensed = (new.front, new.back)   # R1: a stand lands with no obstacle bits
+        self._plan_posture = new.posture
+        return event
 
     # ---------------- helpers ----------------
     def _send(self, cmd: Command, now: float) -> None:
@@ -807,15 +926,17 @@ class Session:
     def _discard_plan(self, reason: str) -> None:
         """Forget the plan. The caller sends StopMove (the executor's own is not sent)."""
         if self._action is not None:
-            self.executor.cancel(reason)
+            self._exec.cancel(reason)
             self._take_executor_events()
         self._action = None
         self._running = False
         self._waiting_since = None
+        self._snap_wait_since = None
         self._plan = []
 
     def _abort(self, message: str) -> None:
-        logged = self._action is not None  # cancelling a loaded Step logs "中止: <message>"
+        # cancelling a Step the executor is still running logs "中止: <message>"
+        logged = self._action is not None and self._exec.busy
         self._discard_plan(message)
         self.link.send(STOP)
         self._finish("error", message, note=not logged)
@@ -824,6 +945,7 @@ class Session:
         self._action = None
         self._running = False
         self._waiting_since = None
+        self._snap_wait_since = None
         self._plan = []
         self._status = status
         self._message = message
@@ -882,8 +1004,8 @@ class Session:
                 self._set_diagrams({**self.diagrams, "FOCUS": focus, "SUP": svg})
 
     def _take_executor_events(self) -> None:
-        while self.executor.events:
-            line = self.executor.events.pop(0)
+        while self._exec.events:
+            line = self._exec.events.pop(0)
             if self._action == "backward":  # the zip names every forward=True hold "前方"
                 line = line.replace("前方に障害物", "後方に障害物")
             if line.startswith("中止: "):    # why it gave up: the message, if that ends the plan
@@ -945,8 +1067,10 @@ class Session:
         controllable event, or the executor holding a move (an obstacle, a lost sensor)."""
         if self._waiting_since is not None:
             return self._waiting_since
+        if self._snap_wait_since is not None:
+            return self._snap_wait_since
         if self._action is not None:
-            return self.executor.paused_since
+            return self._exec.paused_since
         return None
 
     # ---------------- view ----------------
@@ -983,7 +1107,7 @@ class Session:
                 "llm_backend": self.llm_backend,
                 "waiting_since": self._wait_start(),
                 "server_now": self._clock,   # same clock as waiting_since: the page needs no clock of its own
-                "block_timeout": self.executor.cfg.block_timeout,
+                "block_timeout": self._exec.cfg.block_timeout,
                 "stop_word": self._stop_word,
                 "log": [_redact(line) for line in self._log],
                 "debug_log": [_redact(line) for line in self._debug_log],
