@@ -318,6 +318,31 @@ def test_a_child_that_has_exited_is_left_alone():
     assert waits[-1] == TAIL_S                 # recorded TAIL_S more after the child exited
 
 
+def test_a_tip_over_two_seconds_after_the_end_counts_in_max_tilt():
+    """The tail records 3 s after run_formula exits, so a Go2 that falls over shortly after the
+    end fails the run (A N3 and B L1 fell 1.2-2 s after it; a 1 s tail passed over both)."""
+    from gazebo.tools.objects_check import TAIL_S, _watch
+
+    assert TAIL_S == 3.0
+    samples = arc(1.0)
+    end = samples[-1][0]
+    _, x, y, yaw, z, _ = samples[-1]
+    late = [(end + dt, x, y, yaw, z, tilt) for dt, tilt in
+            ((0.5, 0.3), (1.0, 0.6), (1.5, 0.9), (2.0, 1.4), (2.5, 3.1))]
+
+    def spin(done, timeout):
+        """The recorder: odometry keeps coming for `timeout` seconds after the child exits."""
+        if done():
+            return True
+        samples.extend(s for s in late if s[0] <= end + timeout)
+        return False
+
+    _watch(FakeChild(exited=True), spin, 300.0)
+    r = summarize(samples, "lap", 0, ["開始：立つ"])
+    assert r["max_tilt"] == pytest.approx(3.1)
+    assert keys(r) == ["max_tilt"]
+
+
 def test_a_child_past_its_time_is_stopped_once():
     import signal
 
