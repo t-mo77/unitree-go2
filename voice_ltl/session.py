@@ -861,7 +861,7 @@ class Session:
         _, dst = self._grid_step(self.synthesis.plant_state(self.runtime.state), action)
         return GridStep(action, step_value(action), grid.center(dst.cell), grid.heading_yaw(dst.heading))
 
-    def _grid_step(self, state: GridState, action: str) -> tuple[str, GridState]:
+    def _grid_step(self, state: GridState, action: str) -> tuple[str, GridState] | None:
         """GridWorld.step. The grid has no sit or lie_down while an obstacle is seen (and no
         obstacle bits after them, R1): one seen after such a step began counts from the state
         without the bits."""
@@ -922,7 +922,11 @@ class Session:
         src, q = syn.plant_state(rt.state), syn.spec_state(rt.state)
         if gw.step(src, action) is None:   # an obstacle seen during a sit or lie_down: drop the
             src = dataclasses.replace(src, front=False, back=False)   # bits, as after it (R1)
-            rt.jump(syn.sup_state_for(src, q))   # where the supervisor was when the step began
+            began = syn.sup_state_for(src, q)   # where the supervisor was when the step began
+            if began is None:
+                self._abort(f"監督器が許していない結果になりました（{action}）")
+                return None
+            rt.jump(began)
             self._note(f"センサー: {action} の途中の物は数えません", "")
         event, planned = gw.step(src, action)
         s = gw.grid.snap(self._pose) if self._pose is not None else None
@@ -1009,8 +1013,9 @@ class Session:
         syn, rt = self.synthesis, self.runtime
         cur = syn.plant_state(rt.state)
         cells = [syn.plant_state(k) for k in rt.walk(path)]
-        if self._action is not None and (not path or event_action(path[0]) != self._action):
-            cells.insert(0, self._grid_step(cur, self._action)[1])
+        running = self._grid_step(cur, self._action) if self._action is not None else None
+        if running is not None and (not path or event_action(path[0]) != self._action):
+            cells.insert(0, running[1])
         self._plan_cells = [[*c.cell, c.heading] for c in cells]
         self._grid_view = self._grid.grid.to_json(
             robot=(*cur.cell, cur.heading), goal=tuple(self._plan_cells[-1]) if self._plan_cells else None)

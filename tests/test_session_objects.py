@@ -586,3 +586,18 @@ def test_an_ignored_sit_with_an_obstacle_seen_is_a_posture_error(tmp_path):
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "error" and snap["message"].startswith("姿勢が計画と違います")
     assert no_supervisor_complaint(snap) and link.sim.accepted[-1] == STOP_MOVE
+
+
+
+def test_a_supervisor_that_cannot_take_the_bits_back_stops_the_plan(tmp_path, monkeypatch):
+    """The state the sit began in is always in SUP; if it were not, the plan stops (no crash)."""
+    monkeypatch.setattr(automata.Synthesis, "sup_state_for", lambda self, plant_state, spec_state: None)
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F(near_chair_1 & X F sitting)"), link=IgnoresSit(sim))
+    sess.submit_text("椅子まで歩いて座って")
+    drive_until(sess, link, lambda s: s["current"] == "sit")
+    link.sim.place_box("front", 0.6)
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "error" and snap["message"] == "監督器が許していない結果になりました（sit）"
+    assert link.sim.accepted[-1] == STOP_MOVE
