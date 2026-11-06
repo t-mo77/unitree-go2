@@ -136,6 +136,19 @@ def test_label_words():
     assert label_in("障害物の周りを一周する") is None and label_in("この周りを一周する（周回）") is None
 
 
+def test_label_words_match_only_whole_words():   # R16: 見つかりません only for the object's name
+    for text in ("箱", "木箱", "段ボール", "段ボール箱", "ボックス", "ボックスまで行って", "ボックス・椅子"):
+        assert label_in(text) == "box", text
+    for text in ("椅子", "車椅子まで", "イス", "黒いイスの周り", "イスまで歩いて", "チェア", "チェアーに近づいて",
+                 "いす", "いすまで", "このいすの周りを一周", "机といす"):
+        assert label_in(text) == "chair", text
+    for text in ("アイスを取ってくる", "アドバイスする", "スイスに行く", "ボイスを変える", "イスラエル",   # katakana word
+                 "チェアマン", "オフィスチェア", "ボックスステップ", "チェックボックス", "段ボールハウス",
+                 "かわいすぎるダンス", "いすわる", "ちいさいすべりだい", "はいすいこう",            # hiragana
+                 "箱根に行って", "椅子取りゲーム"):                                                # kanji compound
+        assert label_in(text) is None, text
+
+
 def test_messages():   # exact copy above
     assert msg_not_found("box") == "「箱」が見つかりません。Go2 の前に置いてから、もう一度言ってください。"
     assert msg_too_far("chair") == "「椅子」が遠すぎます（6 m まで）。"

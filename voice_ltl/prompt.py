@@ -1,7 +1,8 @@
-"""Prompt for the instruction -> LTLf translation (Goal / Grammar / Vocabulary / Rules / Examples / Query)."""
+"""Prompt for the instruction -> LTLf translation (Goal / Grammar / Vocabulary / Objects / Rules / Examples / Query)."""
 
 import json
 
+from voice_ltl.objects import Obj, Scene, describe
 from voice_ltl.world import (MAX_REPEAT, MAX_TOTAL_STEPS, PROP_DESCRIPTION_JA, PROPOSITIONS, STEP_ANGLE,
                              STEP_DISTANCE)
 
@@ -84,6 +85,26 @@ _EXAMPLES = (
      None, ["ジャンプ"], []),
 )
 
+# Object examples are written for this scene (design §6.3); real instructions use the ids in ## Objects.
+EXAMPLE_SCENE = Scene((Obj("box_9", "box", 2.0, 0.0, (0.5, 0.5)),
+                       Obj("chair_9", "chair", 1.77, -1.77, (0.45, 0.45))), (0.0, 0.0, 0.0))
+
+_OBJECT_EXAMPLES = (
+    ("箱の周りを一周して", "F around_box_9", [], [_sub("周りを一周", "左回りに 1 周")]),
+    ("箱の周りを右回りで回って", "F around_cw_box_9", [], []),
+    ("箱を2周して", "F around_box_9", [], [_sub("2周", "左回りに 1 周（上限）")]),
+    ("椅子まで歩いて", "F near_chair_9", [], []),
+    ("立って、椅子まで歩いて、挨拶して", _chain("near_chair_9", "hello"), [], []),
+    ("障害物の周りを回って", None, ["障害物の周りを回る"], []),
+    ("机まで行って", None, ["机"], []),
+)
+
+_OBJECT_EXAMPLES_INTRO = (
+    "（ここからの例は、Objects が"
+    + "".join(f"「{describe(o, EXAMPLE_SCENE.pose)}」" for o in EXAMPLE_SCENE.listed())
+    + "のときです。本当の指示では Objects の id を使います）"
+)
+
 
 def _example_line(instruction: str, formula: str | None, unsupported: list[str],
                   substitutions: list[dict]) -> str:
@@ -100,9 +121,25 @@ def _clip(text: object) -> str:
     return text if len(text) <= MAX_ECHO_LEN else text[:MAX_ECHO_LEN] + "…（以下略）"
 
 
-def build_prompt(instruction: str, rejected: str | None = None, error: str | None = None) -> str:
-    vocab = "\n".join(f"- {p}: {PROP_DESCRIPTION_JA[p]}" for p in PROPOSITIONS)
-    examples = "\n\n".join(_example_line(*e) for e in _EXAMPLES)
+def _objects_section(scene: Scene | None) -> str:
+    """The body of ## Objects: the frozen objects, seen from the pose at the instruction (at most 8)."""
+    listed = scene.listed() if scene is not None else ()
+    if not listed:
+        return "いま見えている物はありません。"
+    lines = "\n".join(f"- {describe(o, scene.pose)}" for o in listed)
+    return f"Go2 のカメラで見つけた物です。向きと距離は、指示を受けたときの Go2 から見たものです。\n{lines}"
+
+
+def build_prompt(instruction: str, rejected: str | None = None, error: str | None = None,
+                 scene: Scene | None = None) -> str:
+    vocab_lines = [f"- {p}: {PROP_DESCRIPTION_JA[p]}" for p in PROPOSITIONS]
+    if scene is not None:
+        descriptions = scene.descriptions()
+        vocab_lines += [f"- {p}: {descriptions[p]}" for p in scene.propositions()]
+    vocab = "\n".join(vocab_lines)
+    objects = _objects_section(scene)
+    examples = "\n\n".join([*(_example_line(*e) for e in _EXAMPLES), _OBJECT_EXAMPLES_INTRO,
+                             *(_example_line(*e) for e in _OBJECT_EXAMPLES)])
     d, a, n = f"{STEP_DISTANCE:g}", f"{STEP_ANGLE:g}", MAX_REPEAT
     text = f"""## Goal
 ロボット犬への日本語の指示を、LTLf（有限列の線形時相論理）の式に翻訳してください。
@@ -121,6 +158,9 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
 ## Vocabulary
 {vocab}
 
+## Objects
+{objects}
+
 ## Rules
 ### 言い換えと近い動作
 - 同じ動作・姿勢の別の言い方は、単語帳の命題に直してください（例：しゃがんで・お座り → sitting、寝そべって・横になって → lying、起きて → standing、歩いて → moved_forward、バックして → moved_backward、曲がって → turned_left か turned_right、お辞儀して → scraped、手を振って → hello）。
@@ -131,12 +171,21 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
 - 単語帳にない動作を「しないで」と言われたときは、もともとしないので式に入れません。
 - 安全のために守れない部分（障害物があっても、障害物を無視して など）も、黙って捨てずに substitutions に入れます（as は「前に障害物があれば進みません」「後ろに障害物があれば下がりません」）。この注意は、指示が障害物を気にしないように言ったときだけ入れます。
 
+### 物（Objects にある物を使う指示）
+- 物は Objects の id の命題で書きます：near_〈id〉（その物の手前にいて、物の方を向いている）、around_〈id〉（その物の周りを左回りに 1 周し終えた）、around_cw_〈id〉（右回りに 1 周し終えた）。
+- 「〈物〉まで歩いて」「〈物〉のところまで行って」「〈物〉の前まで歩いて」「〈物〉に近づいて」は F near_〈id〉 です。
+- 「〈物〉の周りを回って」「〈物〉の周りを一周して」「〈物〉を一周して」は F around_〈id〉、右回りと言われたら F around_cw_〈id〉 です。向きが言われていなければ左回りにして、substitutions に {{"said": 指示の中の言葉, "as": "左回りに 1 周"}} を入れます。
+- 物の周りは 1 周までです。「2周」のように 2 周以上言われたら 1 周にして、substitutions に {{"said": "2周", "as": "1 周（上限）"}} のように入れます（向きも言われていなければ、as を "左回りに 1 周（上限）" にして 1 つだけ入れます）。物を言わない「一周して」「その場で一周」は、今までどおりその場で回る動作です。
+- 名前（箱・椅子 など）に当てはまる物が Objects に 1 つだけなら、その物です。「右の箱」「左前の椅子」のように向きで言われたら、Objects の向きで選びます。
+- 当てはまる物が Objects にないとき、2 つ以上あって決められないときは、その物の名前（例：箱）を unsupported に入れて、formula を null にします。
+- 「障害物」は、「障害物の周り」「障害物まで」「障害物のところ」のように行き先として言われ、向きに「前」が入る物（前・左前・右前）が Objects にちょうど 1 つのときだけ、その物です。そうでなければ「障害物の周りを回る」のように unsupported に入れます。「前に障害物があったら」のような条件は、今までどおり obstacle_front・obstacle_back です。
+
 ### 断るもの（代わりにせず unsupported に入れて、formula を null にします）
 - 近い動作がない動作（ジャンプ、宙返り、逆立ち など）
 - 体の使い方や姿勢が違う動作（二本足で立つ、這う、ちんちん、ばんざい など）と、何かにぶつかる動き（突っ込む、体当たり など）
 - 人の手を使う芸（お手、握手、おかわり、ハイタッチ など）。hello は挨拶・手を振る だけに使い、単語帳の芸（hello・stretched・content など）で別の芸の代わりはしません。
 - 姿勢を保ったまま動く指示（伏せたまま進む、座ったまま回る など）。動く動作は立っているときにしかできません。
-- 場所・物・人や、まわりを見て決める動き（キッチン、ボール、障害物の周りを回る、階段を上る、おいで、こっちに来て、駆け寄って、ついて来て など）
+- 物の一覧（Objects）にない場所・物・人や、まわりを見て決める動き（キッチン、ボール、一覧にない物、障害物の周りを回る、階段を上る、おいで、こっちに来て、駆け寄って、ついて来て など）。Objects にある物は「### 物」に従います。
 - センサーで終わりを決める動き（前に何かあるまで進む、前がふさがるまで、壁が来るまで、障害物が見えるまで回る、前が空いている間進む など）。obstacle_front・obstacle_back は Go2 が起こせないことなので、「!obstacle_front -> …」のような条件にだけ使い、F や U の目標にはしません。
 - どの動作か決まっていない指示（ちょっと動いて、何か芸をして、適当に など）と、移動の仕方（走り回る、うろうろする など）
 - 秒・分などの時間と、マイナスの数

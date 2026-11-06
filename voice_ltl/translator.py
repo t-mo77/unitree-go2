@@ -1,11 +1,14 @@
 """Instruction -> LTLf formula, with up to max_tries re-asks on rejected formulas."""
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
 
 from voice_ltl.grammar import check
 from voice_ltl.llm import LLM
+from voice_ltl.objects import (MAX_OBJECT_DISTANCE, Scene, label_in, msg_ambiguous, msg_not_found, msg_too_far,
+                               split_prop)
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 
@@ -32,6 +35,8 @@ class Translation:
     message: str = ""
     # what was read differently from the words, for the page: [{"said": ..., "as": ...}]
     substitutions: list[dict[str, str]] = field(default_factory=list)
+    # the objects and pose frozen for this instruction (design §6.3); None for a link without objects
+    scene: Scene | None = None
 
 
 MAX_SUBSTITUTIONS = 10
@@ -68,11 +73,33 @@ def _is_number(item: str) -> bool:
     return re.fullmatch(r"\s*(?:約|およそ)?\s*(?:" + _NUMBER.pattern + r")\s*(?:だけ)?\s*", item) is not None
 
 
-def _unsupported_message(unsupported: list[str]) -> str:
+# Handling an object (design §3: not this step). An item with one of these is never an object's name,
+# so 「箱を持つ」 keeps the 単語帳 message however many boxes there are (R16).
+OBJECT_ACTION_WORDS = ("持", "押", "運", "拾", "動か", "どけ", "どか")
+
+
+def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[str], list[str]]:
+    """R16: an item naming a label (箱, 椅子, ...) that has 0 objects in the scene is 見つかりません and
+    with 2 or more it is 決められません, once per label. Returns (those messages, the other items);
+    an item whose label has exactly one object keeps today's message."""
+    listed = scene.listed() if scene is not None else ()
+    messages, rest, told = [], [], set()
+    for item in unsupported:
+        label = None if any(w in item for w in OBJECT_ACTION_WORDS) else label_in(item)
+        n = sum(o.label == label for o in listed)
+        if label is None or n == 1:
+            rest.append(item)
+        elif label not in told:
+            told.add(label)
+            messages.append(msg_not_found(label) if n == 0 else msg_ambiguous(label, n))
+    return messages, rest
+
+
+def _unsupported_message(unsupported: list[str], scene: Scene | None = None) -> str:
+    parts, unsupported = _object_messages(unsupported, scene)
     numbers = [u for u in unsupported if _is_number(u)]
     words = [u for u in unsupported if u not in numbers]
-    parts = []
-    if words or not numbers:
+    if words or not (numbers or parts):
         what = "、".join(words) if words else "この指示"
         parts.append(f"「{what}」は単語帳にないので、まだできません。")
     if numbers:
@@ -82,14 +109,29 @@ def _unsupported_message(unsupported: list[str]) -> str:
     return "".join(parts)
 
 
-def translate(instruction: str, llm: LLM, max_tries: int = 3) -> Translation:
-    """LLMError is not caught here; the caller handles it."""
+def _too_far(formula: str, scene: Scene | None) -> str | None:
+    """P5: the label of the first object in the formula whose centre is more than MAX_OBJECT_DISTANCE
+    from the frozen pose, so the Go2 does not stand up first. The grid checks again from its anchor."""
+    if scene is None or scene.pose is None:
+        return None
+    for name in re.findall(r"\w+", formula):
+        prop = split_prop(name)
+        obj = scene.find(prop[1]) if prop else None
+        if obj is not None and math.hypot(obj.x - scene.pose[0], obj.y - scene.pose[1]) > MAX_OBJECT_DISTANCE:
+            return obj.label
+    return None
+
+
+def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | None = None) -> Translation:
+    """LLMError is not caught here; the caller handles it. `scene` is the object list frozen for this
+    instruction: its propositions join the vocabulary, and it is returned on every Translation."""
+    propositions = PROPOSITIONS + (scene.propositions() if scene is not None else ())
     attempts: list[Attempt] = []
     rejected: str | None = None
     error: str | None = None
     earlier_subs: list[dict[str, str]] = []   # from a rejected answer: kept if the fix drops them
     for _ in range(max_tries):
-        reply = llm(build_prompt(instruction, rejected, error), SCHEMA)
+        reply = llm(build_prompt(instruction, rejected, error, scene=scene), SCHEMA)
         formula = reply.get("formula")
         raw = reply.get("unsupported")
         if raw is None or raw == "":
@@ -104,18 +146,23 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3) -> Translation:
         unsupported = [str(u) for u in raw]
         if unsupported or formula is None:
             attempts.append(Attempt(formula, unsupported, []))
-            return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported))
-        errors = check(formula, PROPOSITIONS)
+            return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported, scene),
+                               scene=scene)
+        errors = check(formula, propositions)
         attempts.append(Attempt(formula, [], errors))
         subs = _substitutions(reply.get("substitutions"), instruction)
         if not errors:
-            return Translation(True, formula, [], attempts, "", subs or earlier_subs)
+            far = _too_far(formula, scene)
+            if far is not None:
+                return Translation(False, None, [], attempts, msg_too_far(far), scene=scene)
+            return Translation(True, formula, [], attempts, "", subs or earlier_subs, scene=scene)
         earlier_subs = subs or earlier_subs
         rejected, error = formula, " ".join(errors)
     if attempts and any("長すぎ" in e for e in attempts[-1].errors):
         return Translation(False, None, [], attempts,
-                           "指示が長すぎて式にできませんでした。いくつかに分けて言ってください。")
+                           "指示が長すぎて式にできませんでした。いくつかに分けて言ってください。", scene=scene)
     return Translation(
         False, None, [], attempts,
         f"指示を式に直せませんでした（{max_tries}回試しました）。言い方を変えてもう一度お願いします。",
+        scene=scene,
     )
