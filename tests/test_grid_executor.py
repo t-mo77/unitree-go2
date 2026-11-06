@@ -1,6 +1,7 @@
 """GridExecutor: closed-loop moves to a cell centre and a grid heading, a settle after StopMove,
-the zip's holds and timeouts (R11, R12, P7), and the steps that flow on without a stop (M1, and
-the corners: a forward into the turn after it)."""
+the zip's holds and timeouts (R11, R12, P7), the steps that flow on without a stop (M1, and
+the corners: a forward into the turn after it), and the Gazebo tuning C2 (a turn ends before
+the walk after it starts; forwards at 0.22 m/s, turns at 0.4 rad/s)."""
 
 import json
 import math
@@ -51,7 +52,7 @@ def run_until_done(sim, ex, step, env_at=lambda t: CLEAR, dt=0.1, limit=30.0):
 
 def test_constants():
     assert GRID_SETTLE_S == 0.2 and GRID_DONE_DIST == 0.03 and GRID_DONE_YAW == math.radians(3.0)
-    assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.5) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
+    assert GRID_EXEC_CONFIG.speed == (0.22, 0.3, 0.4) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)   # C2
     assert GRID_EXEC_CONFIG.block_timeout == 15.0 and GRID_EXEC_CONFIG.move_timeout_margin == 2.5
     assert GridExecutor(EXEC_ACTIONS).cfg == GRID_EXEC_CONFIG
 
@@ -60,9 +61,11 @@ def test_gains_are_p7():
     """P7, as the plan gives them. Task I fix round 1: the tuned gains tried in Gazebo completed no lap
     while P7 did, so they were reverted (docs/reference/gazebo_objects_e2e.md)."""
     assert (K_YAW, K_CROSS) == (1.5, 1.0)                    # yaw and cross-track gains
-    assert (K_ALONG, MIN_SPEED, GRID_EXEC_CONFIG.speed[0]) == (1.2, 0.08, 0.3)   # clip(1.2 · along, 0.08, 0.3)
+    assert (K_ALONG, MIN_SPEED) == (1.2, 0.08)               # clip(1.2 · along, 0.08, speed[0])
     assert MOVE_TURN == 0.3                                  # z within ±0.3 while moving
-    assert (MIN_TURN, GRID_EXEC_CONFIG.speed[2]) == (0.15, 0.5)   # turn |z| within [0.15, 0.5]
+    assert MIN_TURN == 0.15                                  # turn |z| within [0.15, speed[2]]
+    # C2 (the Gazebo tuning round, 2026-11-06) lowered only the top speeds: 0.3 -> 0.22 m/s, 0.5 -> 0.4 rad/s
+    assert (GRID_EXEC_CONFIG.speed[0], GRID_EXEC_CONFIG.speed[2]) == (0.22, 0.4)
 
 
 def test_forward_reaches_the_cell_centre_and_holds_heading():
@@ -89,7 +92,7 @@ def test_turn_reaches_the_heading_slowly():
     cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2)])
     assert abs(math.remainder(sim.yaw - math.pi / 2, 2 * math.pi)) <= math.radians(3) + 0.06
     zs = [c.parameter["z"] for _, c in cmds if c.api_id == MOVE]
-    assert max(map(abs, zs)) <= 0.5 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))
+    assert max(map(abs, zs)) == 0.4 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))   # C2
     assert all(c.parameter["x"] == 0 for _, c in cmds if c.api_id == MOVE)
 
 
@@ -238,7 +241,7 @@ def test_consecutive_forwards_flow_without_a_stop():
     moves = [c.parameter for t, c in cmds if c.api_id == MOVE]
     first = next(i for i, m in enumerate(moves) if m["x"] > 0)
     assert all(m["x"] > 0 for m in moves[first:])
-    assert max(m["x"] for m in moves) == 0.3
+    assert max(m["x"] for m in moves) == GRID_EXEC_CONFIG.speed[0] == 0.22   # C2's cruise
     assert_ramps(cmds)
     assert_no_gap(cmds, stops[0])
     assert abs(sim.x - 1.5) <= 0.06 and abs(sim.y) < 0.05
@@ -255,7 +258,7 @@ def test_a_forward_loaded_after_one_that_flowed_on_continues_the_walk():
     assert not [c for _, c in cmds if c.api_id == STOP_MOVE] and ex.rolling
     assert 0.5 - GRID_DONE_DIST <= sim.x <= 0.5 + 0.03 + 1e-6        # done as it passed the centre
     last = [c.parameter for _, c in cmds if c.api_id == MOVE][-1]
-    assert last["x"] == 0.3
+    assert last["x"] == GRID_EXEC_CONFIG.speed[0]
     ex.load([RUN[1]])
     assert not ex.rolling
     more = []
@@ -285,6 +288,8 @@ def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
     cmds = []
     _tick(sim, ex, t, CLEAR, cmds)                                    # the same tick
     assert [c.api_id for _, c in cmds] == [STOP_MOVE]
+    why = f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} は forward(0.5m) の続きではありません）"
+    assert [e for e in ex.events if e.startswith("M1: ")] == [why]    # for the debug log (the review of M1)
     for k in range(1, 40):
         _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
     later = [(tt, c) for tt, c in cmds if tt > t]
@@ -298,11 +303,13 @@ def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
 
 def test_halt_stops_a_step_that_flowed_on_at_once():
     """M1: when nothing continues the walk (the supervisor waits or is done), halt() gives
-    StopMove at once; the next step starts GRID_SETTLE_S later, from 0. Once is enough."""
+    StopMove at once; the next step starts GRID_SETTLE_S later, from 0. Once is enough. (The
+    session, which knows why, logs it; the executor adds no event.)"""
     sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
     _, t = flow_one(sim, ex, RUN[0])
     out = ex.halt(t)
     assert [c.api_id for c in out] == [STOP_MOVE] and not ex.rolling and ex.halt(t) == []
+    assert not [e for e in ex.events if e.startswith("M1: ")]
     ex.load([GridStep("turn_left", 90.0, (0.5, 0.0), math.pi / 2)])
     cmds = []
     for k in range(1, 40):
@@ -311,9 +318,26 @@ def test_halt_stops_a_step_that_flowed_on_at_once():
     assert all(c.api_id == MOVE for _, c in cmds[:3]) and abs(cmds[0][1].parameter["z"]) <= ACC_Z + 1e-9
 
 
+ZERO = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+
+def assert_turn_ends_before_the_walk(moves):
+    """C1 (after the tuning round in Gazebo, 2026-11-06): where a turn flows into a forward, the
+    turn's z ramps down to 0 first, one tick of acceleration at a time with x at 0, and only in
+    the tick after the one at zero velocity does x ramp up from 0. Never x and the turn's z
+    together. `moves` are the Move parameters of the turn (from any tick of it) and the walk."""
+    k = next(i for i, m in enumerate(moves) if m["x"] > 0)            # the walk starts
+    assert moves[k - 1] == ZERO and 0 < moves[k]["x"] <= ACC_X + 1e-9
+    assert all(m["x"] == 0 for m in moves[:k])
+    zs = [abs(m["z"]) for m in moves[:k]]
+    peak = max(range(k), key=lambda i: (zs[i], i))                     # the turn's last fastest tick
+    assert all(b <= a for a, b in zip(zs[peak:], zs[peak + 1:]))     # from there it only slows down
+
+
 def test_a_turn_flows_into_a_forward():
-    """M1: a turn whose next step is a forward ends at its yaw goal with no StopMove and no wait at
-    zero velocity: the forward's x ramps from 0 at once, and its z goes on from the turn's."""
+    """M1 and C1: a turn whose next step is a forward ends at its yaw goal with no StopMove and no
+    settle; then its z ramps down to 0 (no StopMove: the controller keeps stepping) and only
+    then the forward's x ramps up from 0. One Move at zero velocity between them, no more."""
     sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
     steps = [GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2),
              GridStep("forward", 0.5, (0.0, 0.5), math.pi / 2)]
@@ -321,8 +345,9 @@ def test_a_turn_flows_into_a_forward():
     stops = [t for t, c in cmds if c.api_id == STOP_MOVE]
     assert len(stops) == 1                                            # the end of the forward only
     moves = [c.parameter for t, c in cmds if c.api_id == MOVE]
-    assert moves[0] == {"x": 0.0, "y": 0.0, "z": 0.0}                # the first tick of a load has dt 0
-    assert not [m for m in moves[1:] if m == {"x": 0.0, "y": 0.0, "z": 0.0}]   # then never at zero velocity
+    assert moves[0] == ZERO                                           # the first tick of a load has dt 0
+    assert len([m for m in moves[1:] if m == ZERO]) == 1              # then once: the turn has ended
+    assert_turn_ends_before_the_walk(moves[1:])
     assert_ramps(cmds)
     assert_no_gap(cmds, stops[0])
     assert abs(sim.y - 0.5) <= 0.06 and abs(sim.x) < 0.06
@@ -330,19 +355,25 @@ def test_a_turn_flows_into_a_forward():
 
 def test_a_turn_loaded_one_at_a_time_flows_into_the_forward():
     """The same, as the session drives it: the forward loaded in the tick the turn ends starts
-    with the turn's z and x 0, and x is up the next tick."""
+    with the turn's z and x 0; z falls by one tick of acceleration at a time to 0 (x stays 0),
+    and x is up in the tick after that."""
     sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
     cmds, t = flow_one(sim, ex, GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2))
     assert not [c for _, c in cmds if c.api_id == STOP_MOVE] and ex.rolling
     z = [c.parameter for _, c in cmds if c.api_id == MOVE][-1]["z"]
-    assert z > 0
+    assert z >= MIN_TURN - 1e-9
     ex.load([GridStep("forward", 0.5, (0.0, 0.5), math.pi / 2)])
     more = []
-    _tick(sim, ex, t, CLEAR, more)
-    _tick(sim, ex, round(t + 0.1, 6), CLEAR, more)
-    assert [c.api_id for _, c in more] == [MOVE, MOVE]
-    assert more[0][1].parameter == {"x": 0.0, "y": 0.0, "z": z}
-    assert 0 < more[1][1].parameter["x"] <= ACC_X + 1e-9
+    for k in range(6):
+        _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, more)
+    assert [c.api_id for _, c in more] == [MOVE] * 6
+    moves = [c.parameter for _, c in more]
+    assert moves[0] == {"x": 0.0, "y": 0.0, "z": z}
+    assert moves[1] == {"x": 0.0, "y": 0.0, "z": round(z - ACC_Z, 3)}
+    assert moves[2] == ZERO                                           # z 0.15 is down in two ticks
+    assert 0 < moves[3]["x"] <= ACC_X + 1e-9 and moves[4]["x"] > moves[3]["x"]
+    assert_turn_ends_before_the_walk(moves)
+    assert_ramps(cmds + more)
 
 
 def test_a_blocked_front_mid_run_stops_at_once():
@@ -353,7 +384,7 @@ def test_a_blocked_front_mid_run_stops_at_once():
     cmds, t, x_held = [], 0.0, None
     while ex.busy and t < 30:
         t = round(t + 0.1, 6)
-        env = BLOCKED if 2.5 <= t < 3.5 else CLEAR
+        env = BLOCKED if 3.2 <= t < 4.2 else CLEAR                  # (C2: 0.22 m/s)
         n = len(cmds)
         _tick(sim, ex, t, env, cmds)
         if env == BLOCKED:
@@ -361,8 +392,8 @@ def test_a_blocked_front_mid_run_stops_at_once():
             x_held = sim.x if x_held is None else x_held
             assert sim.x == x_held
     assert 0.5 < x_held < 1.0                                         # in the second forward, at speed
-    assert [c.api_id for tt, c in cmds if tt == 2.5] == [STOP_MOVE]
-    after = [c.parameter for tt, c in cmds if tt >= 3.5 and c.api_id == MOVE]
+    assert [c.api_id for tt, c in cmds if tt == 3.2] == [STOP_MOVE]
+    after = [c.parameter for tt, c in cmds if tt >= 4.2 and c.api_id == MOVE]
     assert after[0]["x"] <= ACC_X + 1e-9
     assert [c.api_id for _, c in cmds].count(STOP_MOVE) == 2          # the hold and the end
     assert abs(sim.x - 1.5) <= 0.06 and any(e.startswith("一時停止") for e in ex.events)
@@ -402,15 +433,18 @@ CORNER = [GridStep("forward", 0.5, (0.5, 0.0), 0.0), GridStep("turn_left", 90.0,
 def test_a_forward_flows_into_the_turn_after_it():
     """Corners: a forward whose next step is a turn in the cell it ends in slows down for its goal
     as before, then is done there with no StopMove and no settle; the turn goes on from that
-    velocity (x down to 0, z up), and flows into the forward after it (M1). One StopMove, at the
-    end; never a tick at zero velocity after the first Move."""
+    velocity (x down to 0, z up), and flows into the forward after it (M1; C1: z down to 0, then
+    x up). One StopMove, at the end; after the first Move, zero velocity only once, where the
+    turn has ended."""
     sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
     cmds = run(sim, ex, CORNER)
     stops = [t for t, c in cmds if c.api_id == STOP_MOVE]
     assert len(stops) == 1 and stops[0] == max(t for t, _ in cmds)  # the end of the last forward only
     moves = [c.parameter for t, c in cmds if c.api_id == MOVE]
-    assert moves[0] == {"x": 0.0, "y": 0.0, "z": 0.0}                # the first tick of a load has dt 0
-    assert not [m for m in moves[1:] if m == {"x": 0.0, "y": 0.0, "z": 0.0}]
+    assert moves[0] == ZERO                                           # the first tick of a load has dt 0
+    zeros = [i for i, m in enumerate(moves) if i and m == ZERO]
+    assert len(zeros) == 1 and moves[zeros[0] - 1]["x"] == 0          # only where the turn has ended (C1)
+    assert_turn_ends_before_the_walk(moves[zeros[0] - 2:])
     assert_ramps(cmds)
     assert_no_gap(cmds, stops[0])
     turn_from = next(i for i, m in enumerate(moves) if abs(m["z"]) >= 0.3)   # the turn is under way
@@ -459,6 +493,8 @@ def test_a_step_after_a_corner_pass_that_does_not_continue_it_stops_first(nxt):
     cmds = []
     _tick(sim, ex, t, CLEAR, cmds)
     assert [c.api_id for _, c in cmds] == [STOP_MOVE]
+    assert [e for e in ex.events if e.startswith("M1: ")] == [
+        f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} は forward(0.5m) の続きではありません）"]
     for k in range(1, 10):
         _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
     later = [(tt, c) for tt, c in cmds if tt > t]

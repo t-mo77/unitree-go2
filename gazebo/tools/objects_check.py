@@ -4,7 +4,7 @@
 app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのまま渡す（翻訳を通らない）。
 - run：/model/robot/odometry（nav_msgs/Odometry、Gazebo の本当の位置。odom == Gazebo の world）を
   記録しながら、子プロセスで `python3 -m voice_ltl.run_formula <式> --timeout <秒>` を走らせる。
-  子が終わったら TAIL_S 秒だけ記録を続け（止めた後の惰性も最後の位置に入れる）、summarize() の結果を
+  子が終わったら TAIL_S 秒（3 秒）だけ記録を続け（止めた後の惰性と、その後に倒れるのも入れる）、summarize() の結果を
   JSON 1 行で出す。合格なら終了コード 0、不合格は 1。子の出力は標準エラーにそのまま流す。
 - rtf：実際の時間の窓（--seconds 秒、monotonic）の間に /clock が進んだ秒数を、窓の長さで割る。{"rtf": …} を JSON 1 行で。
 - objects：/go2/objects を 1 通、JSON 1 行で出す。どの行も objects.parse を通れば 0、
@@ -55,7 +55,8 @@ STAND_Z = 0.25               # 胴の高さがこれ以上なら立っている 
 START_MARK = "開始："          # Session のログの「開始：立つ」
 ODOM_TOPIC = "/model/robot/odometry"
 CLOCK_TOPIC = "/clock"
-TAIL_S = 1.0                 # 子が終わった後も記録する秒数（実際の時間）
+TAIL_S = 3.0                 # 子が終わった後も記録する秒数（実際の時間）。終わった後に倒れるのも
+                             # max_tilt に入れる（1 秒では、終わって 1.2〜2 秒で倒れた 2 回を見逃した）
 CHILD_MARGIN_S = 150.0       # run_formula の --timeout に足す余裕（Go2 を待つ 90 秒と物を待つ 3 秒を含む）
 STOP_WAIT_S = 10.0           # 子に SIGINT を送ってから待つ秒数。過ぎたら kill
 MSG_WAIT_S = 10.0            # /go2/objects・/clock の最初の 1 通を待つ秒数
