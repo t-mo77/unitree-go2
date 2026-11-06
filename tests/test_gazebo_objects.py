@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
 LAUNCH = ROOT / "gazebo" / "launch" / "go2_gazebo.launch.py"
 README = ROOT / "README.md"
+DESIGN = ROOT / "docs" / "superpowers" / "specs" / "2026-11-05-go2-objects-design.md"
 
 
 def quat_yaw(t):
@@ -201,3 +202,27 @@ def test_the_readme_echo_shows_the_whole_objects_message():
     assert commands
     for words in commands:
         assert "--full-length" in words or "-f" in words, " ".join(words)
+
+
+def test_the_docs_say_the_gazebo_lap_does_not_pass():
+    """Final review, Important 1: design §2 is not met in Gazebo (the lap ended 1 of 25 times; the
+    rest fell in the unitree_guide controller; docs/reference/gazebo_objects_e2e.md). README §4 and
+    §8 and design §12 say so and that the route is undecided, and README no longer reads as if the
+    grid executor were checked in Gazebo."""
+    readme = README.read_text(encoding="utf-8")
+    assert "偽の Go2 と Gazebo でしか確かめていません" not in readme
+    assert "確かめた範囲では転んでいません。" not in readme.replace("物を使わない指示で確かめた範囲では", "")
+    objects = readme[readme.index("### 物を使う指示（箱と椅子）"):readme.index("## 5.")]
+    lap_row = next(line for line in objects.splitlines() if line.startswith("| 箱の周りを一周して |"))
+    assert "Gazebo ではまだ通らない" in lap_row and "§8" in lap_row
+    assert "Gazebo では、設計書（物）§2 の合格の条件をまだ満たしていません" in objects
+    unknown = readme[readme.index("## 8. わかっていないこと"):]
+    gazebo = unknown[unknown.index("- **Gazebo での物を使う指示"):unknown.index("- **物を使う指示の実機での動き")]
+    for words in ("満たせていません", "25 回のうち、終えたのは 1 回", "10 回のうち 7 回", "unitree_guide",
+                  "まだ決めていません", "gazebo_objects_e2e.md"):
+        assert words in gazebo, words
+    design = DESIGN.read_text(encoding="utf-8")
+    results = design[design.index("**確かめた結果**"):]
+    for words in ("§2 の合格の条件は、Gazebo では満たせていない", "25 回", "終えたのは 1 回", "10 回のうち 7 回合格",
+                  "まだ決めていないこと（利用者の判断を待つ）"):
+        assert words in results, words
