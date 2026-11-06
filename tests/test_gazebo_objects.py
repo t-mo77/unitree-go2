@@ -1,5 +1,6 @@
 """Gazebo の物（logical camera・box_1 と chair_1・/go2/objects）の、ROS を使わない部品（Task D）。"""
 
+import json
 import math
 import re
 import xml.etree.ElementTree as ET
@@ -18,6 +19,7 @@ from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_HZ, CAMERA_IN_BOD
 ROOT = Path(__file__).resolve().parent.parent
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
 LAUNCH = ROOT / "gazebo" / "launch" / "go2_gazebo.launch.py"
+README = ROOT / "README.md"
 
 
 def quat_yaw(t):
@@ -180,3 +182,22 @@ def test_xacro_mounts_the_logical_camera_like_the_real_front_camera():
 def test_launch_bridges_the_logical_camera():
     assert ('"/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage"'
             in LAUNCH.read_text(encoding="utf-8"))
+
+
+def test_the_readme_echo_shows_the_whole_objects_message():
+    """README §3: `ros2 topic echo` cuts strings at 128 characters unless --full-length is given
+    (Humble ros2topic/verb/echo.py). The default /go2/objects message is longer, so chair_1 would not show."""
+    from ros2topic.verb.echo import DEFAULT_TRUNCATE_LENGTH
+    from rosidl_runtime_py import message_to_yaml
+    from std_msgs.msg import String
+    m = ObjectMemory()
+    m.update([(o.id, o.label, o.x, o.y) for o in DEFAULT_LAYOUT], 1_762_400_000.123)   # before any LiDAR size
+    data = json.dumps(m.message(1_762_400_000.5))                     # as gazebo_bridge._publish_objects
+    assert len(data) > DEFAULT_TRUNCATE_LENGTH
+    assert "chair_1" not in message_to_yaml(String(data=data), truncate_length=DEFAULT_TRUNCATE_LENGTH)
+    assert "chair_1" in message_to_yaml(String(data=data), truncate_length=None)    # what --full-length prints
+    commands = [line.split() for line in README.read_text(encoding="utf-8").splitlines()
+                if "ros2 topic echo" in line and "/go2/objects" in line]
+    assert commands
+    for words in commands:
+        assert "--full-length" in words or "-f" in words, " ".join(words)

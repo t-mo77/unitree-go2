@@ -111,10 +111,10 @@ docker compose --profile gazebo down                     # 全部止める
 - 物の一覧を見るには：
 
   ```bash
-  docker compose run --rm --no-deps -T app ros2 topic echo --once /go2/objects
+  docker compose run --rm --no-deps -T app ros2 topic echo --once --full-length /go2/objects
   ```
 
-  `data:` のあとに、`{"frame": "odom", "stamp": …, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": …, "visible": true}, …]}` の形の JSON が 1 通出ます。`size` は [x 方向の長さ, y 方向の長さ] [m] です。
+  `data:` のあとに、`{"frame": "odom", "stamp": …, "objects": [{"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": …, "visible": true}, …]}` の形の JSON が 1 通出ます。`size` は [x 方向の長さ, y 方向の長さ] [m] です。`--full-length` を付けないと、`ros2 topic echo` は文字列を 128 文字で切ります（最後が `...`）。物 2 つでも 128 文字を超えるので、椅子 `chair_1` が出ません。
 - 設計は [docs/superpowers/specs/2026-11-05-go2-objects-design.md](docs/superpowers/specs/2026-11-05-go2-objects-design.md)、Gazebo で確かめた記録は [docs/reference/gazebo_objects_e2e.md](docs/reference/gazebo_objects_e2e.md) にあります。
 
 **式から直接動かす（`run_formula`）**
