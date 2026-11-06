@@ -11,6 +11,7 @@ const GRID = 0.5;            // [m] one square of the top view (= one cell of a 
 const VIEW_HALF = 1.6;       // [m] the top view shows at least this far to each side (its largest scale)
 const VIEW_PAD = 0.4;        // [m] the margin around what the top view frames
 const HIDDEN_ALPHA = 0.45;   // an object that is not seen now is drawn faint
+const MIN_LATTICE_PX = 4;    // [px] the top view's GRID lines are left out when closer than this
 
 const POSTURE_JA = { LYING: "伏せ", STANDING: "立ち", SITTING: "おすわり", UNKNOWN: "不明" };
 const SENSE_JA = { CLEAR: "なし", BLOCKED: "あり", SENSOR_LOST: "途切れ" };
@@ -275,6 +276,7 @@ const tabs = [...document.querySelectorAll('[role="tab"]')];
 let diagramTicket = 0;     // the newest request; an older answer is dropped
 let diagramUrl = null;     // the blob: URL shown now
 let diagramFocus = null;   // where to scroll once the picture is loaded
+let diagramPlaceholder = false;  // the picture on its way is a placeholder (set on load)
 let diagramTouched = 0;    // when the user last scrolled the box (Date.now())
 
 async function loadDiagram(follow = true) {
@@ -295,7 +297,7 @@ async function loadDiagram(follow = true) {
     $("diagram-empty").hidden = false;
     return;
   }
-  img.classList.toggle("placeholder", isPlaceholder(text));
+  diagramPlaceholder = isPlaceholder(text);  // marked on load: the old picture never shows with it
   diagramFocus = follow ? focusPoint(text) : null;
   const old = diagramUrl;
   diagramUrl = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
@@ -327,15 +329,17 @@ function focusPoint(text) {
   return { fx: (x - vb[0]) / vb[2], fy: (y - vb[1]) / vb[3] };
 }
 
-$("diagram").addEventListener("load", () => {
+function diagramLoaded() {
   const img = $("diagram"), box = $("diagram-panel");
+  img.classList.toggle("placeholder", diagramPlaceholder);
   img.hidden = false;
   $("diagram-empty").hidden = true;
   if (diagramFocus) {
     box.scrollLeft = img.offsetLeft + diagramFocus.fx * img.clientWidth - box.clientWidth / 2;
     box.scrollTop = img.offsetTop + diagramFocus.fy * img.clientHeight - box.clientHeight / 2;
   }
-});
+}
+$("diagram").addEventListener("load", diagramLoaded);
 $("diagram").addEventListener("error", () => {
   $("diagram").hidden = true;
   $("diagram-empty").hidden = false;
@@ -803,25 +807,29 @@ function drawMap(s) {
   // Lines every GRID m over the whole canvas: on the borders of the plan's cells when there
   // is a grid (so both line up, at its yaw), else along odom. (ox, oy) is the crossing of two
   // lines nearest the view's centre; u = (ux, uy) and v = (-uy, ux) are the lines' directions.
-  const turn = grid ? grid.yaw : 0;
-  const [ux, uy] = [Math.cos(turn), Math.sin(turn)];
-  const corner = grid ? cellCenter(grid, -0.5, -0.5) : [0, 0];  // one crossing
-  const dx = view.cx - corner[0], dy = view.cy - corner[1];
-  const ku = Math.round((dx * ux + dy * uy) / GRID), kv = Math.round((dy * ux - dx * uy) / GRID);
-  const ox = corner[0] + (ku * ux - kv * uy) * GRID, oy = corner[1] + (ku * uy + kv * ux) * GRID;
-  const reach = Math.hypot(w, h) / 2 / scale + GRID;  // [m] from (ox, oy), past the canvas corners
-  const n = Math.ceil(reach / GRID);
-  ctx.strokeStyle = color("--map-grid");
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let k = -n; k <= n; k++) {
-    // k·GRID along a = (ax, ay) from (ox, oy), a line in the direction b = (bx, by), both ways
-    for (const [ax, ay, bx, by] of [[ux, uy, -uy, ux], [-uy, ux, ux, uy]]) {
-      const px = ox + k * GRID * ax, py = oy + k * GRID * ay;
-      segment([px - reach * bx, py - reach * by], [px + reach * bx, py + reach * by]);
+  // Not drawn when they would be under MIN_LATTICE_PX apart (one far object zooms the view out:
+  // they would be a grey wash, and their number grows without bound).
+  if (GRID * scale >= MIN_LATTICE_PX) {
+    const turn = grid ? grid.yaw : 0;
+    const [ux, uy] = [Math.cos(turn), Math.sin(turn)];
+    const corner = grid ? cellCenter(grid, -0.5, -0.5) : [0, 0];  // one crossing
+    const dx = view.cx - corner[0], dy = view.cy - corner[1];
+    const ku = Math.round((dx * ux + dy * uy) / GRID), kv = Math.round((dy * ux - dx * uy) / GRID);
+    const ox = corner[0] + (ku * ux - kv * uy) * GRID, oy = corner[1] + (ku * uy + kv * ux) * GRID;
+    const reach = Math.hypot(w, h) / 2 / scale + GRID;  // [m] from (ox, oy), past the canvas corners
+    const n = Math.ceil(reach / GRID);
+    ctx.strokeStyle = color("--map-grid");
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let k = -n; k <= n; k++) {
+      // k·GRID along a = (ax, ay) from (ox, oy), a line in the direction b = (bx, by), both ways
+      for (const [ax, ay, bx, by] of [[ux, uy, -uy, ux], [-uy, ux, ux, uy]]) {
+        const px = ox + k * GRID * ax, py = oy + k * GRID * ay;
+        segment([px - reach * bx, py - reach * by], [px + reach * bx, py + reach * by]);
+      }
     }
+    ctx.stroke();
   }
-  ctx.stroke();
 
   if (grid) {  // the plan's cells: the blocked ones filled, then every cell's lines on top
     ctx.fillStyle = color("--map-blocked");

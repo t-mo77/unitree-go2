@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import logging
 import re
@@ -17,8 +18,8 @@ from starlette.testclient import WebSocketDenialResponse
 import voice_ltl.server as server
 from sim.sim_core import SimGo2
 from voice_ltl.llm import MSG_LOGIN, FakeLLM
-from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,
-                               msg_ambiguous, msg_not_found, msg_too_far)
+from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,
+                               msg_ambiguous, msg_not_found, msg_too_far, snapshot_rows)
 from voice_ltl.server import control_loop, create_app
 from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
                                MSG_POSTURE_CHANGED, MSG_POSTURE_UNKNOWN,
@@ -713,11 +714,18 @@ def test_page_has_the_substitutions_box(tmp_path):
 
 
 # ---------------- the top view: objects, 0.5 m cells, blocked cells, the plan ----------------
-# Rows as Session.snapshot() sends them (Shared shapes of the objects plan).
-BOX = {"id": "box_1", "label": "box", "name": "箱", "x": 2.5, "y": 1.5, "size": [0.5, 0.5],
-       "visible": True, "seen": 10.0, "where": "左前 2.9 m"}
-CHAIR = {"id": "chair_1", "label": "chair", "name": "椅子", "x": 2.5, "y": -1.5, "size": [0.45, 0.45],
-         "visible": False, "seen": 8.0, "where": "右前 2.9 m"}
+# Rows as Session.snapshot() sends them (Shared shapes of the objects plan), made by the same
+# function, so that a change to the row's shape reaches the page tests: box_1 seen now, chair_1
+# seen before, both from the Go2 at the origin.
+BOX, CHAIR = snapshot_rows([dataclasses.replace(DEFAULT_LAYOUT[0], seen=10.0),
+                            dataclasses.replace(DEFAULT_LAYOUT[1], visible=False, seen=8.0)], (0.0, 0.0, 0.0))
+
+
+def test_the_page_rows_are_the_shared_shape():
+    assert BOX == {"id": "box_1", "label": "box", "name": "箱", "x": 2.5, "y": 1.5, "size": [0.5, 0.5],
+                   "visible": True, "seen": 10.0, "where": "左前 2.9 m"}
+    assert CHAIR == {"id": "chair_1", "label": "chair", "name": "椅子", "x": 2.5, "y": -1.5,
+                     "size": [0.45, 0.45], "visible": False, "seen": 8.0, "where": "右前 2.9 m"}
 GRID = {"cell": 0.5, "origin": [0, 0], "yaw": 0, "i": [-1, 10], "j": [-2, 8],
         "blocked": [[5, 3], [4, 3]], "robot": [0, 0, 0], "goal": [3, 0, 0]}
 PLAN_CELLS = [[1, 0, 0], [2, 0, 0], [3, 0, 0]]
@@ -814,6 +822,24 @@ def test_map_draws_objects_cells_and_the_path(tmp_path):
 
 
 @needs_node
+def test_map_skips_the_lattice_when_its_lines_would_be_too_close(tmp_path):
+    """One far object row zooms the view out: the 0.5 m lines would be under 4 px apart (and
+    millions of them), so they are not drawn; the rest of the view is."""
+    far = {**BOX, "id": "box_2", "x": 1.0e7, "y": 0.0}
+    near = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=[BOX])
+    wide = {**near, "objects": [BOX, far]}
+    r = run_page(CANVAS + """
+      const lattice = (s) => { ops.length = 0; drawMap(s);
+        return [ops.filter((o) => o[0] === "stroke" && o[o.length - 1].stroke === "--map-grid").length,
+                ops.filter(([k]) => k === "fillText").length, byId.map["aria-label"]]; };
+      [lattice(near), lattice(wide), mapView(wide, 480, 320).scale * GRID];
+    """, near=near, wide=wide)
+    (near_lines, _, _), (wide_lines, wide_texts, label), cell_px = r
+    assert near_lines == 1 and wide_lines == 0 and cell_px < 4
+    assert wide_texts >= 2 and label.startswith("上から見た図：箱 2 個")
+
+
+@needs_node
 def test_map_label_without_objects_is_todays(tmp_path):
     snap = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], world={"boxes": [[1.2, 0, 0.3]], "collided": True})
     both = {**snap, "objects": [BOX]}
@@ -846,13 +872,20 @@ def test_placeholder_svg_is_recognised():
 
 @needs_node
 def test_page_marks_a_placeholder_diagram():
-    """P10: the placeholder gets class "placeholder", which CSS centres and 幅に合わせる leaves alone."""
+    """P10: the placeholder gets class "placeholder", which CSS centres and 幅に合わせる leaves alone.
+    The class changes when the new picture has loaded, so the old one never shows with it."""
     r = run_page("""
       const marks = [];
       byId.diagram = { classList: { toggle: (name, on) => { marks.push([name, on]); } }, removeAttribute() {} };
       diagramNames = ["FOCUS"];
       let body = '<svg xmlns="http://www.w3.org/2000/svg" class="too-big" width="520" height="80"></svg>';
       fetch = async () => ({ ok: true, text: async () => body });
-      (async () => { await loadDiagram(false); body = graphviz; await loadDiagram(false); return marks; })();
+      (async () => {
+        const seen = [];
+        await loadDiagram(false); seen.push(marks.length); diagramLoaded();
+        body = graphviz;
+        await loadDiagram(false); seen.push(marks.length); diagramLoaded();
+        return [seen, marks];
+      })();
     """, graphviz=graphviz_svg())
-    assert r == [["placeholder", True], ["placeholder", False]]
+    assert r == [[0, 1], [["placeholder", True], ["placeholder", False]]]
