@@ -9,7 +9,9 @@ from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 
 from sim.sim_core import SimGo2
 from voice_ltl.grid_executor import (GRID_DONE_DIST, GRID_DONE_YAW, GRID_EXEC_CONFIG, GRID_SETTLE_S,
-                                     GridExecutor, GridStep)
+                                     K_ALONG, K_CROSS, K_WALK_YAW, K_YAW, MIN_SPEED, MIN_TURN, MOVE_TURN,
+                                     GridExecutor,
+                                     GridStep)
 from voice_ltl.session import EXEC_ACTIONS
 
 
@@ -48,18 +50,35 @@ def run_until_done(sim, ex, step, env_at=lambda t: CLEAR, dt=0.1, limit=30.0):
 
 def test_constants():
     assert GRID_SETTLE_S == 0.5 and GRID_DONE_DIST == 0.03 and GRID_DONE_YAW == math.radians(3.0)
-    assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.5) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
+    assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.3) and GRID_EXEC_CONFIG.acc == (0.4, 0.4, 1.0)
     assert GRID_EXEC_CONFIG.block_timeout == 15.0 and GRID_EXEC_CONFIG.move_timeout_margin == 2.5
     assert GridExecutor(EXEC_ACTIONS).cfg == GRID_EXEC_CONFIG
+    assert (K_YAW, K_WALK_YAW, K_CROSS, MOVE_TURN, MIN_TURN) == (1.5, 0.6, 0.4, 0.15, 0.25)
+    assert (K_ALONG, MIN_SPEED) == (2.0, 0.15)
+
+
+def test_steering_while_walking_grows_with_the_forward_speed():
+    """Task I (Gazebo): z at the start and the end of a move, when the Go2 walks slowly, rocked it
+    (roll 0.55-0.71, and one fall at the start of a move with z 0.26 rad/s). |z| is capped at
+    MOVE_TURN x (|x| / top speed): no turning before it walks, full steering only at full speed."""
+    sim = standing_sim(); sim.y, sim.yaw = 0.15, 0.25          # off the line and turned away
+    cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("forward", 0.5, (0.5, 0.0), 0.0)])
+    moves = [c.parameter for _, c in cmds if c.api_id == MOVE]
+    top = GRID_EXEC_CONFIG.speed[0]
+    assert abs(moves[0]["z"]) <= MOVE_TURN * 0.06 / top + 1e-3   # the first Move: x 0.06 m/s
+    assert all(abs(m["z"]) <= MOVE_TURN * abs(m["x"]) / top + 1e-3 for m in moves)
+    assert max(abs(m["z"]) for m in moves) >= MOVE_TURN - 0.01    # it still steers at speed
+    open_loop_y = 0.15 + 0.5 * math.sin(0.25)                    # 0.27: walking on, turned away
+    assert abs(sim.x - 0.5) <= 0.06 and abs(sim.y) < open_loop_y - 0.05 and abs(sim.yaw) < 0.2
 
 
 def test_forward_reaches_the_cell_centre_and_holds_heading():
     sim = standing_sim(); sim.y, sim.yaw = 0.1, 0.05
     cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("forward", 0.5, (0.5, 0.0), 0.0)])
-    assert abs(sim.x - 0.5) <= 0.03 + 0.03 and abs(sim.y) < 0.1 and abs(sim.yaw) < 0.1   # no drift added
+    assert abs(sim.x - 0.5) <= 0.03 + 0.03 and abs(sim.y) < 0.11 and abs(sim.yaw) < 0.1  # no drift added (open loop: 0.125)
     moves = [c for _, c in cmds if c.api_id == MOVE]
     assert all(abs(m.parameter["z"]) <= 0.3 and abs(m.parameter["x"]) <= 0.3 for m in moves)
-    assert all(abs(b.parameter["x"] - a.parameter["x"]) <= 0.06 + 1e-6 for a, b in zip(moves, moves[1:]))
+    assert all(abs(b.parameter["x"] - a.parameter["x"]) <= 0.04 + 1e-6 for a, b in zip(moves, moves[1:]))
     assert all(m.parameter["y"] == 0 for m in moves)
     assert min(m.parameter["z"] for m in moves) < 0                   # it steered back towards the line
 
@@ -77,8 +96,34 @@ def test_turn_reaches_the_heading_slowly():
     cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2)])
     assert abs(math.remainder(sim.yaw - math.pi / 2, 2 * math.pi)) <= math.radians(3) + 0.06
     zs = [c.parameter["z"] for _, c in cmds if c.api_id == MOVE]
-    assert max(map(abs, zs)) <= 0.5 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))
+    assert max(map(abs, zs)) <= 0.3 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))
     assert all(c.parameter["x"] == 0 for _, c in cmds if c.api_id == MOVE)
+
+
+def test_a_turn_keeps_stepping_until_it_stops():
+    """Gazebo's controller stops stepping below 0.2 rad/s with no forward speed (Task I): once
+    the ramp is up, every turn Move asks for at least MIN_TURN, then StopMove."""
+    sim = standing_sim()
+    cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("turn_right", 90.0, (0.0, 0.0), -math.pi / 2)])
+    zs = [c.parameter["z"] for _, c in cmds if c.api_id == MOVE]
+    assert MIN_TURN >= 0.2 + 0.05
+    k = next(i for i, z in enumerate(zs) if z <= -MIN_TURN + 1e-9)    # the ramp: 0, -0.1, -0.2
+    assert k <= 3 and all(z <= -MIN_TURN + 1e-9 for z in zs[k:])
+    assert abs(math.remainder(sim.yaw + math.pi / 2, 2 * math.pi)) <= math.radians(3) + 0.05
+
+
+def test_a_move_ends_without_a_long_slow_walk():
+    """Task I (Gazebo): the Go2 leaned over when it walked slowly for about 1 s at the end of a move.
+    Every forward Move once the ramp is up asks for MIN_SPEED or more, and the part slower than 0.3
+    m/s lasts at most 0.6 s."""
+    sim = standing_sim()
+    cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("forward", 0.5, (0.5, 0.0), 0.0)])
+    xs = [(t, c.parameter["x"]) for t, c in cmds if c.api_id == MOVE]
+    top = next(k for k, (_, x) in enumerate(xs) if x >= 0.3 - 1e-9)
+    assert all(x >= MIN_SPEED - 1e-9 for _, x in xs[top:])
+    slow = [t for t, x in xs[top:] if x < 0.3 - 1e-9]
+    assert len(slow) * 0.1 <= 0.6 + 1e-9
+    assert abs(sim.x - 0.5) <= 0.06
 
 
 def test_turn_right_across_the_wrap():
