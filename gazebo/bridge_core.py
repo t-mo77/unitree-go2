@@ -23,7 +23,7 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
 
 物（box_1・chair_1）の部品も持つ：logical camera が見た model を世界（= odom）の位置に直し（compose）、
 名前で絞り（object_label）、画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）
-LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
+胴が止まっている間（StillGate）の LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
 /go2/objects の形は voice_ltl/objects.py。
 """
 
@@ -97,7 +97,11 @@ BOX_DISTANCE = 1.2                  # 箱は Go2 の今の位置から前（後�
 # ---- 物（box_1・chair_1）。位置は logical camera、大きさは LiDAR の点で測る ----
 SIZE_RADIUS = 0.6          # 物の中心から水平にこの距離より近い点を、その物の点とみなす [m]
 SIZE_MIN_POINTS = 10       # これより点が少なければ測らない
-SIZE_MAX_YAW_SPEED = 0.1   # 回る速さがこれ以下のときだけ測る（点群と位置の時刻のずれで広がるので）[rad/s]
+# 胴が止まっている間に撮った点群だけで測る（StillGate）。動いていると、点群と位置の時刻のずれで点が広がり、
+# 地面の点が GROUND_Z より上に出る（Gazebo で、出した直後に床へ落ちる間の 1 枚で 0.5 m の箱が 1.07 m になった）
+SIZE_STILL_RATE = 0.1     # 胴の角速度（roll・pitch・yaw の軸ごと）がこれ以下 [rad/s]
+SIZE_STILL_SPEED = 0.05   # 胴の速さがこれ以下 [m/s]
+SIZE_STILL_S = 0.3        # 止まってからこの秒数（シミュレーションの時間）たった後に撮った点群だけを使う
 SIZE_MIN = 0.1             # 測った大きさの下限 [m]（上限は objects.MAX_SIZE）
 SIZE_BOX_MARGIN = 0.05     # 画面のボタンで置いた箱の点を除くとき、箱をこれだけ広げる [m]
 SIZE_BOX_GRACE_S = 2.0     # 箱を消すよう頼んでからこの秒数（実際の時間）は、まだ点群に写りうるので点を除き続ける
@@ -512,6 +516,30 @@ def object_sdf(obj_id: str, label: str) -> str:
                    f'<visual name="{name}_visual">{pose}{geometry}{material}</visual>')
     return (f'<?xml version="1.0"?><sdf version="1.6"><model name="{obj_id}"><static>true</static>'
             f'<link name="link">{shapes}</link></model></sdf>')
+
+
+class StillGate:
+    """大きさを測ってよい点群か。胴が止まっている（角速度が軸ごとに SIZE_STILL_RATE 以下、速さが
+    SIZE_STILL_SPEED 以下）間が、点群を撮った時刻の SIZE_STILL_S 前から今まで続いているときだけ。
+    時刻はどちらもシミュレーションの時間（odometry と点群の header.stamp）。
+    出した直後に床へ落ちる間・立ち上がる間・その場で足踏みする間・歩く間・回る間は測らない
+    （set_size は大きい方を残すので、1 枚でも広がった点群を使うとずっと戻らない）。"""
+
+    def __init__(self):
+        self.still_since: Optional[float] = None   # 今の「止まっている」が始まった時刻。動いていれば None
+
+    def observe(self, t: float, linear: Sequence[float], angular: Sequence[float]) -> None:
+        """odometry 1 通：時刻 t、胴の速度 linear (x, y, z) [m/s] と角速度 angular (x, y, z) [rad/s]。"""
+        still = (all(abs(w) <= SIZE_STILL_RATE for w in angular)
+                 and math.sqrt(sum(v * v for v in linear)) <= SIZE_STILL_SPEED)   # nan は止まっていない
+        if not still:
+            self.still_since = None
+        elif self.still_since is None:
+            self.still_since = t
+
+    def allows(self, stamp: float) -> bool:
+        """時刻 stamp に撮った点群で大きさを測ってよいか。"""
+        return self.still_since is not None and stamp - self.still_since >= SIZE_STILL_S - _EPS
 
 
 class ObjectMemory:

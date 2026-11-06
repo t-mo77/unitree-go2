@@ -16,8 +16,8 @@
   （すでにあれば、あるものとして扱う）。
 - logical camera（/gazebo/logical_camera、ros_gz_interfaces/LogicalCameraImage）が見た model を名前で絞り
   （box_<n>・chair_<n> だけ。ground_plane・robot・sim_box_<n> は除く）、世界（= odom）の位置に直して覚え、
-  ほとんど回っていないとき（|yaw_speed| ≤ 0.1 rad/s）に LiDAR の点で底面の大きさを測る（画面のボタンで置いた箱の
-  点は除く）。覚えている物を 2 Hz で /go2/objects
+  胴が止まっている間（角速度が軸ごとに 0.1 rad/s 以下・速さ 0.05 m/s 以下が 0.3 秒続いた後。bridge_core.StillGate）に
+  撮った LiDAR の点で底面の大きさを測る（画面のボタンで置いた箱の点は除く）。覚えている物を 2 Hz で /go2/objects
   （std_msgs/String の JSON、voice_ltl/objects.py の形）に出す。時刻（stamp・seen）は実際の時間（time.time()）。
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
@@ -55,8 +55,8 @@ from unitree_api.msg import Request
 from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE
-from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_MAX_YAW_SPEED, BoxWorld, BridgeCore,
-                                ControllerInput, ObjectMemory, api_name, box_sdf, compose,
+from gazebo.bridge_core import (OBJECT_SPAWN_Z, BoxWorld, BridgeCore, ControllerInput,
+                                ObjectMemory, StillGate, api_name, box_sdf, compose,
                                 drop_box_points, drop_ground_and_self_points, footprint_size,
                                 lidar_points_world, object_label, object_sdf)
 from sim.sim_core import BOX_HEIGHT
@@ -90,6 +90,11 @@ SPAWN_HZ = 1.0     # 物を置けるようになったか（create のサービ�
 Pose = Tuple[float, float, float, float, float, float, float, float, float, float]
 
 
+def _stamp(stamp) -> float:
+    """header.stamp → 秒（シミュレーションの時間）。"""
+    return stamp.sec + stamp.nanosec * 1e-9
+
+
 def _rpy(q) -> Tuple[float, float, float]:
     roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
     pitch = math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
@@ -104,6 +109,7 @@ class GazeboBridge(Node):
         self.core = BridgeCore(*self._now(), reports_trot_entry=True)
         self.boxes = BoxWorld()
         self.memory = ObjectMemory()   # logical camera が見た物（box_1・chair_1）
+        self.still = StillGate()       # 胴が止まっている間の点群だけで物の大きさを測る
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)
         self._last_note = ""
@@ -183,6 +189,7 @@ class GazeboBridge(Node):
         self._pose = (p.x, p.y, p.z, roll, pitch, yaw, c * v.x - s * v.y, s * v.x + c * v.y, v.z, w.z)
         self._quat = (q.w, q.x, q.y, q.z)
         self.core.observe(roll, pitch, p.z, *self._now())   # 転んだら 1001（Ruling R38）
+        self.still.observe(_stamp(msg.header.stamp), (v.x, v.y, v.z), (w.x, w.y, w.z))
 
         st = SportModeState()
         st.stamp.sec, st.stamp.nanosec = msg.header.stamp.sec, msg.header.stamp.nanosec
@@ -204,8 +211,8 @@ class GazeboBridge(Node):
             drop_ground_and_self_points(pts, self._pose[2], self._quat), dtype=np.float32)
         header = Header(frame_id=LIDAR_FRAME, stamp=msg.header.stamp)
         self._cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, kept))
-        # 回っていると点群と位置の時刻のずれで点が広がるので、ほぼ回っていないときだけ大きさを測る
-        if abs(self._pose[9]) <= SIZE_MAX_YAW_SPEED:
+        # 動いていると点群と位置の時刻のずれで点が広がるので、胴が止まっている間に撮った点群だけで大きさを測る
+        if self.still.allows(_stamp(msg.header.stamp)):
             self._measure_sizes(kept)
 
     # ---------- 物（box_1・chair_1） ----------
