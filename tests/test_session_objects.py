@@ -16,7 +16,7 @@ import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
 from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
 from voice_ltl.grid import GridWorld
-from voice_ltl.grid_executor import GRID_EXEC_CONFIG, GRID_SETTLE_S
+from voice_ltl.grid_executor import GRID_EXEC_CONFIG, GRID_SETTLE_S, MIN_SPEED, flows_on
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
@@ -302,8 +302,10 @@ def test_drift_out_of_the_grid_stops(tmp_path):
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "error" and snap["message"] == MSG_POSITION_DRIFT
     assert link.sim.accepted[-1] == STOP_MOVE
-    # the turn ends where it is, and no walk goes after the old goal (a turn's Move has x = 0)
-    assert not [c for c in link.sent[n:] if c.api_id == MOVE and c.parameter["x"] != 0]
+    # the turn ends where it is, and no walk goes after the old goal (a turn's Move has x = 0,
+    # but for the x of the forward it goes on from (corners), which only falls to 0)
+    xs = [c.parameter["x"] for c in link.sent[n:] if c.api_id == MOVE]
+    assert all(0 <= b <= a <= MIN_SPEED + 1e-9 for a, b in zip(xs, xs[1:])) and xs[-1] == 0
     assert any(c.api_id == MOVE and c.parameter["z"] != 0 for c in link.sent[n:])
     assert snap["grid"]["goal"] is None and snap["plan_cells"] == []
 
@@ -823,19 +825,19 @@ def timed_session(tmp_path, *formulas, link_cls=None):
     return sess, link
 
 
-def runs_and_turns(actions):
-    """(straight runs of forwards, turns not followed by a forward) in a list of actions."""
+def stop_points(actions):
+    """The moves (forward / turn) of a list of actions that no next move goes on from (M1 and
+    corners): a turn not followed by a forward, a forward followed by neither, the last one."""
     moves = [a for a in actions if a in ("forward", "turn_left", "turn_right")]
-    runs = sum(a == "forward" and (i == 0 or moves[i - 1] != "forward") for i, a in enumerate(moves))
-    lone = sum(a != "forward" and (i + 1 == len(moves) or moves[i + 1] != "forward") for i, a in enumerate(moves))
-    return runs, lone
+    return sum(not flows_on(a, b) for a, b in zip(moves, moves[1:] + [None]))
 
 
-def test_box_lap_stops_once_per_straight_run(tmp_path):
-    """M1 on the fake Go2's lap (design §2): it still passes, and StopMove comes only at the end of
-    each straight run (before a turn, or the last step): no StopMove between consecutive forwards
-    (x stays positive across them) or after a turn that a forward follows (no wait at zero
-    velocity: the forward's first Move is in the next tick). One 開始 / 完了 per step, as before."""
+def test_box_lap_stops_only_at_its_end(tmp_path):
+    """M1 and corners on the fake Go2's lap (design §2): it still passes, and StopMove comes only
+    where no move goes on (here the plan's end): no StopMove between consecutive forwards (x
+    stays positive across them), after a turn that a forward follows (no wait at zero velocity),
+    or after a forward that a turn follows (the forward slows down, the turn goes on from that
+    velocity in the next tick). One 開始 / 完了 per step, as before."""
     sess, link = timed_session(tmp_path, "F around_box_1")
     sess.submit_text("箱の周りを一周して")
     path = [(0.0, 0.0)]
@@ -846,21 +848,24 @@ def test_box_lap_stops_once_per_straight_run(tmp_path):
     assert not getattr(link, "hit", False) and not link.sim.collided
     actions = [st["action"] for st in snap["steps"]]
     moves = [a for a in actions if a != "stand"]
-    runs, lone = runs_and_turns(actions)
     stops = [(t, a) for t, c, a, _ in link.sent if c.api_id == STOP_MOVE]
-    assert len(stops) <= runs + lone and len(stops) <= runs + (len(moves) - moves.count("forward"))
-    assert len(stops) < len(moves) / 2                                # it was one per step before M1
-    assert {a for _, a in stops} == {"forward"}                       # the ends of the straight runs
+    assert len(stops) == stop_points(actions)                          # one per step before M1
+    assert len(stops) <= 2 and moves.count("turn_left") + moves.count("turn_right") >= 8
+    last_move = max(t for t, c, _, _ in link.sent if c.api_id == MOVE)
+    assert stops[-1][0] > last_move                                    # the plan's end
     commands = [(t, c, a, n) for t, c, a, n in link.sent if c.api_id in (MOVE, STOP_MOVE)]
-    boundaries = 0
+    boundaries = corners = 0
     for (t0, c0, a0, n0), (t1, c1, a1, n1) in zip(commands, commands[1:]):
-        if n1 != n0 and a1 == "forward" and a0 in ("forward", "turn_left", "turn_right"):
+        if n1 != n0 and flows_on(a0, a1):
             boundaries += 1
             assert c0.api_id == MOVE and c1.api_id == MOVE and t1 - t0 <= 0.1 + 1e-6, (t0, c0, a0, t1, c1, a1)
-            if a0 == "forward":
+            if a0 == a1 == "forward":
                 assert c0.parameter["x"] > 0 and c1.parameter["x"] > 0
-    assert boundaries == sum(a == "forward" and b in ("forward", "turn_left", "turn_right")
-                             for b, a in zip(moves, moves[1:]))
+            if a1 != "forward":                                        # a corner: slowed for the turn
+                corners += 1
+                assert 0 < c0.parameter["x"] <= MIN_SPEED + 1e-9 and c1.parameter == c0.parameter
+    assert boundaries == sum(flows_on(a, b) for a, b in zip(moves, moves[1:]))
+    assert corners == sum(a == "forward" and b != "forward" for a, b in zip(moves, moves[1:])) >= 4
     assert_moves_ramp([c for _, c, _, _ in link.sent])
     log = snap["log"]
     assert sum(line.startswith("開始：") for line in log) == len(actions)
@@ -868,8 +873,8 @@ def test_box_lap_stops_once_per_straight_run(tmp_path):
 
 
 def test_walk_to_the_chair_with_continuous_moves(tmp_path):
-    """The chair (design §2) with M1: the four forwards stop once, the turn flows into the last
-    forward; ≤ 1.5 m and ≤ 45° from the chair, as before."""
+    """The chair (design §2) with M1 and corners: the four forwards flow into the turn, the turn
+    into the last forward, and only that one stops; ≤ 1.5 m and ≤ 45° from the chair, as before."""
     sess, link = timed_session(tmp_path, "F near_chair_1")
     sess.submit_text("椅子まで歩いて")
     path = []
@@ -879,8 +884,10 @@ def test_walk_to_the_chair_with_continuous_moves(tmp_path):
     assert distance <= 1.5 and angle <= 45
     assert min(edge_distance(x, y, CHAIR) for x, y in path) >= 0.45
     actions = [st["action"] for st in snap["steps"]]
-    runs, lone = runs_and_turns(actions)
-    assert sum(c.api_id == STOP_MOVE for _, c, _, _ in link.sent) == runs + lone
+    assert actions == ["stand"] + ["forward"] * 4 + ["turn_right", "forward"]
+    assert sum(c.api_id == STOP_MOVE for _, c, _, _ in link.sent) == stop_points(actions) == 1
+    turn = [c.parameter for _, c, a, _ in link.sent if a == "turn_right"]
+    assert 0 < turn[0]["x"] <= MIN_SPEED + 1e-9 and turn[2]["x"] == 0   # x ramps down as the turn starts
 
 
 def forward_running(k, near=None):

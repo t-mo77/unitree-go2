@@ -29,7 +29,9 @@
   state it lands in, sensors as they are) is a forward flows on: it ends without StopMove, the
   snap takes that tick's pose, and the next step is loaded in the same tick: a forward in that
   heading continues the walk, anything else (or nothing to load) stops the Go2 at once. So a
-  straight run stops once, at its end. Any other formula runs on go2_world and the zip's
+  straight run stops once, at its end. Corners (after the M1 Gazebo measurement): a forward
+  whose next planned action is a turn flows into it the same way, so a plan of forwards and
+  single turns stops once, at its end. Any other formula runs on go2_world and the zip's
   Executor, as before.
 - snapshot() is what the page shows: the steps of the plan, what the session is connected to,
   the transcription, the wait, and two logs: "log" in words for people, "debug_log" with the
@@ -62,7 +64,7 @@ from go2_nl_control.translator import STOP_WORDS, is_stop_command
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import MAX_DRAW_STATES, render_focus_svg, render_svg, too_big_svg
 from voice_ltl.grid import GridError, GridState, GridWorld, grid_world
-from voice_ltl.grid_executor import FLOWS_INTO_FORWARD, GridExecutor, GridStep
+from voice_ltl.grid_executor import FLOWS_INTO_FORWARD, GridExecutor, GridStep, flows_on
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
 # objects.py has the copy (P3); MSG_TOO_SPREAD and the others of grid_world come as a GridError
 from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, NO_PATH_REASON, Obj, Scene, formula_atoms,
@@ -364,7 +366,7 @@ class Session:
         self._busy_until = float("-inf")  # R28: the Go2 is doing a posture change / gesture
         self._running = False           # a supervisor is being followed
         self._action: str | None = None  # the action loaded in the executor
-        self._flow = False               # M1: the plan has a forward after it (set when loaded)
+        self._flow: str | None = None    # M1: the planned action that goes on from it (set when loaded)
         self._plan: list[str] = []
         self._done: list[str] = []       # the actions of this instruction's plan done so far
         self._plan_posture = LYING       # posture the supervisor believes in
@@ -774,8 +776,8 @@ class Session:
 
     def _tick_executor(self, now: float, reading: Reading) -> None:
         if self._exec is self.grid_executor:   # M1: flow on only where the snap can follow it
-            self.grid_executor.flow = (self._flow and self._pose is not None
-                                       and SENSOR_LOST not in (reading.front, reading.back))
+            self.grid_executor.flow = (self._flow if self._pose is not None
+                                       and SENSOR_LOST not in (reading.front, reading.back) else None)
         for cmd in self._exec.tick(now, self._env(self._action, reading), self._pose):
             self._send(cmd, now)
         self._take_executor_events()
@@ -783,7 +785,8 @@ class Session:
     def _roll_on(self, now: float, reading: Reading) -> None:
         """M1: the step just snapped flowed on (no StopMove; the Go2 still walks or turns). In
         this same tick the next step is loaded as always: a forward in the heading it ended in
-        continues the walk; any other step gets the executor's StopMove first. Nothing to load
+        continues the walk, and so does the turn a forward slowed down for (corners); any other
+        step gets the executor's StopMove first. Nothing to load
         (the supervisor waits or is done, the posture is not settled): StopMove now."""
         if self._running and self._action is None and self._load_next(now):
             self._tick_executor(now, reading)
@@ -794,20 +797,22 @@ class Session:
         for cmd in self.grid_executor.halt(now):
             self._send(cmd, now)
 
-    def _flows_on(self) -> bool:
+    def _flows_on(self) -> str | None:
         """M1: the step loaded (on the grid, a forward or a turn) flows on when the next planned
-        action is a forward: the supervisor's plan from the state the step lands in, with no
-        sensor change, starts with one (Runtime.plan from there, as _load_next will ask then)."""
+        action is a forward, or (corners) when it is a forward and the next is a turn: the
+        supervisor's plan from the state the step lands in, with no sensor change, starts with
+        that action (Runtime.plan from there, as _load_next will ask then). That action, or None."""
         if self._grid is None or self._action not in FLOWS_INTO_FORWARD or self.runtime is None:
-            return False
+            return None
         rt = self.runtime
         path = rt.plan()
         if not path or event_action(path[0]) != self._action:
-            return False
+            return None
         ahead = copy.copy(rt)                 # shares the supervisor; only its state is its own
         ahead.jump(rt.walk(path[:1])[0])
         after = ahead.plan()
-        return bool(after) and event_action(after[0]) == "forward"
+        nxt = event_action(after[0]) if after else None
+        return nxt if flows_on(self._action, nxt) else None
 
     def _posture_fits_action(self, now: float) -> bool:
         """SAFETY-2: while a Step runs, the Go2 stays in a posture its action allows. A remote's
@@ -941,7 +946,7 @@ class Session:
     def _complete(self) -> None:
         """The loaded Step ended: move the supervisor by the event that happened."""
         action, self._action = self._action, None
-        self._flow = False
+        self._flow = None
         before = self._plan_posture
         event = self._grid_event(action) if self._grid is not None else self._go2_event(action)
         if event is None:   # the plan was aborted
@@ -1036,7 +1041,7 @@ class Session:
         elif self._exec is self.grid_executor and self.grid_executor.rolling:
             self.grid_executor.cancel(reason)   # M1: a step that flowed on (StopMove: the caller)
         self._action = None
-        self._flow = False
+        self._flow = None
         self._running = False
         self._waiting_since = None
         self._snap_wait_since = None
