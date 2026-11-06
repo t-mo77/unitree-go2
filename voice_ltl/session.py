@@ -55,7 +55,7 @@ from go2_nl_control.translator import STOP_WORDS, is_stop_command
 
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import MAX_DRAW_STATES, render_focus_svg, render_svg, too_big_svg
-from voice_ltl.grid import GridError, GridWorld, grid_world
+from voice_ltl.grid import GridError, GridState, GridWorld, grid_world
 from voice_ltl.grid_executor import GridExecutor, GridStep
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
 # MSG_TOO_SPREAD reaches the page as a GridError's text; it is named here with the other copy
@@ -371,6 +371,10 @@ class Session:
         self._object_rows: list[dict] = []      # self._objects for the snapshot, made in tick()
         self._scene: Scene | None = None        # the objects and the pose frozen for the instruction
         self._grid: GridWorld | None = None     # the grid of the plan (None: go2_world, no objects)
+        # R27, made in _start and _refresh_plan (snapshot() only copies): the grid for the page
+        # (grid.to_json) and the cell and heading after each step not done yet
+        self._grid_view: dict | None = None
+        self._plan_cells: list[list[int]] = []
 
         if background:
             threading.Thread(target=self._work, name="session-worker", daemon=True).start()
@@ -443,6 +447,8 @@ class Session:
             self.synthesis = None
             self.runtime = None
             self._grid = None
+            self._grid_view = None
+            self._plan_cells = []
             self._syn_id += 1
             self._set_diagrams({})
             self._note(f"指示: {text}", f"指示：「{text}」")
@@ -713,6 +719,8 @@ class Session:
         self._grid = outcome.grid
         # the old plan is discarded and its executor's lines taken: only here does it change
         self._exec = self.grid_executor if outcome.grid is not None else self.executor
+        if outcome.grid is not None:   # the Go2 is at the anchor: cell (0, 0), heading 0 (R2)
+            self._grid_view = outcome.grid.grid.to_json(robot=(0, 0, 0), goal=None)
         if outcome.synthesis is not None:
             self.synthesis = outcome.synthesis
             self._syn_id += 1
@@ -850,8 +858,15 @@ class Session:
         if self._grid is None:
             return Step(action, step_value(action))
         grid = self._grid.grid
-        _, dst = self._grid.step(self.synthesis.plant_state(self.runtime.state), action)
+        _, dst = self._grid_step(self.synthesis.plant_state(self.runtime.state), action)
         return GridStep(action, step_value(action), grid.center(dst.cell), grid.heading_yaw(dst.heading))
+
+    def _grid_step(self, state: GridState, action: str) -> tuple[str, GridState]:
+        """GridWorld.step. The grid has no sit or lie_down while an obstacle is seen (and no
+        obstacle bits after them, R1): one seen after such a step began counts from the state
+        without the bits."""
+        return (self._grid.step(state, action)
+                or self._grid.step(dataclasses.replace(state, front=False, back=False), action))
 
     def _wait_to_snap(self, now: float) -> None:
         """A step on the grid ended while a sensor is lost (R11): its event waits for the
@@ -905,6 +920,10 @@ class Session:
         plan stops with MSG_POSITION_DRIFT."""
         gw, syn, rt = self._grid, self.synthesis, self.runtime
         src, q = syn.plant_state(rt.state), syn.spec_state(rt.state)
+        if gw.step(src, action) is None:   # an obstacle seen during a sit or lie_down: drop the
+            src = dataclasses.replace(src, front=False, back=False)   # bits, as after it (R1)
+            rt.jump(syn.sup_state_for(src, q))   # where the supervisor was when the step began
+            self._note(f"センサー: {action} の途中の物は数えません", "")
         event, planned = gw.step(src, action)
         s = gw.grid.snap(self._pose) if self._pose is not None else None
         if (s is None or s.offset > POSITION_TOLERANCE_M
@@ -956,6 +975,7 @@ class Session:
         self._waiting_since = None
         self._snap_wait_since = None
         self._plan = []
+        self._plan_cells = []
 
     def _abort(self, message: str) -> None:
         # cancelling a Step the executor is still running logs "中止: <message>"
@@ -970,6 +990,7 @@ class Session:
         self._waiting_since = None
         self._snap_wait_since = None
         self._plan = []
+        self._plan_cells = []    # the grid view stays: the page still shows where the Go2 is
         self._status = status
         self._message = message
         if note:
@@ -978,6 +999,21 @@ class Session:
     def _refresh_plan(self) -> None:
         path = self.runtime.plan() if self.runtime is not None else None
         self._plan = [event_action(e) for e in path] if path else []
+        if self._grid is not None and self.runtime is not None:
+            self._refresh_grid_view(path or [])
+
+    def _refresh_grid_view(self, path: list[str]) -> None:
+        """R27: the cell and heading after each step not done yet, aligned with _steps(): an
+        action still running that a sensor change took off the path comes first, then the
+        path. The grid view: the Go2 where the supervisor is, and the goal, the last cell."""
+        syn, rt = self.synthesis, self.runtime
+        cur = syn.plant_state(rt.state)
+        cells = [syn.plant_state(k) for k in rt.walk(path)]
+        if self._action is not None and (not path or event_action(path[0]) != self._action):
+            cells.insert(0, self._grid_step(cur, self._action)[1])
+        self._plan_cells = [[*c.cell, c.heading] for c in cells]
+        self._grid_view = self._grid.grid.to_json(
+            robot=(*cur.cell, cur.heading), goal=tuple(self._plan_cells[-1]) if self._plan_cells else None)
 
     def _plan_text(self) -> str:
         """The plan as a log line, when a supervisor starts."""
@@ -1120,6 +1156,8 @@ class Session:
                 "posture": self._posture,
                 "pose": list(self._pose) if self._pose is not None else None,
                 "objects": list(self._object_rows),
+                "grid": self._grid_view,
+                "plan_cells": list(self._plan_cells),
                 "front": r.front if r else SENSOR_LOST,
                 "back": r.back if r else SENSOR_LOST,
                 "front_dist": r.front_dist if r else None,

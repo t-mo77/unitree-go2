@@ -72,7 +72,8 @@ def test_ws_sends_snapshot(tmp_path):
     with c.websocket_connect(WS) as ws:
         snap = ws.receive_json()
     assert {"status", "log", "debug_log", "steps", "link_kind", "stt", "llm_backend",
-            "waiting_since", "server_now", "block_timeout", "stop_word", "message_kind"} <= set(snap)
+            "waiting_since", "server_now", "block_timeout", "stop_word", "message_kind",
+            "objects", "grid", "plan_cells"} <= set(snap)
 
 
 def test_index_has_push_to_talk(tmp_path):

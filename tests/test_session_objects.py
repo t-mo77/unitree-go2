@@ -7,7 +7,7 @@ import math
 import threading
 import time
 
-from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, STAND_UP, STOP_MOVE
+from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, SIT, STAND_UP, STOP_MOVE
 from go2_nl_control.supervisor import SENSOR_LOST
 
 import voice_ltl.automata as automata
@@ -180,6 +180,7 @@ def test_box_lap_in_the_fake_go2(tmp_path):
     assert 0.9 <= winding_number(path, (BOX.x, BOX.y)) < 1.5         # once, counter-clockwise
     assert min(edge_distance(x, y, BOX) for x, y in path) >= 0.6
     assert not getattr(link, "hit", False) and not link.sim.collided
+    assert snap["grid"] is not None and snap["plan_cells"] == []
     assert sess._grid is not None and sess._exec is sess.grid_executor
     assert len(sess.synthesis.world.states) > 12
 
@@ -227,6 +228,7 @@ def test_plain_formulas_keep_the_12_state_plant(tmp_path):
     assert snap["status"] == "done"
     assert len(sess.synthesis.world.states) == 12
     assert sess._grid is None and sess._exec is sess.executor
+    assert snap["grid"] is None and snap["plan_cells"] == []
     assert link.sim.accepted == [STAND_UP, BALANCE_STAND, HELLO]
 
 
@@ -486,3 +488,101 @@ def test_a_go2_formula_without_trimmed_still_gets_its_diagrams(tmp_path, monkeyp
     for name in ("PLANT", "SPEC", "SUP", "FOCUS"):
         assert TOO_BIG_TEXT not in sess.diagrams[name] and 'class="node' in sess.diagrams[name], name
     assert run_to_the_end(sess, link)["status"] == "done"
+
+
+# ---------------- G5: the grid and the plan's cells in the snapshot (R27) ----------------
+GRID_KEYS = {"cell", "origin", "yaw", "i", "j", "blocked", "robot", "goal"}
+
+
+def not_done(snap):
+    return sum(st["status"] != "done" for st in snap["steps"])
+
+
+def check_cells(snap):
+    """plan_cells: one per step not done; the goal is the last of them."""
+    assert len(snap["plan_cells"]) == not_done(snap), (snap["plan_cells"], snap["steps"])
+    if snap["plan_cells"]:
+        assert snap["grid"]["goal"] == snap["plan_cells"][-1]
+
+
+def test_snapshot_grid_and_plan_cells(tmp_path):
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
+    assert sess.snapshot()["grid"] is None and sess.snapshot()["plan_cells"] == []
+    sess.submit_text("椅子まで歩いて")
+    drive(sess, link, 0.1)
+    check_cells(sess.snapshot())
+    snap = drive_until(sess, link, lambda s: s["current"] == "forward")    # after the stand
+    grid = snap["grid"]
+    assert set(grid) == GRID_KEYS and grid["cell"] == 0.5 and grid["origin"] == [0.0, 0.0] and grid["yaw"] == 0.0
+    assert grid["robot"] == [0, 0, 0] and [5, -3] in grid["blocked"]       # the chair's cell
+    assert grid["i"] == [-1, 8] and grid["j"] == [-6, 1]                     # box_1 (j = 3) is outside
+    check_cells(snap)
+    assert snap["plan_cells"][0] == [1, 0, 0] and snap["plan_cells"][-1] == grid["goal"]
+    snap = drive_until(sess, link, lambda s: s["steps"][1]["status"] == "done")   # one forward
+    check_cells(snap)
+    assert snap["grid"]["robot"] == [1, 0, 0]
+    goal = snap["grid"]["goal"]
+    snap = run_to_the_end(sess, link)
+    assert snap["plan_cells"] == [] and snap["grid"]["robot"] == goal and snap["grid"]["goal"] is None
+    sess.submit_text("挨拶して")                                      # a new instruction clears them
+    assert sess.snapshot()["grid"] is None and sess.snapshot()["plan_cells"] == []
+
+
+def test_plan_cells_follow_the_steps_while_a_box_blocks_the_way(tmp_path):
+    sess, link = make_objects(tmp_path, llm_for("F near_chair_1"))
+    sess.submit_text("椅子まで歩いて")
+    drive_until(sess, link, lambda s: ("forward", "done") in [(st["action"], st["status"]) for st in s["steps"]])
+    link.sim.place_box("front", 1.2)
+    seen_off_path = False
+    while sess.snapshot()["status"] not in FINAL and link.now < 120:
+        drive(sess, link, 0.1)
+        snap = sess.snapshot()
+        check_cells(snap)
+        seen_off_path |= snap["current"] == "forward" and snap["plan"][:1] != ["forward"]
+    assert seen_off_path                     # the held forward was off the path for a while
+
+
+def test_a_no_path_error_still_shows_the_grid(tmp_path):
+    sim = SimGo2()
+    sim.objects.append(SimObject("box_1", "box", 2.5, 0.0, 1.0, 1.0))
+    sess, link = make_objects(tmp_path, llm_for("F near_box_1"), sim=sim)
+    sess.submit_text("箱まで歩いて")
+    drive(sess, link, 1.0)
+    snap = sess.snapshot()
+    assert snap["message"] == MSG_NO_PATH and snap["plan_cells"] == []
+    assert snap["grid"]["robot"] == [0, 0, 0] and snap["grid"]["goal"] is None and snap["grid"]["blocked"]
+
+
+def test_a_sit_begun_before_an_obstacle_is_seen_completes(tmp_path):
+    """The grid has no sit while an obstacle is seen; one seen during the sit (the Go2 is still
+    standing for its first 2 s) is dropped with the bits, as when lying (R1)."""
+    sess, link = make_objects(tmp_path, llm_for("F(near_chair_1 & X F sitting)"))
+    sess.submit_text("椅子まで歩いて座って")
+    drive_until(sess, link, lambda s: s["current"] == "sit")
+    link.sim.place_box("front", 0.6)
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    assert "センサー: front_blocked" in snap["debug_log"] and no_supervisor_complaint(snap)
+    assert link.sim.posture == "SITTING"
+
+
+class IgnoresSit(DirectSimLink):
+    """A Go2 that does not take Sit (as a busy one would): it keeps standing."""
+
+    def send(self, cmd):
+        if cmd.api_id != SIT:
+            super().send(cmd)
+
+
+def test_an_ignored_sit_with_an_obstacle_seen_is_a_posture_error(tmp_path):
+    """The Go2 keeps standing and sees a box while the plan sits down: the plant has no sit with
+    the bits set, so the bits are dropped as for a sit (R1); the posture check then stops it."""
+    sim = SimGo2()
+    sim.place_objects()
+    sess, link = make_objects(tmp_path, llm_for("F(near_chair_1 & X F sitting)"), link=IgnoresSit(sim))
+    sess.submit_text("椅子まで歩いて座って")
+    drive_until(sess, link, lambda s: s["current"] == "sit")
+    link.sim.place_box("front", 0.6)
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "error" and snap["message"].startswith("姿勢が計画と違います")
+    assert no_supervisor_complaint(snap) and link.sim.accepted[-1] == STOP_MOVE
