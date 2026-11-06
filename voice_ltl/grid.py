@@ -159,8 +159,8 @@ class GridWorld:
 
     def observe(self, src: GridState, action: str, cell: tuple[int, int], heading: int) -> GridState | None:
         """src から action をして、実際には (cell, heading) にいたときの状態（R10）。
-        できない動作、入れないマス、0〜3 でない向きなら None。"""
-        if heading not in range(4):
+        できない動作、入れないマス、0〜3 の int でない向き（True や 1.0 も）なら None。"""
+        if not isinstance(heading, int) or isinstance(heading, bool) or heading not in range(4):
             return None
         dst = self._dst(src, action)
         if dst is None or not self._enterable(src.cell, cell):

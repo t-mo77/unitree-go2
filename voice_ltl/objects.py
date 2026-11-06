@@ -152,7 +152,8 @@ def where(obj: Obj, pose: Pose | None) -> str | None:
     distance = math.hypot(dx, dy)
     if not math.isfinite(distance):                         # finite inputs can still overflow
         return None
-    bearing = _wrap_deg(math.degrees(math.atan2(dy, dx) - pose[2]))
+    yaw = math.remainder(pose[2], 2 * math.pi)              # degrees() of a huge finite yaw (1e308) is inf
+    bearing = _wrap_deg(math.degrees(math.atan2(dy, dx) - yaw))
     k = math.floor((bearing + 22.5) / 45) % 8
     return f"{_DIRECTION_WORDS[k]} {distance:.1f} m"
 
