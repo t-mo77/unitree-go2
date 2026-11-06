@@ -20,7 +20,7 @@ from voice_ltl.grid_executor import GRID_EXEC_CONFIG, GRID_SETTLE_S, MIN_SPEED, 
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
-from voice_ltl.session import MSG_NO_PATH, DirectSimLink, Session
+from voice_ltl.session import EXEC_ACTIONS, MSG_NO_PATH, DirectSimLink, Session
 
 BOX, CHAIR = DEFAULT_LAYOUT          # box_1 at (2.5, 1.5), chair_1 at (2.5, -1.5)
 FINAL = ("done", "error")
@@ -891,6 +891,7 @@ def test_box_lap_stops_only_at_its_end(tmp_path):
     log = snap["log"]
     assert sum(line.startswith("開始：") for line in log) == len(actions)
     assert sum(line.startswith("完了：") for line in log) == len(actions)
+    assert not [line for line in snap["debug_log"] if line.startswith("M1: ")]   # only the plan's end stops
 
 
 def test_walk_to_the_chair_with_continuous_moves(tmp_path):
@@ -1000,6 +1001,11 @@ def test_a_jump_to_another_heading_at_a_pass_stops_at_once(tmp_path):
     assert "位置合わせ: (2, 0),0 -> (2, 0),1" in sess.snapshot()["debug_log"]
     assert [c.api_id for t, c, _, _ in link.sent[n:] if t == jumped] == [STOP_MOVE]
     assert sess._action != "forward"
+    snap = sess.snapshot()                    # the review of M1: why, in the debug log only
+    assert [line for line in snap["debug_log"] if line.startswith("M1: ")] == [
+        f"M1: 続けないので止めます（{sess.grid_executor.current.text(EXEC_ACTIONS)} は "
+        "forward(0.5m) の続きではありません）"]
+    assert not [line for line in snap["log"] if "M1" in line]
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "done", snap["message"]
     assert min(t for t, _, _, _ in link.sent[n:] if t > jumped) >= jumped + GRID_SETTLE_S - 1e-9
@@ -1028,6 +1034,10 @@ def test_a_pass_with_nothing_loaded_next_stops_at_once(tmp_path):
     passed = link.now
     assert link.unknown[0] <= passed < link.unknown[1] and sess._action is None
     assert [c.api_id for t, c, _, _ in link.sent if t == passed] == [STOP_MOVE]
+    snap = sess.snapshot()                    # the review of M1: why, in the debug log only
+    assert [line for line in snap["debug_log"] if line.startswith("M1: ")] == [
+        "M1: 続けないので止めます（姿勢が落ち着いていません）"]
+    assert not [line for line in snap["log"] if "M1" in line]
     n = len(link.sent)
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "done", snap["message"]

@@ -288,6 +288,8 @@ def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
     cmds = []
     _tick(sim, ex, t, CLEAR, cmds)                                    # the same tick
     assert [c.api_id for _, c in cmds] == [STOP_MOVE]
+    why = f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} は forward(0.5m) の続きではありません）"
+    assert [e for e in ex.events if e.startswith("M1: ")] == [why]    # for the debug log (the review of M1)
     for k in range(1, 40):
         _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
     later = [(tt, c) for tt, c in cmds if tt > t]
@@ -301,11 +303,13 @@ def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
 
 def test_halt_stops_a_step_that_flowed_on_at_once():
     """M1: when nothing continues the walk (the supervisor waits or is done), halt() gives
-    StopMove at once; the next step starts GRID_SETTLE_S later, from 0. Once is enough."""
+    StopMove at once; the next step starts GRID_SETTLE_S later, from 0. Once is enough. (The
+    session, which knows why, logs it; the executor adds no event.)"""
     sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
     _, t = flow_one(sim, ex, RUN[0])
     out = ex.halt(t)
     assert [c.api_id for c in out] == [STOP_MOVE] and not ex.rolling and ex.halt(t) == []
+    assert not [e for e in ex.events if e.startswith("M1: ")]
     ex.load([GridStep("turn_left", 90.0, (0.5, 0.0), math.pi / 2)])
     cmds = []
     for k in range(1, 40):
@@ -489,6 +493,8 @@ def test_a_step_after_a_corner_pass_that_does_not_continue_it_stops_first(nxt):
     cmds = []
     _tick(sim, ex, t, CLEAR, cmds)
     assert [c.api_id for _, c in cmds] == [STOP_MOVE]
+    assert [e for e in ex.events if e.startswith("M1: ")] == [
+        f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} は forward(0.5m) の続きではありません）"]
     for k in range(1, 10):
         _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
     later = [(tt, c) for tt, c in cmds if tt > t]

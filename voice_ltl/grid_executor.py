@@ -15,9 +15,10 @@ towards it from the Go2's pose (closed loop), so errors do not add up from step 
   keeps the velocity it has. The next step is either in this executor's list or, as the
   session loads one step at a time, told by `flow` (the plan's next action). A forward in that
   heading loaded next goes on from that velocity (no ramp from 0); any other step gets
-  StopMove in its first tick and starts GRID_SETTLE_S later. halt() stops at once when nothing
-  is loaded next. So a straight run stops once, at its end, and a turn goes straight into the
-  forward after it.
+  StopMove in its first tick (and an event "M1: 続けないので止めます（…）" saying why, for the
+  debug log) and starts GRID_SETTLE_S later. halt() stops at once when nothing is loaded next
+  (the session logs why). So a straight run stops once, at its end, and a turn goes straight
+  into the forward after it.
 - Corners (after the M1 Gazebo measurement, 2026-11-06): a forward whose next step is a turn in
   the cell it ends in flows into that turn too. It slows down for its goal as before (about
   0.08 m/s at the end), and is done there with no StopMove and no settle; the turn goes on from
@@ -122,7 +123,7 @@ class GridExecutor(Executor):
         self.rolling = False      # the last step flowed on: the Go2 still moves, nothing loaded yet
         # that step, its velocity, and the action it flowed into
         self._rolled: Optional[Tuple[Step, List[float], str]] = None
-        self._halt_due = False    # the step loaded does not continue it: StopMove first
+        self._halt_due: Optional[str] = None   # the step loaded does not continue it (why): StopMove first
         self._quiet_until: Optional[float] = None   # the step loaded starts no earlier
 
     def load(self, steps: List[Step]):
@@ -136,7 +137,7 @@ class GridExecutor(Executor):
             self._last_now = None
 
     def cancel(self, reason: str) -> List[Command]:
-        self.rolling, self._rolled, self._halt_due, self._quiet_until = False, None, False, None
+        self.rolling, self._rolled, self._halt_due, self._quiet_until = False, None, None, None
         return super().cancel(reason)
 
     def halt(self, now: float) -> List[Command]:
@@ -167,7 +168,7 @@ class GridExecutor(Executor):
             self.vel = list(vel)
             self._unwind = prev.action in TURNS     # C2: the turn ends before the walk starts
             return True
-        self._halt_due = True
+        self._halt_due = f"{cur.text(self.cat)} は {prev.text(self.cat)} の続きではありません"
         return False
 
     def _flows_into(self, step: Step) -> Optional[str]:
@@ -182,7 +183,8 @@ class GridExecutor(Executor):
 
     def _tick(self, now: float, dt: float, env: str, pose: Optional[Pose]) -> List[Command]:
         if self._halt_due and self.busy:
-            self._halt_due = False
+            self.events.append(f"M1: 続けないので止めます（{self._halt_due}）")   # the debug log only
+            self._halt_due = None
             self.vel = [0.0, 0.0, 0.0]
             self._quiet_until = now + GRID_SETTLE_S
             return [STOP]

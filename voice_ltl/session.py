@@ -28,7 +28,8 @@
   (R10, R11). M1: a forward or turn whose next planned action (the supervisor's plan from the
   state it lands in, sensors as they are) is a forward flows on: it ends without StopMove, the
   snap takes that tick's pose, and the next step is loaded in the same tick: a forward in that
-  heading continues the walk, anything else (or nothing to load) stops the Go2 at once. So a
+  heading continues the walk, anything else (or nothing to load) stops the Go2 at once, and
+  away from the plan's end the debug log says why ("M1: 続けないので止めます（…）"). So a
   straight run stops once, at its end. Corners (after the M1 Gazebo measurement): a forward
   whose next planned action is a turn flows into it the same way, so a plan of forwards and
   single turns stops once, at its end. Any other formula runs on go2_world and the zip's
@@ -764,7 +765,8 @@ class Session:
         ex = self._exec
         if len(ex.steps) == 1 and ex.idx == 1:
             if self._grid is not None and SENSOR_LOST in (reading.front, reading.back):
-                self._halt(now)           # (flow is off then; a guard) never walk on unsnapped
+                # (flow is off then; a guard) never walk on unsnapped
+                self._halt(now, "センサーが途切れています")
                 self._wait_to_snap(now)   # R11: the pose may be old; snap once the sensors are back
                 return
             self._snap_wait_since = None
@@ -791,10 +793,25 @@ class Session:
         if self._running and self._action is None and self._load_next(now):
             self._tick_executor(now, reading)
         else:
-            self._halt(now)
+            self._halt(now, self._why_not_on())
 
-    def _halt(self, now: float) -> None:
-        for cmd in self.grid_executor.halt(now):
+    def _why_not_on(self) -> str:
+        """Why nothing goes on from a step that flowed on; "" at the plan's end."""
+        if self.runtime is None or self.runtime.done or self._status == "done":
+            return ""
+        if not self._running:
+            return "計画が止まりました"
+        if self._waiting_since is not None:
+            return "今は進める動作がありません"
+        return "姿勢が落ち着いていません"
+
+    def _halt(self, now: float, why: str) -> None:
+        """M1: StopMove for a step that flowed on and that nothing continues. Away from the
+        plan's end (`why` is not "") the debug log says why (the review of M1)."""
+        cmds = self.grid_executor.halt(now)
+        if cmds and why:
+            self._note(f"M1: 続けないので止めます（{why}）", "")
+        for cmd in cmds:
             self._send(cmd, now)
 
     def _flows_on(self) -> str | None:
@@ -1162,8 +1179,9 @@ class Session:
     def _executor_line(self, line: str) -> str:
         """An executor line for the log people read ("" leaves it out). The executor gets one
         Step at a time, so its 計画 / 完了 / 計画をすべて終えました lines come once per Step:
-        the session's own 開始 / 完了 lines say that instead."""
-        if line.startswith(("計画: ", "完了: ")) or line == "計画をすべて終えました":
+        the session's own 開始 / 完了 lines say that instead. Its M1 lines (why a step that flowed
+        on is stopped) are for the debug log only."""
+        if line.startswith(("計画: ", "完了: ", "M1: ")) or line == "計画をすべて終えました":
             return ""
         if self._action is None:
             return line
