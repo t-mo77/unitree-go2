@@ -70,7 +70,7 @@ cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_I
 ## 2 回目（46 件）
 
 - コード：`e18ac06`（この記録の前のコミット）。1 回目との違いは次の 2 つ。
-  - 翻訳：`OBJECT_ACTION_WORDS` に、ひらがなの「持つ・押す・運ぶ・拾う・動かす・どける・どかす」を足した（wave-2 addendum の J3。試した結果からではない）。どのメッセージを出すかだけが変わる。
+  - 翻訳：ひらがなの「持つ・押す・運ぶ・拾う・動かす・どける・どかす」（もつ・もって・おす・おして など）を、新しい `OBJECT_ACTION_KANA` に足した（wave-2 addendum の J3。試した結果からではない）。漢字の `OBJECT_ACTION_WORDS` は変えていない。`OBJECT_ACTION_KANA` は 1 語としてだけ当てる（おすわり・もっと・なおして には当てない）。どのメッセージを出すかだけが変わる。
   - 3 件を足した。物の一覧に同じ名前が 2 つあるとき、`## Objects` の向きで 1 つを選べるか（Review Focus 5、R18：右前は box_2）と、持つ指示を「箱まで」にしないか（設計書 §3）。
     - objects：「右の箱まで行って」（TWO_BOXES → `F near_box_2`）、「左の箱の周りを回って」（TWO_BOXES → `F around_box_1`）
     - refusals：「箱を持って」（SCENE → 単語帳にない）
@@ -174,5 +174,5 @@ cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_I
 
 - 2 回だけの見本。同じ指示でも、LLM の答えは回によって変わりうる（今回は 43 件とも同じだった）。
 - 文字で渡した。音声（Whisper）の書き起こしの揺れ（はこ・イス など）は試していない。
-- モデルは CLI の既定のもの。\`LLM_MODEL\` で別のモデルにしたときは、もう一度試すこと。
+- モデルは CLI の既定のもの。`LLM_MODEL` で別のモデルにしたときは、もう一度試すこと。
 - 計画の比べ方は、伏せた Go2 が原点にいるときのもの。ほかの位置・姿勢からの計画は、Task B・G のテストが受け持つ。
