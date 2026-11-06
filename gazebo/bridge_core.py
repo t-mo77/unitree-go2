@@ -16,6 +16,8 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   次の command を送ると上書きして消してしまう。前の command が効く時刻を見積もってから送る。
 - Gazebo が遅いと、error_code が先に変わり、体は後から追いつく（command は controller の中で待つ）。
   だから Move の速度は、controller が歩くに入って TROT_WAIT_S 秒たつまで 0 のまま待たせる（Ruling R22）。
+  待たせた速度は一度に入れず、実行器の加速度の上限（RELEASE_ACC）で 0 から上げる。待つ間に実行器は加速を
+  終えているので、一度に入れると旋回が 0 → 0.5 rad/s に跳ぶ（Task I）。遅くする・止めるのはすぐ入れる。
 - 今の状態を知らせるトピックは無いので、自分が送った command から controller の状態を持つ。
   ただし「歩くに入った」ことだけは、橋渡しのノードが controller のログ（/rosout）で知らせる（trot_entered）。
 - 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
@@ -23,7 +25,7 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
 
 物（box_1・chair_1）の部品も持つ：logical camera が見た model を世界（= odom）の位置に直し（compose）、
 名前で絞り（object_label）、画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）
-LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
+胴が止まっている間（StillGate）の LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
 /go2/objects の形は voice_ltl/objects.py。
 """
 
@@ -86,6 +88,14 @@ V_X_MAX = 0.4    # ly = 1 で前へ 0.4 m/s
 V_Y_MAX = 0.3    # lx = 1 で右へ 0.3 m/s
 W_Z_MAX = 0.5    # rx = 1 で右回りに 0.5 rad/s
 
+# ---- 待たせた速度の上げ方（R22 の後） ----
+# controller が歩くに入ると速度は 0。待たせた Move の速度は、歩いてよくなった時刻（_walk_from）から、
+# 前後・左右 0.6 m/s²・旋回 1.0 rad/s²（GridExecutor の GRID_EXEC_CONFIG.acc と同じ）で上げる。
+# シミュレーションの時間で数える。Task I：一度に入れていたとき、旋回が 0 から 0.5 rad/s（rx −1.00）に跳び
+# （FL1〜FL3・FN1 の橋渡しのログ）、FL3 は立って最初の旋回で転んだ。
+RELEASE_ACC = (0.6, 0.6, 1.0)   # (前後 x [m/s²], 左右 y [m/s²], 旋回 z [rad/s²])
+_RELEASE_RATE = (RELEASE_ACC[1] / V_Y_MAX, RELEASE_ACC[0] / V_X_MAX, RELEASE_ACC[2] / W_Z_MAX)   # (lx, ly, rx) [1/s]
+
 # ---- LiDAR と箱 ----
 LIDAR_IN_BODY = (0.28, 0.0, 0.10)   # base から見た LiDAR（go2_sensors.urdf.xacro・perception.py の既定と同じ）
 SELF_HALF_X = 0.40                  # 機体の外形：中心から前後 0.40 m・左右 0.20 m・高さ −0.35〜0.15 m
@@ -97,7 +107,11 @@ BOX_DISTANCE = 1.2                  # 箱は Go2 の今の位置から前（後�
 # ---- 物（box_1・chair_1）。位置は logical camera、大きさは LiDAR の点で測る ----
 SIZE_RADIUS = 0.6          # 物の中心から水平にこの距離より近い点を、その物の点とみなす [m]
 SIZE_MIN_POINTS = 10       # これより点が少なければ測らない
-SIZE_MAX_YAW_SPEED = 0.1   # 回る速さがこれ以下のときだけ測る（点群と位置の時刻のずれで広がるので）[rad/s]
+# 胴が止まっている間に撮った点群だけで測る（StillGate）。動いていると、点群と位置の時刻のずれで点が広がり、
+# 地面の点が GROUND_Z より上に出る（Gazebo で、出した直後に床へ落ちる間の 1 枚で 0.5 m の箱が 1.07 m になった）
+SIZE_STILL_RATE = 0.1     # 胴の角速度（roll・pitch・yaw の軸ごと）がこれ以下 [rad/s]
+SIZE_STILL_SPEED = 0.05   # 胴の速さがこれ以下 [m/s]
+SIZE_STILL_S = 0.3        # 止まってからこの秒数（シミュレーションの時間）たった後に撮った点群だけを使う
 SIZE_MIN = 0.1             # 測った大きさの下限 [m]（上限は objects.MAX_SIZE）
 SIZE_BOX_MARGIN = 0.05     # 画面のボタンで置いた箱の点を除くとき、箱をこれだけ広げる [m]
 SIZE_BOX_GRACE_S = 2.0     # 箱を消すよう頼んでからこの秒数（実際の時間）は、まだ点群に写りうるので点を除き続ける
@@ -152,6 +166,10 @@ class BridgeCore:
         self._next_cmd_t = sim_now    # 次の状態を変える command を送ってよい時刻（sim）
         self._vel = (0.0, 0.0, 0.0)   # 送った（送る予定の）(lx, ly, rx)
         self._vel_sent = (0.0, 0.0, 0.0)   # 本当に送った最後の (lx, ly, rx)
+        # 状態を変えた後の最初の速度を、_walk_from から RELEASE_ACC で上げている途中か。
+        # _ramp_t：上げる途中で最後に送った時刻（sim）。None なら _walk_from から数える
+        self._ramping = False
+        self._ramp_t: Optional[float] = None
         self._reports_trot_entry = reports_trot_entry
         self._trot_entered: Optional[float] = None   # 知らされた「歩くに入った」時刻（sim）
         self._move_until: Optional[float] = None
@@ -226,10 +244,20 @@ class BridgeCore:
             return None
         _, i, velocity_only = self._queue[0]
         if velocity_only:
-            if sim < self._walk_from() - _EPS:      # 速度は歩くに入って TROT_WAIT_S 秒たってから（R22）
+            walk_from = self._walk_from()
+            if sim < walk_from - _EPS:              # 速度は歩くに入って TROT_WAIT_S 秒たってから（R22）
                 return None
             if self._reports_trot_entry and self._trot_entered is None:
                 self._note("controller が歩くに入ったことを /rosout で確かめられないので、見積もりで速度を入れます")
+            if self._ramping:                       # 歩くに入った後の最初の速度は 0 から上げる
+                part = self._ramped(i, sim, walk_from)
+                if part != i:
+                    if part is None:                # 前に送ってから sim が進んでいない
+                        return None
+                    self._ramp_t = sim
+                    self._vel_sent = (part.lx, part.ly, part.rx)
+                    return part
+                self._ramping = False
         self._queue.pop(0)
         self._vel_sent = (i.lx, i.ly, i.rx)
         return i
@@ -278,6 +306,22 @@ class BridgeCore:
         late = TROT_REPORT_LATE_S if self._reports_trot_entry else 0.0
         return self._ctl_since + TROT_WAIT_S + late
 
+    def _ramped(self, target: ControllerInput, sim: float, walk_from: float) -> Optional[ControllerInput]:
+        """target へ、最後に送った速度から RELEASE_ACC で近づけた入力（target に着けば target そのもの）。
+        各成分、0 の方へ戻す（遅くする・止める）のはすぐ。前に送ってから sim が進まず何も変わらなければ None。"""
+        dt = max(0.0, sim - (walk_from if self._ramp_t is None else self._ramp_t))
+        out = []
+        for cur, goal, rate in zip(self._vel_sent, (target.lx, target.ly, target.rx), _RELEASE_RATE):
+            if (goal * cur >= 0.0 and abs(goal) <= abs(cur)) or abs(goal - cur) <= rate * dt + _EPS:
+                out.append(goal)
+            else:
+                out.append(cur + math.copysign(rate * dt, goal - cur))
+        if tuple(out) == (target.lx, target.ly, target.rx):
+            return target
+        if tuple(out) == self._vel_sent:
+            return None
+        return ControllerInput(TROT_CMD, *out)
+
     def _advance(self, now: float, sim: float) -> None:
         if self._done is not None and now >= self._done[0] - _EPS:
             self.error_code = self._done[1]
@@ -310,6 +354,7 @@ class BridgeCore:
         route = _ROUTE[(self._ctl, goal)]
         if route:
             self._trot_entered = None   # 前の「歩く」の知らせは、次に歩くに入るときには使わない
+            self._ramping, self._ramp_t = True, None   # 次に歩くに入ったら、速度は 0 から上げる
         t = max(not_before, self._next_cmd_t)
         for cmd in route:
             self._queue.append((t, ControllerInput(cmd), False))
@@ -512,6 +557,30 @@ def object_sdf(obj_id: str, label: str) -> str:
                    f'<visual name="{name}_visual">{pose}{geometry}{material}</visual>')
     return (f'<?xml version="1.0"?><sdf version="1.6"><model name="{obj_id}"><static>true</static>'
             f'<link name="link">{shapes}</link></model></sdf>')
+
+
+class StillGate:
+    """大きさを測ってよい点群か。胴が止まっている（角速度が軸ごとに SIZE_STILL_RATE 以下、速さが
+    SIZE_STILL_SPEED 以下）間が、点群を撮った時刻の SIZE_STILL_S 前から今まで続いているときだけ。
+    時刻はどちらもシミュレーションの時間（odometry と点群の header.stamp）。
+    出した直後に床へ落ちる間・立ち上がる間・その場で足踏みする間・歩く間・回る間は測らない
+    （set_size は大きい方を残すので、1 枚でも広がった点群を使うとずっと戻らない）。"""
+
+    def __init__(self):
+        self.still_since: Optional[float] = None   # 今の「止まっている」が始まった時刻。動いていれば None
+
+    def observe(self, t: float, linear: Sequence[float], angular: Sequence[float]) -> None:
+        """odometry 1 通：時刻 t、胴の速度 linear (x, y, z) [m/s] と角速度 angular (x, y, z) [rad/s]。"""
+        still = (all(abs(w) <= SIZE_STILL_RATE for w in angular)
+                 and math.sqrt(sum(v * v for v in linear)) <= SIZE_STILL_SPEED)   # nan は止まっていない
+        if not still:
+            self.still_since = None
+        elif self.still_since is None:
+            self.still_since = t
+
+    def allows(self, stamp: float) -> bool:
+        """時刻 stamp に撮った点群で大きさを測ってよいか。"""
+        return self.still_since is not None and stamp - self.still_since >= SIZE_STILL_S - _EPS
 
 
 class ObjectMemory:

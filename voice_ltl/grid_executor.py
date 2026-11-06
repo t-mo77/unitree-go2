@@ -29,6 +29,9 @@ GRID_DONE_YAW = math.radians(3.0)      # [rad] a turn is done this close to its 
 GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.5), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
                               move_timeout_margin=2.5)
 
+# P7. Task I tried other gains in Gazebo (gentler steering while walking, a faster end of a move,
+# a 0.25 rad/s turn floor, 0.3 rad/s turns): none completed a lap, so P7 stays
+# (docs/reference/gazebo_objects_e2e.md). The gazebo bridge ramps a held first Move in instead.
 K_YAW = 1.5          # [1/s] yaw error -> z
 K_CROSS = 1.0        # [rad/(m·s)] offset across the line through the goal -> z
 K_ALONG = 1.2        # [1/s] distance left -> forward speed

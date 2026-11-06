@@ -9,6 +9,7 @@ from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
 
 from sim.sim_core import SimGo2
 from voice_ltl.grid_executor import (GRID_DONE_DIST, GRID_DONE_YAW, GRID_EXEC_CONFIG, GRID_SETTLE_S,
+                                     K_ALONG, K_CROSS, K_YAW, MIN_SPEED, MIN_TURN, MOVE_TURN,
                                      GridExecutor, GridStep)
 from voice_ltl.session import EXEC_ACTIONS
 
@@ -51,6 +52,15 @@ def test_constants():
     assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.5) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
     assert GRID_EXEC_CONFIG.block_timeout == 15.0 and GRID_EXEC_CONFIG.move_timeout_margin == 2.5
     assert GridExecutor(EXEC_ACTIONS).cfg == GRID_EXEC_CONFIG
+
+
+def test_gains_are_p7():
+    """P7, as the plan gives them. Task I fix round 1: the tuned gains tried in Gazebo completed no lap
+    while P7 did, so they were reverted (docs/reference/gazebo_objects_e2e.md)."""
+    assert (K_YAW, K_CROSS) == (1.5, 1.0)                    # yaw and cross-track gains
+    assert (K_ALONG, MIN_SPEED, GRID_EXEC_CONFIG.speed[0]) == (1.2, 0.08, 0.3)   # clip(1.2 · along, 0.08, 0.3)
+    assert MOVE_TURN == 0.3                                  # z within ±0.3 while moving
+    assert (MIN_TURN, GRID_EXEC_CONFIG.speed[2]) == (0.15, 0.5)   # turn |z| within [0.15, 0.5]
 
 
 def test_forward_reaches_the_cell_centre_and_holds_heading():

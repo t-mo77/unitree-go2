@@ -6,7 +6,7 @@ app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのま
   記録しながら、子プロセスで `python3 -m voice_ltl.run_formula <式> --timeout <秒>` を走らせる。
   子が終わったら TAIL_S 秒だけ記録を続け（止めた後の惰性も最後の位置に入れる）、summarize() の結果を
   JSON 1 行で出す。合格なら終了コード 0、不合格は 1。子の出力は標準エラーにそのまま流す。
-- rtf：/clock のシミュレーションの秒数を実際の秒数で割る。{"rtf": …} を JSON 1 行で。
+- rtf：実際の時間の窓（--seconds 秒、monotonic）の間に /clock が進んだ秒数を、窓の長さで割る。{"rtf": …} を JSON 1 行で。
 - objects：/go2/objects を 1 通、JSON 1 行で出す。どの行も objects.parse を通れば 0、
   通らない行があるか物がなければ 1、届かなければ 2。
 
@@ -43,7 +43,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from voice_ltl.objects import (DEFAULT_LAYOUT, OBJECTS_TOPIC, Obj, edge_distance,  # noqa: E402
-                               parse, winding_number)
+                               parse, winding_number, wrap_rad)
 
 Sample = tuple[float, float, float, float, float, float]   # (t, x, y, yaw, z, tilt=max(|roll|,|pitch|))
 
@@ -77,7 +77,7 @@ def summarize(samples: list[Sample], expect: str, exit_code: int, log: list[str]
     if chair is not None and last is not None:
         _, x, y, yaw, _, _ = last
         dist = math.hypot(chair.x - x, chair.y - y)
-        angle = abs(math.degrees(_wrap(math.atan2(chair.y - y, chair.x - x) - yaw)))
+        angle = abs(math.degrees(wrap_rad(math.atan2(chair.y - y, chair.x - x) - yaw)))
     else:
         dist = angle = None
     max_tilt = max(abs(s[5]) for s in samples) if samples else None
@@ -134,6 +134,17 @@ def odometry_sample(msg) -> Sample:
     return (stamp.sec + stamp.nanosec * 1e-9, p.x, p.y, yaw, p.z, max(abs(roll), abs(pitch)))
 
 
+def real_time_factor(ticks: list[tuple[float, float]], start: float, end: float) -> float | None:
+    """実際の時間の窓 [start, end] の間に /clock が進んだ秒数 ÷ (end − start)。ticks は (実際の時刻
+    monotonic, シミュレーションの時刻)。始まりは start までの最後の 1 通（無ければ最初の 1 通）、終わりは
+    end までの最後の 1 通。窓の中で /clock が止まった時間も、進まなかった時間として数える。"""
+    upto = [sim for wall, sim in ticks if wall <= end]
+    if not upto or not end > start:
+        return None
+    before = [sim for wall, sim in ticks if wall <= start]
+    return (upto[-1] - (before[-1] if before else ticks[0][1])) / (end - start)
+
+
 def valid_message(payload: object) -> bool:
     """/go2/objects の 1 通で、物が 1 つ以上あり、どの行も objects.parse を通る（落ちる行がない）。"""
     rows = payload.get("objects") if isinstance(payload, dict) else None
@@ -167,12 +178,6 @@ def _first_action(log: list[str]) -> str | None:
     return None
 
 
-def _wrap(a: float) -> float:
-    """(−π, π] に折り返す。"""
-    a %= 2 * math.pi
-    return a - 2 * math.pi if a > math.pi else a
-
-
 def _r(v: float | None, nd: int = 3) -> float | None:
     return None if v is None else round(v, nd)
 
@@ -199,6 +204,21 @@ def _stop_child(child: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         child.kill()
         child.wait()
+
+
+def _watch(child, spin_until, timeout: float) -> None:
+    """子（run_formula）が終わるまで記録し（spin_until(done, 秒)）、終わったら TAIL_S 秒だけ続ける。
+    timeout + CHILD_MARGIN_S 秒で終わらなければ止める。Ctrl+C・SIGTERM は「中断」として飲み込む（JSON は出す）。
+    どう終わっても子は finally で止める（もう終わっていれば何もしない）。ほかの例外はその後そのまま上げる。"""
+    try:
+        if not spin_until(lambda: child.poll() is not None, timeout + CHILD_MARGIN_S):
+            _say(f"run_formula が {timeout + CHILD_MARGIN_S:g} 秒で終わらないので止めます")
+            _stop_child(child)
+        spin_until(lambda: False, TAIL_S)
+    except KeyboardInterrupt:
+        _say("中断しました。run_formula を止めます")
+    finally:
+        _stop_child(child)
 
 
 def _start_ros(name: str):
@@ -235,13 +255,7 @@ def _run(args: argparse.Namespace) -> int:
     reader = threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True)
     reader.start()
     try:
-        if not _spin_until(rclpy, node, lambda: child.poll() is not None, args.timeout + CHILD_MARGIN_S):
-            _say(f"run_formula が {args.timeout + CHILD_MARGIN_S:g} 秒で終わらないので止めます")
-            _stop_child(child)
-        _spin_until(rclpy, node, lambda: False, TAIL_S)
-    except KeyboardInterrupt:
-        _say("中断しました。run_formula を止めます")
-        _stop_child(child)
+        _watch(child, lambda done, timeout: _spin_until(rclpy, node, done, timeout), args.timeout)
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
@@ -266,15 +280,15 @@ def _rtf(args: argparse.Namespace) -> int:
         if not _spin_until(rclpy, node, lambda: bool(ticks), MSG_WAIT_S):
             print(json.dumps({"rtf": None, "error": f"no {CLOCK_TOPIC} in {MSG_WAIT_S:g} s"}), flush=True)
             return 2
-        first = ticks[-1]
-        _spin_until(rclpy, node, lambda: time.monotonic() >= first[0] + args.seconds, args.seconds + 5.0)
-        last = ticks[-1]
+        start = time.monotonic()   # 窓は実際の時間で測る（/clock が止まっても窓は進む）
+        _spin_until(rclpy, node, lambda: time.monotonic() >= start + args.seconds, args.seconds + 5.0)
+        end = time.monotonic()
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
-    rtf = (last[1] - first[1]) / max(last[0] - first[0], 1e-6)
-    print(json.dumps({"rtf": round(rtf, 2)}), flush=True)
-    return 0
+    rtf = real_time_factor(ticks, start, end)
+    print(json.dumps({"rtf": None if rtf is None else round(rtf, 2)}), flush=True)
+    return 0 if rtf is not None else 2
 
 
 def _objects(args: argparse.Namespace) -> int:
