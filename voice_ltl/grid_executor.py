@@ -1,4 +1,4 @@
-"""The executor for plans on the grid (design §6.5, Rulings R11, R12, P7).
+"""The executor for plans on the grid (design §6.5, Rulings R11, R12, P7, M1).
 
 GridExecutor is the zip's Executor with another move: a GridStep carries the odom pose it must
 reach (the centre of the next cell, or the yaw of the next heading), and each tick steers
@@ -9,12 +9,21 @@ towards it from the Go2's pose (closed loop), so errors do not add up from step 
 - turn_left / turn_right: turn on the spot towards the goal yaw, slower near it.
 - When the goal is reached: StopMove once, then nothing for GRID_SETTLE_S (the Go2 coasts),
   and only then is the step done, so the session snaps a Go2 that has stopped (R11).
+- M1 (amends R11): a step whose next step is a forward in the heading it ends in (a forward in
+  a straight run, or a turn) flows on. It does not slow down for its goal, and is done as it
+  gets there (a forward as it passes the cell centre) with no StopMove and no settle; the Go2
+  keeps the velocity it has. The next step is either in this executor's list or, as the
+  session loads one step at a time, told by `flow` (the plan's next action is a forward). A
+  forward in that heading loaded next goes on from that velocity (no ramp from 0); any other
+  step gets StopMove in its first tick and starts GRID_SETTLE_S later. halt() stops at once
+  when nothing is loaded next. So a straight run stops once, at its end, and a turn goes
+  straight into the forward after it.
 - load() forgets the last tick's time, so each step's ramp starts from 0 however long the
-  executor went unticked before it.
+  executor went unticked before it (not for a step that goes on from one that flowed on).
 - Everything else is the Executor's: gestures and posture changes, the holds (a blocked front,
-  a lost sensor, no pose; they apply in the settle too), and the timeouts. A GridStep keeps
-  Step's action and value (step_value), so its text() and the param names "distance" and
-  "angle" are the ones the session and the holds use (R12).
+  a lost sensor, no pose; they apply in the settle too, and stop a flowing walk at once), and
+  the timeouts. A GridStep keeps Step's action and value (step_value), so its text() and the
+  param names "distance" and "angle" are the ones the session and the holds use (R12).
 """
 
 import math
@@ -25,7 +34,17 @@ from go2_nl_control.actions import MOVE, ActionSpec
 from go2_nl_control.executor import STOP, Command, ExecConfig, Executor, Pose, _ramp
 from go2_nl_control.supervisor import Step
 
-GRID_SETTLE_S = 0.5                    # [s] after StopMove before the step is done
+# [s] after StopMove before the step is done; also before a step after a walk that flowed on
+# and was not continued (M1). M1: 0.2 s (two 10 Hz ticks) replaces R11's 0.5 s. The wait is only
+# for the snap, and the snap needs little: a move ends 0.03 m from its goal at about 0.08 m/s
+# and coasts 0.05-0.10 m (design §6.5), well inside the 0.25 m to the next cell and the
+# 0.3 m / 30° tolerance; the turn after it ignores the position and the forward after that
+# steers to its cell centre. Two ticks let the StopMove reach the controller (the Gazebo bridge
+# runs at 20 Hz) and fresh poses come (odometry at 25 Hz). Waiting longer at zero velocity does
+# not calm the sway after a stop: docs/reference/gazebo_e2e.md §4 (a 1.0 s wait made it worse;
+# the zip's Executor, with no wait, never passed roll 0.4 turning after a forward) and
+# gazebo_objects_e2e.md (falls 0.7 s and 1.7 s after a StopMove).
+GRID_SETTLE_S = 0.2
 GRID_DONE_DIST = 0.03                  # [m] a move is done this close to its goal (along its heading)
 GRID_DONE_YAW = math.radians(3.0)      # [rad] a turn is done this close to its goal yaw
 GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.5), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
@@ -41,6 +60,9 @@ MIN_SPEED = 0.08     # [m/s] the slowest forward / backward speed while a move i
 MOVE_TURN = 0.3      # [rad/s] the largest |z| while walking
 MIN_TURN = 0.15      # [rad/s] the slowest turn while a turn is not done
 
+# M1: the steps that flow into a forward in the heading they end in
+FLOWS_INTO_FORWARD = ("forward", "turn_left", "turn_right")
+
 
 @dataclass
 class GridStep(Step):
@@ -55,21 +77,82 @@ def _clip(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _continues(prev: Step, nxt: Optional[Step]) -> bool:
+    """M1: `nxt` goes on from `prev` without a stop: a forward in the heading `prev` ends in."""
+    return (isinstance(prev, GridStep) and isinstance(nxt, GridStep)
+            and prev.action in FLOWS_INTO_FORWARD and nxt.action == "forward"
+            and abs(math.remainder(nxt.goal_yaw - prev.goal_yaw, 2 * math.pi)) < 1e-6)
+
+
 class GridExecutor(Executor):
     def __init__(self, cat: Dict[str, ActionSpec], cfg: ExecConfig = GRID_EXEC_CONFIG):
         super().__init__(cat, cfg)
+        # M1. Set by the session each tick: the step loaded last is followed by a forward in the
+        # heading it ends in (the plan's next action from where it lands, sensors as they are).
+        self.flow = False
+        self.rolling = False      # the last step flowed on: the Go2 still moves, nothing loaded yet
+        self._rolled: Optional[Tuple[Step, List[float]]] = None   # that step and its velocity
+        self._halt_due = False    # the step loaded does not continue it: StopMove first
+        self._quiet_until: Optional[float] = None   # the step loaded starts no earlier
 
     def load(self, steps: List[Step]):
         """The session ticks the executor only while a step is loaded, so the last tick can be
         long ago (a second instruction, the R1-amendment wait, a posture settle). The first tick
         after load() then has dt 0, and the ramp starts from 0 (design §6.5, P7): a stale dt,
-        capped at 0.5 s, would ramp to the full speed in one tick."""
+        capped at 0.5 s, would ramp to the full speed in one tick. A forward that goes on from a
+        step that flowed on (M1) keeps that step's velocity and clock instead."""
         super().load(steps)
-        self._last_now = None
+        if not self._take_roll():
+            self._last_now = None
+
+    def cancel(self, reason: str) -> List[Command]:
+        self.rolling, self._rolled, self._halt_due, self._quiet_until = False, None, False, None
+        return super().cancel(reason)
+
+    def halt(self, now: float) -> List[Command]:
+        """M1: a step flowed on and no step continues it (the supervisor waits or is done, the
+        posture is not settled, the snap must wait): StopMove now, and the next step loaded
+        starts GRID_SETTLE_S later. Nothing if no step flowed on."""
+        if not self.rolling:
+            return []
+        self.rolling, self._rolled = False, None
+        self._quiet_until = now + GRID_SETTLE_S
+        return [STOP]
 
     def _reset_step(self):
         super()._reset_step()
         self.settle_until: Optional[float] = None   # set when the goal is reached (StopMove sent)
+
+    def _take_roll(self) -> bool:
+        """The current step comes right after one that flowed on (M1): a forward in its heading
+        goes on with its velocity (True); any other step owes a StopMove first."""
+        if not self.rolling:
+            return False
+        prev, vel = self._rolled
+        self.rolling, self._rolled = False, None
+        if _continues(prev, self.current):
+            self.vel = list(vel)
+            return True
+        self._halt_due = True
+        return False
+
+    def _flows_on(self, step: Step) -> bool:
+        """M1: `step` flows on: the next step of the list, or (the last one) `flow`."""
+        if self.idx + 1 < len(self.steps):
+            return _continues(step, self.steps[self.idx + 1])
+        return self.flow and isinstance(step, GridStep) and step.action in FLOWS_INTO_FORWARD
+
+    def _tick(self, now: float, dt: float, env: str, pose: Optional[Pose]) -> List[Command]:
+        if self._halt_due and self.busy:
+            self._halt_due = False
+            self.vel = [0.0, 0.0, 0.0]
+            self._quiet_until = now + GRID_SETTLE_S
+            return [STOP]
+        if self._quiet_until is not None and self.busy:
+            if now < self._quiet_until - 1e-9:
+                return []
+            self._quiet_until = None
+        return super()._tick(now, dt, env, pose)
 
     def _tick_move(self, step: Step, spec: ActionSpec, dt: float, pose: Pose,
                    now: float, env: str) -> List[Command]:
@@ -83,9 +166,10 @@ class GridExecutor(Executor):
             return self._tick(now, 0.0, env, pose)
         x, y, yaw = pose
         yaw_err = math.remainder(step.goal_yaw - yaw, 2 * math.pi)   # SimGo2's yaw is not wrapped
+        flows = self._flows_on(step)
         if spec.param == "angle":
             if abs(yaw_err) <= GRID_DONE_YAW:
-                return self._settle(now)
+                return self._pass(step, now, env, pose) if flows else self._settle(now)
             target = (0.0, 0.0, math.copysign(_clip(K_YAW * abs(yaw_err), MIN_TURN, self.cfg.speed[2]), yaw_err))
             ideal = math.radians(step.value) / self.cfg.speed[2]
         else:
@@ -94,10 +178,11 @@ class GridExecutor(Executor):
             dx, dy = step.goal_xy[0] - x, step.goal_xy[1] - y
             along = sign * (dx * c + dy * s)                 # left to go, in the direction of travel
             cross = -dx * s + dy * c                         # the goal's offset to the left of the Go2
-            if along <= GRID_DONE_DIST:
-                return self._settle(now)
-            target = (sign * _clip(K_ALONG * along, MIN_SPEED, self.cfg.speed[0]), 0.0,
-                      _clip(K_YAW * yaw_err + sign * K_CROSS * cross, -MOVE_TURN, MOVE_TURN))
+            if along <= GRID_DONE_DIST:                      # there, or past it
+                return self._pass(step, now, env, pose) if flows else self._settle(now)
+            # a forward that flows on does not slow down for a goal it walks through
+            speed = self.cfg.speed[0] if flows else _clip(K_ALONG * along, MIN_SPEED, self.cfg.speed[0])
+            target = (sign * speed, 0.0, _clip(K_YAW * yaw_err + sign * K_CROSS * cross, -MOVE_TURN, MOVE_TURN))
             ideal = step.value / max(self.cfg.speed[0], self.cfg.speed[1])
 
         self.active += dt
@@ -111,3 +196,14 @@ class GridExecutor(Executor):
         self.settle_until = now + GRID_SETTLE_S
         self.vel = [0.0, 0.0, 0.0]
         return [STOP]
+
+    def _pass(self, step: Step, now: float, env: str, pose: Pose) -> List[Command]:
+        """M1: the goal of a step that flows on is reached: done now, no StopMove, the velocity
+        kept for the next step (the next of the list at once; else the one the session loads)."""
+        vel = list(self.vel)
+        self._advance()
+        self.rolling, self._rolled = True, (step, vel)
+        if self.busy:
+            self._take_roll()
+            return self._tick(now, 0.0, env, pose)
+        return []
