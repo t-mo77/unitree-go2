@@ -16,6 +16,8 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   次の command を送ると上書きして消してしまう。前の command が効く時刻を見積もってから送る。
 - Gazebo が遅いと、error_code が先に変わり、体は後から追いつく（command は controller の中で待つ）。
   だから Move の速度は、controller が歩くに入って TROT_WAIT_S 秒たつまで 0 のまま待たせる（Ruling R22）。
+  待たせた速度は一度に入れず、実行器の加速度の上限（RELEASE_ACC）で 0 から上げる。待つ間に実行器は加速を
+  終えているので、一度に入れると旋回が 0 → 0.5 rad/s に跳ぶ（Task I）。遅くする・止めるのはすぐ入れる。
 - 今の状態を知らせるトピックは無いので、自分が送った command から controller の状態を持つ。
   ただし「歩くに入った」ことだけは、橋渡しのノードが controller のログ（/rosout）で知らせる（trot_entered）。
 - 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
@@ -85,6 +87,14 @@ FELL = "（Gazebo で転びました）"
 V_X_MAX = 0.4    # ly = 1 で前へ 0.4 m/s
 V_Y_MAX = 0.3    # lx = 1 で右へ 0.3 m/s
 W_Z_MAX = 0.5    # rx = 1 で右回りに 0.5 rad/s
+
+# ---- 待たせた速度の上げ方（R22 の後） ----
+# controller が歩くに入ると速度は 0。待たせた Move の速度は、歩いてよくなった時刻（_walk_from）から、
+# 前後・左右 0.6 m/s²・旋回 1.0 rad/s²（GridExecutor の GRID_EXEC_CONFIG.acc と同じ）で上げる。
+# シミュレーションの時間で数える。Task I：一度に入れていたとき、旋回が 0 から 0.5 rad/s（rx −1.00）に跳び
+# （FL1〜FL3・FN1 の橋渡しのログ）、FL3 は立って最初の旋回で転んだ。
+RELEASE_ACC = (0.6, 0.6, 1.0)   # (前後 x [m/s²], 左右 y [m/s²], 旋回 z [rad/s²])
+_RELEASE_RATE = (RELEASE_ACC[1] / V_Y_MAX, RELEASE_ACC[0] / V_X_MAX, RELEASE_ACC[2] / W_Z_MAX)   # (lx, ly, rx) [1/s]
 
 # ---- LiDAR と箱 ----
 LIDAR_IN_BODY = (0.28, 0.0, 0.10)   # base から見た LiDAR（go2_sensors.urdf.xacro・perception.py の既定と同じ）
@@ -156,6 +166,10 @@ class BridgeCore:
         self._next_cmd_t = sim_now    # 次の状態を変える command を送ってよい時刻（sim）
         self._vel = (0.0, 0.0, 0.0)   # 送った（送る予定の）(lx, ly, rx)
         self._vel_sent = (0.0, 0.0, 0.0)   # 本当に送った最後の (lx, ly, rx)
+        # 状態を変えた後の最初の速度を、_walk_from から RELEASE_ACC で上げている途中か。
+        # _ramp_t：上げる途中で最後に送った時刻（sim）。None なら _walk_from から数える
+        self._ramping = False
+        self._ramp_t: Optional[float] = None
         self._reports_trot_entry = reports_trot_entry
         self._trot_entered: Optional[float] = None   # 知らされた「歩くに入った」時刻（sim）
         self._move_until: Optional[float] = None
@@ -230,10 +244,20 @@ class BridgeCore:
             return None
         _, i, velocity_only = self._queue[0]
         if velocity_only:
-            if sim < self._walk_from() - _EPS:      # 速度は歩くに入って TROT_WAIT_S 秒たってから（R22）
+            walk_from = self._walk_from()
+            if sim < walk_from - _EPS:              # 速度は歩くに入って TROT_WAIT_S 秒たってから（R22）
                 return None
             if self._reports_trot_entry and self._trot_entered is None:
                 self._note("controller が歩くに入ったことを /rosout で確かめられないので、見積もりで速度を入れます")
+            if self._ramping:                       # 歩くに入った後の最初の速度は 0 から上げる
+                part = self._ramped(i, sim, walk_from)
+                if part != i:
+                    if part is None:                # 前に送ってから sim が進んでいない
+                        return None
+                    self._ramp_t = sim
+                    self._vel_sent = (part.lx, part.ly, part.rx)
+                    return part
+                self._ramping = False
         self._queue.pop(0)
         self._vel_sent = (i.lx, i.ly, i.rx)
         return i
@@ -282,6 +306,22 @@ class BridgeCore:
         late = TROT_REPORT_LATE_S if self._reports_trot_entry else 0.0
         return self._ctl_since + TROT_WAIT_S + late
 
+    def _ramped(self, target: ControllerInput, sim: float, walk_from: float) -> Optional[ControllerInput]:
+        """target へ、最後に送った速度から RELEASE_ACC で近づけた入力（target に着けば target そのもの）。
+        各成分、0 の方へ戻す（遅くする・止める）のはすぐ。前に送ってから sim が進まず何も変わらなければ None。"""
+        dt = max(0.0, sim - (walk_from if self._ramp_t is None else self._ramp_t))
+        out = []
+        for cur, goal, rate in zip(self._vel_sent, (target.lx, target.ly, target.rx), _RELEASE_RATE):
+            if (goal * cur >= 0.0 and abs(goal) <= abs(cur)) or abs(goal - cur) <= rate * dt + _EPS:
+                out.append(goal)
+            else:
+                out.append(cur + math.copysign(rate * dt, goal - cur))
+        if tuple(out) == (target.lx, target.ly, target.rx):
+            return target
+        if tuple(out) == self._vel_sent:
+            return None
+        return ControllerInput(TROT_CMD, *out)
+
     def _advance(self, now: float, sim: float) -> None:
         if self._done is not None and now >= self._done[0] - _EPS:
             self.error_code = self._done[1]
@@ -314,6 +354,7 @@ class BridgeCore:
         route = _ROUTE[(self._ctl, goal)]
         if route:
             self._trot_entered = None   # 前の「歩く」の知らせは、次に歩くに入るときには使わない
+            self._ramping, self._ramp_t = True, None   # 次に歩くに入ったら、速度は 0 から上げる
         t = max(not_before, self._next_cmd_t)
         for cmd in route:
             self._queue.append((t, ControllerInput(cmd), False))

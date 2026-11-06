@@ -5,9 +5,7 @@ reach (the centre of the next cell, or the yaw of the next heading), and each ti
 towards it from the Go2's pose (closed loop), so errors do not add up from step to step.
 
 - forward / backward: drive along the goal's heading; the speed falls with the distance left,
-  and z holds that heading and pulls the Go2 back onto the line through the goal. |z| is capped
-  in proportion to the forward speed (MOVE_TURN at full speed), so the Go2 does not turn while it
-  starts or stops walking: in Gazebo, turning at a slow walk rocked it over (Task I).
+  and z holds that heading and pulls the Go2 back onto the line through the goal.
 - turn_left / turn_right: turn on the spot towards the goal yaw, slower near it.
 - When the goal is reached: StopMove once, then nothing for GRID_SETTLE_S (the Go2 coasts),
   and only then is the step done, so the session snaps a Go2 that has stopped (R11).
@@ -28,28 +26,15 @@ from go2_nl_control.supervisor import Step
 GRID_SETTLE_S = 0.5                    # [s] after StopMove before the step is done
 GRID_DONE_DIST = 0.03                  # [m] a move is done this close to its goal (along its heading)
 GRID_DONE_YAW = math.radians(3.0)      # [rad] a turn is done this close to its goal yaw
-# P7. Task I tried turns at 0.3 rad/s and 0.4 m/s² in Gazebo: no better (turns: median roll 0.32
-# and 2 falls in 27, against 0.24 and none in 12 at 0.5), so these stay.
 GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.5), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
                               move_timeout_margin=2.5)
 
-K_YAW = 1.5          # [1/s] yaw error -> z, turning on the spot
-# Walking (Task I, Gazebo): the Go2 sways sideways after each StopMove (roll up to 0.6 rad, yaw
-# ±0.15 rad, ±0.1 m, period about 1.5 s). With 1.5 and 1.0 here, z followed that sway (±0.25
-# rad/s) and pumped it: roll 0.55-1.06 on forward after forward, and two falls. Gentle gains fix
-# the heading over a few steps and leave the sway alone.
-K_WALK_YAW = 0.6     # [1/s] yaw error -> z, walking
-K_CROSS = 0.4        # [rad/(m·s)] offset across the line through the goal -> z, walking
-# Forward speed clip(K_ALONG · distance left, MIN_SPEED, 0.3). In Gazebo the Go2 leaned over while
-# walking slowly at the end of a move (0.08-0.14 m/s for about 1 s: roll 0.5-1.07, and a fall);
-# 2.0 and 0.15 keep that end short (about 0.5 s) and the walk above the slow, unsteady gait (Task I).
-K_ALONG = 2.0        # [1/s] distance left -> forward speed
-MIN_SPEED = 0.15     # [m/s] the slowest forward / backward speed while a move is not done
-MOVE_TURN = 0.15     # [rad/s] the largest |z| while walking at full speed (less when slower)
-# [rad/s] the slowest turn while a turn is not done. Gazebo's unitree_guide controller stops
-# stepping when |z| < 0.2 with no forward speed (StateTrotting::checkStepOrNot), so a slower end of
-# a turn twists the body on planted feet (with a longer slow end, roll up to 0.9 in 15 turns). Task I.
-MIN_TURN = 0.25
+K_YAW = 1.5          # [1/s] yaw error -> z
+K_CROSS = 1.0        # [rad/(m·s)] offset across the line through the goal -> z
+K_ALONG = 1.2        # [1/s] distance left -> forward speed
+MIN_SPEED = 0.08     # [m/s] the slowest forward / backward speed while a move is not done
+MOVE_TURN = 0.3      # [rad/s] the largest |z| while walking
+MIN_TURN = 0.15      # [rad/s] the slowest turn while a turn is not done
 
 
 @dataclass
@@ -98,10 +83,8 @@ class GridExecutor(Executor):
             cross = -dx * s + dy * c                         # the goal's offset to the left of the Go2
             if along <= GRID_DONE_DIST:
                 return self._settle(now)
-            vx = sign * _clip(K_ALONG * along, MIN_SPEED, self.cfg.speed[0])
-            # the turn this tick may use: in proportion to the forward speed this tick will have
-            turn_cap = MOVE_TURN * min(1.0, abs(_ramp(self.vel[0], vx, self.cfg.acc[0] * dt)) / self.cfg.speed[0])
-            target = (vx, 0.0, _clip(K_WALK_YAW * yaw_err + sign * K_CROSS * cross, -turn_cap, turn_cap))
+            target = (sign * _clip(K_ALONG * along, MIN_SPEED, self.cfg.speed[0]), 0.0,
+                      _clip(K_YAW * yaw_err + sign * K_CROSS * cross, -MOVE_TURN, MOVE_TURN))
             ideal = step.value / max(self.cfg.speed[0], self.cfg.speed[1])
 
         self.active += dt

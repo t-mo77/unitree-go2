@@ -8,11 +8,12 @@ import pytest
 from go2_nl_control.actions import (BALANCE_STAND, HELLO, LYING, MOVE, RISE_SIT, SIT, SITTING,
                                     STAND_DOWN, STAND_UP, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
-from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, GROUND_Z, LIDAR_IN_BODY, STAND_CMD,
-                                TROT_CMD, TROT_REPORT_LATE_S, TROT_WAIT_S, UPRIGHT_Z, BoxWorld,
-                                BridgeCore, drop_ground_and_self_points, drop_self_points,
-                                move_input)
+from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, GROUND_Z, LIDAR_IN_BODY, RELEASE_ACC,
+                                STAND_CMD, TROT_CMD, TROT_REPORT_LATE_S, TROT_WAIT_S, UPRIGHT_Z,
+                                V_X_MAX, V_Y_MAX, W_Z_MAX, BoxWorld, BridgeCore,
+                                drop_ground_and_self_points, drop_self_points, move_input)
 from sim.sim_core import FOOTPRINT
+from voice_ltl.grid_executor import GRID_EXEC_CONFIG
 
 XACRO = Path(__file__).resolve().parent.parent / "gazebo" / "go2_sensors.urdf.xacro"
 
@@ -44,22 +45,24 @@ def resend_move(b: BridgeCore, parameter: str, start: float, end: float, clock=l
 
 
 def test_stand_then_walk_then_expire():
-    """Move は controller が歩くに入って TROT_WAIT_S 秒（sim）たつまで速度 0 のまま待ち、それから入る（R22）。
-    送り直しが 1 秒無ければ止まる。"""
+    """Move は controller が歩くに入って TROT_WAIT_S 秒（sim）たつまで速度 0 のまま待ち、それから
+    0 から RELEASE_ACC で上がる（R22。Task I：一度に入れると跳ぶ）。送り直しが 1 秒無ければ止まる。"""
     b = BridgeCore(0.0)
     b.handle(STAND_UP, "", 0.0); assert b.step(0.0).command == STAND_CMD
     b.step(2.1); assert b.error_code == 1002
     b.handle(BALANCE_STAND, "", 2.1); assert b.step(2.1).command == TROT_CMD
     b.step(2.7); assert b.error_code == 1013
-    # 歩くに入るのは 3.6（伏せ 1.8 秒 + 立つ 1.8 秒の後）。速度はその 0.5 秒後の 4.1 まで出さない
+    # 歩くに入るのは 3.6（伏せ 1.8 秒 + 立つ 1.8 秒の後）。速度はその 0.5 秒後の 4.1 から上げる
     assert TROT_WAIT_S == 0.5
-    sent = resend_move(b, '{"x":0.3,"y":0,"z":0}', 3.0, 4.5)
+    sent = resend_move(b, '{"x":0.3,"y":0,"z":0}', 3.0, 4.8)
     assert b.error_code == 1015                               # 待っている間も窓口は「移動中」
-    assert [t for t, _ in sent] == [4.1]                      # 1 通だけ、4.1 に
-    i = sent[0][1]
-    assert i.command == TROT_CMD and i.ly == pytest.approx(0.75) and i.lx == 0   # 前後は ly（0.3 ÷ 0.4）
-    assert b.step(5.4) is None and b.error_code == 1015       # 最後の送り直し（4.5）から 1 秒たつまでは歩く
-    i = b.step(5.5); assert (i.lx, i.ly, i.rx) == (0, 0, 0) and b.error_code == 1013
+    # 前後は ly（0.3 ÷ 0.4 = 0.75）。0.6 m/s² で 0.1 秒に 0.06 m/s = ly 0.15 ずつ。4.1 より前には出さない
+    assert [t for t, _ in sent] == [4.2, 4.3, 4.4, 4.5, 4.6]
+    assert [i.ly for _, i in sent] == pytest.approx([0.15, 0.30, 0.45, 0.60, 0.75])
+    assert all(i.command == TROT_CMD and i.lx == 0 and i.rx == 0 for _, i in sent)
+    assert sent[-1][1] == move_input(0.3, 0.0, 0.0)           # 着いたら Move の値そのもの
+    assert b.step(5.7) is None and b.error_code == 1015       # 最後の送り直し（4.8）から 1 秒たつまでは歩く
+    i = b.step(5.8); assert (i.lx, i.ly, i.rx) == (0, 0, 0) and b.error_code == 1013
 
 
 def test_move_waits_for_trot_entry_in_sim_time_and_stop_cancels_it():
@@ -68,9 +71,11 @@ def test_move_waits_for_trot_entry_in_sim_time_and_stop_cancels_it():
     b = BridgeCore(0.0, 0.0)
     b.handle(STAND_UP, "", 0.0, 0.0); b.step(0.0, 0.0); b.step(0.4, 0.2)
     b.handle(BALANCE_STAND, "", 4.2, 2.1); assert b.step(4.2, 2.1).command == TROT_CMD
-    sent = resend_move(b, '{"x":0,"y":0,"z":0.4}', 5.0, 8.5, half)   # sim で 2.5〜4.25
-    assert [t for t, _ in sent] == [8.2]                      # sim 3.6 + 0.5 = 4.1 → now 8.2
-    assert sent[0][1].rx == pytest.approx(-0.8)
+    sent = resend_move(b, '{"x":0,"y":0,"z":0.4}', 5.0, 9.5, half)   # sim で 2.5〜4.75
+    # sim 3.6 + 0.5 = 4.1（now 8.2）から上げる。旋回 1.0 rad/s² は sim の 0.05 秒（now 0.1 秒）に rx 0.1
+    assert [t for t, _ in sent] == pytest.approx([8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 9.0])
+    assert [i.rx for _, i in sent] == pytest.approx([-0.1 * k for k in range(1, 9)])
+    assert sent[-1][1].rx == pytest.approx(-0.8)
 
     b = BridgeCore(0.0)
     b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2)
@@ -99,10 +104,12 @@ def test_move_waits_for_reported_trot_entry():
             t = round(t + 0.1, 2)
         return sent, b.notes
 
+    ramp = [pytest.approx(0.15 * k) for k in range(1, 6)]     # 0 から 0.6 m/s²（ly 0.15 / 0.1 秒）で 0.75 まで
     sent, _ = walking(reports_at=3.9)                         # 見積もり（3.6）より 0.3 秒遅く入った
-    assert sent == [(4.4, pytest.approx(0.75))]
+    assert sent == list(zip([4.5, 4.6, 4.7, 4.8, 4.9], ramp))  # 3.9 + 0.5 = 4.4 から上げる
     sent, notes = walking(reports_at=None)
-    assert TROT_REPORT_LATE_S == 1.0 and sent == [(5.1, pytest.approx(0.75))]   # 3.6 + 0.5 + 1.0
+    assert TROT_REPORT_LATE_S == 1.0                          # 3.6 + 0.5 + 1.0 = 5.1 から上げる
+    assert sent == list(zip([5.2, 5.3, 5.4, 5.5, 5.6], ramp))
     assert any("/rosout" in n for n in notes)
 
     b = BridgeCore(0.0, reports_trot_entry=True)              # 前の「歩く」の知らせは、次の「歩く」に使わない
@@ -113,7 +120,7 @@ def test_move_waits_for_reported_trot_entry():
     assert b.step(12.0).command == TROT_CMD                   # 4 は 2 の 2.0 秒後
     assert resend_move(b, '{"x":0.3,"y":0,"z":0}', 12.1, 13.0) == []   # まだ知らせが無い
     b.trot_entered(13.1)
-    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 13.1, 13.8)] == [13.6]
+    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 13.1, 13.8)] == [13.7, 13.8]   # 13.6 から上げる
 
 
 def test_gesture_is_pretend_and_sit_uses_crouch():
@@ -145,10 +152,102 @@ def test_controller_gets_down_stand_trot_in_order():
         t = round(t + 0.05, 2)
     cmds = [(at, i.command) for at, i in sent]
     assert cmds[:3] == [(0.0, STAND_CMD), (0.2, STAND_CMD), (2.5, TROT_CMD)]
-    # 3.5 の Move は、歩くに入った 3.6 から TROT_WAIT_S（0.5 秒）後に入る（R22）
-    assert sent[3][0] == 4.1 and sent[3][1].command == TROT_CMD
-    assert sent[3][1].rx == pytest.approx(-0.5)                # 左回り 0.25 rad/s → rx = −z / 0.5
+    # 3.5 の Move は、歩くに入った 3.6 から TROT_WAIT_S（0.5 秒）後の 4.1 から、1.0 rad/s² で上がる（R22）
+    assert [at for at, _ in sent[3:8]] == [4.15, 4.2, 4.25, 4.3, 4.35]
+    assert all(i.command == TROT_CMD for _, i in sent[3:8])
+    assert [i.rx for _, i in sent[3:8]] == pytest.approx([-0.1, -0.2, -0.3, -0.4, -0.5])   # 左回り 0.25 rad/s → rx = −z / 0.5
+    assert sent[8][0] == 4.5 and sent[8][1].rx == 0           # 送り直しが無いので 1 秒（3.5 + 1.0）で止まる。止めるのはすぐ
     assert all(i.ry == 0 for _, i in sent)
+
+
+def released(b: BridgeCore, parameter: str, start: float, end: float, dt: float = 0.05, clock=lambda t: t):
+    """橋渡しのノードと同じく 20 Hz で step し、アプリと同じく 10 Hz で Move を送り直す。出た (now, 入力)。"""
+    sent, t, k = [], start, 0
+    while t <= end + 1e-9:
+        if k % 2 == 0:
+            b.handle(MOVE, parameter, t, clock(t))
+        i = b.step(t, clock(t))
+        if i is not None:
+            sent.append((t, i))
+        t, k = round(t + dt, 3), k + 1
+    return sent
+
+
+def test_held_turn_is_ramped_in_at_the_executor_acceleration():
+    """Task I（FL1〜FL3・FN1）：立った直後、最初の旋回の Move は歩くに入る前に届き、実行器は待つ間に
+    0.5 rad/s まで上げ終える。橋渡しはそれを一度に入れず（rx 0 → −1.00 の跳び。FL3 はこれで転んだ）、
+    GridExecutor と同じ加速度の上限で 0 から上げる。"""
+    assert RELEASE_ACC == GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
+    b = BridgeCore(0.0)
+    b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2); b.step(2.1)
+    b.handle(BALANCE_STAND, "", 2.1); assert b.step(2.1).command == TROT_CMD
+    sent = released(b, '{"x":0,"y":0,"z":-0.5}', 3.0, 5.0)   # 右回り 0.5 rad/s（rx +1.0）。歩けるのは 4.1 から
+    ts, rxs = [t for t, _ in sent], [i.rx for _, i in sent]
+    assert ts[0] > 4.1 and rxs[-1] == 1.0                     # 4.1 より前には出さず、最後は Move の値そのもの
+    prev_t, prev_rx = 4.1, 0.0
+    for t, rx in zip(ts, rxs):                                # 上げ方は 1.0 rad/s² = rx 2.0 / 秒まで
+        assert rx - prev_rx <= RELEASE_ACC[2] / W_Z_MAX * (t - prev_t) + 1e-9
+        prev_t, prev_rx = t, rx
+    assert rxs == sorted(rxs) and len(sent) == 10             # 0.05 秒ごとに 0.1 ずつ、0.5 秒かけて
+    assert ts[-1] == pytest.approx(4.6)
+    assert all(b.step(t) is None for t in (4.65, 4.7))        # 着いた後、同じ値の送り直しは出さない
+
+
+def test_held_walk_with_steering_ramps_each_axis_at_its_limit():
+    """前後・左右・旋回は、それぞれ 0.6 m/s²・0.6 m/s²・1.0 rad/s² で上がる（controller の倍率で直して）。"""
+    b = BridgeCore(0.0)
+    b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2); b.step(2.1)
+    b.handle(BALANCE_STAND, "", 2.1); b.step(2.1)
+    sent = released(b, '{"x":0.3,"y":-0.15,"z":0.1}', 3.0, 5.0)
+    first = sent[0][1]
+    assert sent[0][0] == pytest.approx(4.15)
+    assert (first.ly, first.lx, first.rx) == pytest.approx((0.6 * 0.05 / V_X_MAX, 0.6 * 0.05 / V_Y_MAX,
+                                                            -1.0 * 0.05 / W_Z_MAX))
+    last = sent[-1][1]
+    assert (last.ly, last.lx, last.rx) == pytest.approx((0.75, 0.5, -0.2)) and last == move_input(0.3, -0.15, 0.1)
+
+
+def test_stop_or_slowing_during_the_ramp_is_at_once():
+    """上げる途中の StopMove は次の step ですぐ 0。遅くする（0 の方へ戻す）のも、軸ごとに上げ方を待たない。
+    controller の速度が Move に追いついたら上げ方は終わり、その後の変化は実行器が自分で上げたもの。"""
+    def ramping(parameter):
+        b = BridgeCore(0.0)
+        b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2); b.step(2.1)
+        b.handle(BALANCE_STAND, "", 2.1); b.step(2.1)
+        return b, released(b, parameter, 3.0, 4.3)
+
+    b, sent = ramping('{"x":0,"y":0,"z":0.5}')
+    assert [i.rx for _, i in sent] == pytest.approx([-0.1, -0.2, -0.3, -0.4])
+    b.handle(STOP_MOVE, "", 4.3)
+    i = b.step(4.35); assert (i.lx, i.ly, i.rx) == (0, 0, 0) and b.error_code == 1013
+    assert b.step(4.4) is None
+
+    b, sent = ramping('{"x":0.3,"y":0,"z":0.5}')
+    assert [i.ly for _, i in sent] == pytest.approx([0.075 * k for k in range(1, 5)])
+    assert [i.rx for _, i in sent] == pytest.approx([-0.1 * k for k in range(1, 5)])
+    b.handle(MOVE, '{"x":0.3,"y":0,"z":0.1}', 4.3)            # 旋回だけ、上げた値（rx −0.4）より遅く
+    i = b.step(4.35); assert (i.ly, i.rx) == pytest.approx((0.375, -0.2))   # 旋回はすぐ、前後は上げる途中
+    for t in (4.4, 4.45, 4.5, 4.55, 4.6):
+        i = b.step(t)
+    assert i == move_input(0.3, 0.0, 0.1)                     # 追いついた（4.6）
+    b.handle(MOVE, '{"x":0.3,"y":0,"z":0.2}', 4.7)            # 追いついた後は、そのまま入る
+    assert b.step(4.7).rx == pytest.approx(-0.4)
+
+
+def test_a_move_after_the_walk_began_is_not_ramped_again():
+    """歩くに入ってしばらくたってから来た Move（実行器が自分で 0 から上げる）は、今までどおりそのまま入る。
+    上げ終えた後の速度の変化もそのまま。伏せてまた歩くに入ったら、また 0 から上げる。"""
+    b = standing_core()                                       # 歩けるのは 4.1 から
+    b.handle(MOVE, '{"x":0.06,"y":0,"z":0}', 5.0); assert b.step(5.0).ly == pytest.approx(0.15)
+    b.handle(MOVE, '{"x":0.3,"y":0,"z":0}', 5.1); assert b.step(5.1).ly == pytest.approx(0.75)
+    b.handle(MOVE, '{"x":0,"y":0,"z":0.5}', 5.2); assert b.step(5.2).rx == pytest.approx(-1.0)
+    b.handle(SIT, "", 5.3); assert b.step(5.3).rx == 0         # 止めてから伏せる
+    assert b.step(5.5).command == DOWN_CMD
+    b.handle(RISE_SIT, "", 10.0); assert b.step(10.0).command == STAND_CMD
+    assert b.step(12.0).command == TROT_CMD                   # 歩くに入るのは 12.0、歩けるのは 12.5 から
+    sent = released(b, '{"x":0.3,"y":0,"z":0}', 12.0, 12.75)
+    assert [t for t, _ in sent] == pytest.approx([12.55, 12.6, 12.65, 12.7, 12.75])
+    assert [i.ly for _, i in sent] == pytest.approx([0.075, 0.15, 0.225, 0.3, 0.375])
 
 
 def test_slow_gazebo_keeps_app_timing_and_command_order():
@@ -207,7 +306,7 @@ def test_fall_while_walking_reports_lying_and_stops(roll, pitch, height):
     assert (FALL_TILT, FALL_Z) == (1.0, 0.15)
     b = standing_core()
     b.observe(*UPRIGHT, 4.2)
-    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 4.3, 4.5)] == [4.3]
+    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 4.3, 4.5)] == [4.3, 4.4, 4.5]   # 0 から上げる途中
     assert b.error_code == 1015
     b.observe(roll, pitch, height, 4.6)
     assert b.error_code == 1001 and state_from_error_code(b.error_code) == LYING
