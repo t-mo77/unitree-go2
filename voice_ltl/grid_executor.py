@@ -28,13 +28,9 @@ from go2_nl_control.supervisor import Step
 GRID_SETTLE_S = 0.5                    # [s] after StopMove before the step is done
 GRID_DONE_DIST = 0.03                  # [m] a move is done this close to its goal (along its heading)
 GRID_DONE_YAW = math.radians(3.0)      # [rad] a turn is done this close to its goal yaw
-# Task I (Gazebo) changed two P7 values:
-# - turns at 0.3 rad/s, not 0.5: the unitree_guide controller integrates its yaw target at the
-#   commanded rate, the Go2 turned at about 0.42 for 0.5 asked, and the target ran up to 10° ahead
-#   during a turn; the Go2 then spun on after StopMove (once 41°, and fell). At 0.3 it stays within 4°;
-# - speeds up at 0.4 m/s², not 0.6: a move starts 0.5 s after the last StopMove, while the Go2 still
-#   sways; two falls came in the first 0.4 s of a move.
-GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.3), acc=(0.4, 0.4, 1.0), block_timeout=15.0,
+# P7. Task I tried turns at 0.3 rad/s and 0.4 m/s² in Gazebo: no better (turns: median roll 0.32
+# and 2 falls in 27, against 0.24 and none in 12 at 0.5), so these stay.
+GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.5), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
                               move_timeout_margin=2.5)
 
 K_YAW = 1.5          # [1/s] yaw error -> z, turning on the spot

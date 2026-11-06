@@ -50,7 +50,7 @@ def run_until_done(sim, ex, step, env_at=lambda t: CLEAR, dt=0.1, limit=30.0):
 
 def test_constants():
     assert GRID_SETTLE_S == 0.5 and GRID_DONE_DIST == 0.03 and GRID_DONE_YAW == math.radians(3.0)
-    assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.3) and GRID_EXEC_CONFIG.acc == (0.4, 0.4, 1.0)
+    assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.5) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
     assert GRID_EXEC_CONFIG.block_timeout == 15.0 and GRID_EXEC_CONFIG.move_timeout_margin == 2.5
     assert GridExecutor(EXEC_ACTIONS).cfg == GRID_EXEC_CONFIG
     assert (K_YAW, K_WALK_YAW, K_CROSS, MOVE_TURN, MIN_TURN) == (1.5, 0.6, 0.4, 0.15, 0.25)
@@ -78,7 +78,7 @@ def test_forward_reaches_the_cell_centre_and_holds_heading():
     assert abs(sim.x - 0.5) <= 0.03 + 0.03 and abs(sim.y) < 0.11 and abs(sim.yaw) < 0.1  # no drift added (open loop: 0.125)
     moves = [c for _, c in cmds if c.api_id == MOVE]
     assert all(abs(m.parameter["z"]) <= 0.3 and abs(m.parameter["x"]) <= 0.3 for m in moves)
-    assert all(abs(b.parameter["x"] - a.parameter["x"]) <= 0.04 + 1e-6 for a, b in zip(moves, moves[1:]))
+    assert all(abs(b.parameter["x"] - a.parameter["x"]) <= 0.06 + 1e-6 for a, b in zip(moves, moves[1:]))
     assert all(m.parameter["y"] == 0 for m in moves)
     assert min(m.parameter["z"] for m in moves) < 0                   # it steered back towards the line
 
@@ -96,7 +96,7 @@ def test_turn_reaches_the_heading_slowly():
     cmds = run(sim, GridExecutor(EXEC_ACTIONS), [GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2)])
     assert abs(math.remainder(sim.yaw - math.pi / 2, 2 * math.pi)) <= math.radians(3) + 0.06
     zs = [c.parameter["z"] for _, c in cmds if c.api_id == MOVE]
-    assert max(map(abs, zs)) <= 0.3 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))
+    assert max(map(abs, zs)) <= 0.5 and all(abs(b - a) <= 0.1 + 1e-6 for a, b in zip(zs, zs[1:]))
     assert all(c.parameter["x"] == 0 for _, c in cmds if c.api_id == MOVE)
 
 
