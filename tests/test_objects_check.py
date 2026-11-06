@@ -199,3 +199,137 @@ CHAIR_ROW = {"id": "chair_1", "label": "chair", "x": 2.5, "y": -1.5, "size": [0.
 ])
 def test_a_valid_message_keeps_every_row(payload, ok):
     assert valid_message(payload) is ok
+
+
+# ---- Task I part 1: the review's fixes (wrap_rad, the RTF window, the child stopped in finally) ----
+
+def test_the_final_angle_uses_objects_wrap_rad(monkeypatch):
+    import gazebo.tools.objects_check as oc
+    from voice_ltl import objects
+
+    calls = []
+
+    def spy(a):
+        calls.append(a)
+        return objects.wrap_rad(a)
+
+    monkeypatch.setattr(oc, "wrap_rad", spy)
+    assert not hasattr(oc, "_wrap")
+    # bearing to the chair from (1.5, -1.0) is -26.6°; facing +x after one extra turn (yaw 2π)
+    r = summarize(walk_to(1.5, -1.0, final_yaw=2 * math.pi), "near", 0, LOG)
+    assert len(calls) == 1
+    assert r["final_angle_chair_1_deg"] == pytest.approx(26.6, abs=0.05) and r["passed"] is True
+
+
+def test_the_final_angle_folds_across_minus_pi():
+    # bearing -26.6°, yaw +3π/2 (= -90°): the angle is 63.4°, not 296.6°
+    r = summarize(walk_to(1.5, -1.0, final_yaw=1.5 * math.pi), "near", 0, LOG)
+    assert r["final_angle_chair_1_deg"] == pytest.approx(63.4, abs=0.05)
+
+
+def test_rtf_is_sim_time_over_the_wall_window():
+    from gazebo.tools.objects_check import real_time_factor
+
+    ticks = [(100.0 + 0.1 * k, 50.0 + 0.08 * k) for k in range(201)]   # RTF 0.8 for 20 s
+    assert real_time_factor(ticks, 100.0, 120.0) == pytest.approx(0.8)
+
+
+def test_rtf_counts_a_clock_stall_at_the_end_of_the_window():
+    """/clock stops for the last 5 s of a 20 s window: those seconds count, with no sim time."""
+    from gazebo.tools.objects_check import real_time_factor
+
+    ticks = [(100.0 + 0.1 * k, 50.0 + 0.08 * k) for k in range(151)]   # until 115.0, then nothing
+    assert real_time_factor(ticks, 100.0, 120.0) == pytest.approx(0.6)   # 12 sim s / 20 wall s
+
+
+def test_rtf_starts_from_the_last_tick_before_the_window():
+    from gazebo.tools.objects_check import real_time_factor
+
+    ticks = [(99.95, 49.0), (100.5, 50.0), (110.0, 58.0)]
+    assert real_time_factor(ticks, 100.0, 110.0) == pytest.approx(0.9)   # 58 - 49 over 10 s
+    assert real_time_factor([], 100.0, 110.0) is None
+    assert real_time_factor(ticks, 110.0, 110.0) is None
+
+
+class FakeChild:
+    """subprocess.Popen as _stop_child and _watch use it: running until it gets SIGINT."""
+
+    def __init__(self, exited: bool = False):
+        self.signals: list[int] = []
+        self.code = 0 if exited else None
+        self.killed = False
+
+    def poll(self):
+        return self.code
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+        self.code = 1
+
+    def wait(self, timeout=None):
+        return self.code
+
+    def kill(self):
+        self.killed = True
+        self.code = -9
+
+
+def test_the_child_is_stopped_when_recording_fails():
+    import signal
+
+    from gazebo.tools.objects_check import _watch
+
+    child = FakeChild()
+
+    def broken_spin(done, timeout):
+        raise RuntimeError("rclpy failed")
+
+    with pytest.raises(RuntimeError):
+        _watch(child, broken_spin, 300.0)
+    assert child.signals == [signal.SIGINT]   # run_formula gets SIGINT: StopMove x3
+
+
+def test_the_child_is_stopped_on_ctrl_c_and_the_run_goes_on():
+    import signal
+
+    from gazebo.tools.objects_check import _watch
+
+    child = FakeChild()
+
+    def interrupted(done, timeout):
+        raise KeyboardInterrupt
+
+    _watch(child, interrupted, 300.0)          # no exception: the JSON line is still printed
+    assert child.signals == [signal.SIGINT]
+
+
+def test_a_child_that_has_exited_is_left_alone():
+    from gazebo.tools.objects_check import TAIL_S, _watch
+
+    child = FakeChild(exited=True)
+    waits = []
+
+    def spin(done, timeout):
+        waits.append(timeout)
+        return done()
+
+    _watch(child, spin, 300.0)
+    assert child.signals == [] and not child.killed
+    assert waits[-1] == TAIL_S                 # recorded TAIL_S more after the child exited
+
+
+def test_a_child_past_its_time_is_stopped_once():
+    import signal
+
+    from gazebo.tools.objects_check import CHILD_MARGIN_S, _watch
+
+    child = FakeChild()
+    waits = []
+
+    def spin(done, timeout):
+        waits.append(timeout)
+        return False                            # the child never exits by itself
+
+    _watch(child, spin, 10.0)
+    assert child.signals == [signal.SIGINT]
+    assert waits[0] == 10.0 + CHILD_MARGIN_S
