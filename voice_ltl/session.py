@@ -110,6 +110,9 @@ POSITION_TOLERANCE_DEG = 30.0
 # R28: a posture change or gesture runs to its end in the Go2 (StopMove does not end it). Each
 # such command keeps the Go2 busy for the time its action's sequence waits after it.
 BUSY_S: dict[int, float] = {api: wait for spec in ACTIONS.values() for api, wait in spec.sequence}
+# R1: the actions that leave STANDING (sit, lie_down). The grid keeps no obstacle bits after them, so an
+# obstacle seen while one runs is dropped with the bits; any other step the grid cannot follow stops.
+_LEAVE_STANDING = frozenset(a for a, spec in ACTIONS.items() if spec.transitions.get(STANDING, STANDING) != STANDING)
 _EPS = 1e-9
 _ACTIVE = ("thinking", "executing", "waiting")   # an instruction is on the way
 
@@ -863,10 +866,12 @@ class Session:
 
     def _grid_step(self, state: GridState, action: str) -> tuple[str, GridState] | None:
         """GridWorld.step. The grid has no sit or lie_down while an obstacle is seen (and no
-        obstacle bits after them, R1): one seen after such a step began counts from the state
-        without the bits."""
-        return (self._grid.step(state, action)
-                or self._grid.step(dataclasses.replace(state, front=False, back=False), action))
+        obstacle bits after them, R1): for those, one seen after the step began counts from the
+        state without the bits. Any other action the grid cannot take from `state` is None."""
+        found = self._grid.step(state, action)
+        if found is None and action in _LEAVE_STANDING:
+            found = self._grid.step(dataclasses.replace(state, front=False, back=False), action)
+        return found
 
     def _wait_to_snap(self, now: float) -> None:
         """A step on the grid ended while a sensor is lost (R11): its event waits for the
@@ -917,11 +922,17 @@ class Session:
         the plan said, the planned event moves the supervisor. In another cell or heading the
         supervisor jumps to the state of the action landing there (with the event of that
         label), if it has one. Too far from any cell centre or heading, or no such state: the
-        plan stops with MSG_POSITION_DRIFT."""
+        plan stops with MSG_POSITION_DRIFT. A step the grid cannot take from the supervisor's
+        state stops the plan too, except a sit or lie_down during which an obstacle was seen (R1)."""
         gw, syn, rt = self._grid, self.synthesis, self.runtime
         src, q = syn.plant_state(rt.state), syn.spec_state(rt.state)
-        if gw.step(src, action) is None:   # an obstacle seen during a sit or lie_down: drop the
-            src = dataclasses.replace(src, front=False, back=False)   # bits, as after it (R1)
+        if gw.step(src, action) is None:
+            if action not in _LEAVE_STANDING:   # the grid cannot follow it from where SUP is: stop
+                self._note(f"グリッド: {src} から {action} はできません", "")
+                self._abort(f"監督器が許していない結果になりました（{action}）")
+                return None
+            # an obstacle seen during a sit or lie_down: drop the bits, as after it (R1)
+            src = dataclasses.replace(src, front=False, back=False)
             began = syn.sup_state_for(src, q)   # where the supervisor was when the step began
             if began is None:
                 self._abort(f"監督器が許していない結果になりました（{action}）")
@@ -979,7 +990,14 @@ class Session:
         self._waiting_since = None
         self._snap_wait_since = None
         self._plan = []
+        self._no_plan_cells()
+
+    def _no_plan_cells(self) -> None:
+        """No step ahead (R27): no cells and no goal. The grid view stays: the page still shows
+        the grid and where the Go2 is."""
         self._plan_cells = []
+        if self._grid_view is not None and self._grid_view["goal"] is not None:
+            self._grid_view = {**self._grid_view, "goal": None}   # a new dict: snapshots share the old one
 
     def _abort(self, message: str) -> None:
         # cancelling a Step the executor is still running logs "中止: <message>"
@@ -994,7 +1012,7 @@ class Session:
         self._waiting_since = None
         self._snap_wait_since = None
         self._plan = []
-        self._plan_cells = []    # the grid view stays: the page still shows where the Go2 is
+        self._no_plan_cells()    # e.g. the executor gave up a held move
         self._status = status
         self._message = message
         if note:

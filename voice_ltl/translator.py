@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from voice_ltl.grammar import check
 from voice_ltl.llm import LLM
 from voice_ltl.objects import (MAX_OBJECT_DISTANCE, Scene, label_in, msg_ambiguous, msg_not_found, msg_too_far,
-                               split_prop)
+                               split_prop, word_end, word_start)
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
 
@@ -76,20 +76,40 @@ def _is_number(item: str) -> bool:
 # Handling an object (design §3: not this step). An item with one of these is never an object's name,
 # so 「箱を持つ」 keeps the 単語帳 message however many boxes there are (R16).
 OBJECT_ACTION_WORDS = ("持", "押", "運", "拾", "動か", "どけ", "どか")
-# The same verbs in hiragana, as whole words: after a non-hiragana character or a particle, so おもって
-# and なおして are not hits, and a plain form (もつ, おす) not followed by more hiragana, so おすわり and
-# おすすめ are not. もっと never holds もつ or もって.
-OBJECT_ACTION_KANA = ("もって", "おして", "はこんで", "ひろって", "うごかして", "どけて", "どかして",
-                      "もつ", "おす", "はこぶ", "ひろう", "うごかす", "どける", "どかす")
-_KANA_ACTION = re.compile(
-    r"(?:(?<![ぁ-ゖ])|(?<=[をにでもはがへと]))(?:"
-    + "|".join(w for w in OBJECT_ACTION_KANA if w.endswith(("て", "で")))
-    + "|(?:" + "|".join(w for w in OBJECT_ACTION_KANA if not w.endswith(("て", "で")))
-    + r")(?![ぁ-ゖ]))")
+# The same verbs in hiragana, by their stems:
+#   (plain, te-form, i-stem, a-stem, imperative)
+OBJECT_ACTION_KANA = (
+    ("もつ", "もって", "もち", "もた", "もて"),
+    ("おす", "おして", "おし", "おさ", "おせ"),
+    ("はこぶ", "はこんで", "はこび", "はこば", "はこべ"),
+    ("ひろう", "ひろって", "ひろい", "ひろわ", "ひろえ"),
+    ("うごかす", "うごかして", "うごかし", "うごかさ", "うごかせ"),
+    ("どける", "どけて", "どけ", "どけ", "どけろ"),
+    ("どかす", "どかして", "どかし", "どかさ", "どかせ"),
+)
+# Each form starts a word as a label word does (objects.word_start: after a non-hiragana character or a
+# particle, so おもって, なおして and おもて are not hits).
+# - These go on with anything: the te-form (もってきて, おしてください), the polite form (おします,
+#   もちません), the negative (おさないで, もたない) and 〜上げる (もちあげて). An i-stem alone (もちろん,
+#   おしえて, おしまい, ひろい) is not a hit.
+# - The plain form ends there or goes on with な or の (おすな, もつの), and the imperative ends there or
+#   goes on with よ (はこべ, どけろよ): おすわり, おすすめ, もてる and もてなし are not hits. もっと never
+#   holds もつ or もって.
+_KANA_GO_ON = tuple(f for _, te, i, a, _ in OBJECT_ACTION_KANA
+                    for f in (te, i + "ます", i + "まし", i + "ませ", i + "あげ", a + "ない", a + "なく", a + "なかっ"))
+_KANA_ACTION = re.compile("|".join(
+    [word_start(f) + re.escape(f) for f in _KANA_GO_ON]
+    + [word_start(p) + re.escape(p) + word_end(p, after="[なの]") for p, *_ in OBJECT_ACTION_KANA]
+    + [word_start(m) + re.escape(m) + word_end(m, after="よ") for *_, m in OBJECT_ACTION_KANA]))
+# Words that hold one of those forms after a particle-like letter but are other words: でもって (and
+# then), 通す (とおす, とおして, ...) and 荷物 (にもつ). They are taken out before the search, so 「手で
+# もって」 is not a hit either (only the refusal message differs, R16; 「手で持って」 is).
+_NOT_HANDLING = re.compile("でもって|とお[さしすせそ]|にもつ")
 
 
 def _handles_object(item: str) -> bool:
-    return any(w in item for w in OBJECT_ACTION_WORDS) or _KANA_ACTION.search(item) is not None
+    return (any(w in item for w in OBJECT_ACTION_WORDS)
+            or _KANA_ACTION.search(_NOT_HANDLING.sub("・", item)) is not None)
 
 
 def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[str], list[str]]:

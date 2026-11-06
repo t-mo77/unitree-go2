@@ -114,6 +114,20 @@ def test_where_of_an_object_without_a_finite_position_is_none(x, y):   # Obj bui
     assert where(Obj("box_1", "box", x, y), (-1e308, 0.0, 0.0)) is None
 
 
+@pytest.mark.parametrize("yaw", [1e308, -1e308, sys.float_info.max, 3e306, 1e20])
+def test_where_with_a_huge_finite_yaw_never_raises(yaw):   # degrees(1e308) is inf: the yaw is wrapped first
+    box = DEFAULT_LAYOUT[0]
+    w = where(box, (0.0, 0.0, yaw))
+    assert w is not None and w.endswith(" 2.9 m") and w.split()[0] in objects._DIRECTION_WORDS
+    assert describe(box, (0.0, 0.0, yaw)).startswith("box_1（箱）：") and snapshot_rows((box,), (0.0, 0.0, yaw))
+
+
+def test_where_with_a_yaw_many_turns_away_reads_the_same():
+    box = Obj("box_1", "box", 1.0, 3.0)
+    assert where(box, (1.0, 1.0, math.pi / 2 + 2 * math.pi * 1e6)) == "前 2.0 m"
+    assert where(box, (1.0, 1.0, -math.pi / 2 - 2 * math.pi * 1e6)) == "後ろ 2.0 m"
+
+
 def test_default_layout_reads_left_front_and_right_front():
     box, chair = DEFAULT_LAYOUT
     assert where(box, (0, 0, 0)) == "左前 2.9 m" and where(chair, (0, 0, 0)) == "右前 2.9 m"

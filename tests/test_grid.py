@@ -231,6 +231,14 @@ def test_observe_refuses_a_heading_outside_0_to_3():
         assert gw.observe(src, "forward", (2, 2), bad) is None
 
 
+def test_observe_takes_only_an_int_heading():   # `True in range(4)` and `1.0 in range(4)` are true
+    gw = gw_of(LAP)
+    src = next(s for s in gw.world.states if s.posture == STANDING and s.cell == (2, 1) and s.heading == 1)
+    assert type(gw.observe(src, "forward", (2, 2), 0).heading) is int
+    for bad in (True, False, 1.0, 0.0, "1", None, (1,)):
+        assert gw.observe(src, "forward", (2, 2), bad) is None, repr(bad)
+
+
 def test_world_is_not_a_constructor_argument():
     world = next(f for f in dataclasses.fields(GridWorld) if f.name == "world")
     assert world.init is False

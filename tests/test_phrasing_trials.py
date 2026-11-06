@@ -1,6 +1,9 @@
 """scripts/object_phrasing_trials.py (Task J): the judge, the groups and the counting. FakeLLM only, no network."""
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +15,7 @@ from voice_ltl.llm import FakeLLM, LLMError
 from voice_ltl.objects import Obj, Scene, msg_ambiguous, msg_not_found, msg_too_far, where
 from voice_ltl.translator import Translation
 from voice_ltl.world import PROPOSITIONS
+
 
 def ok(formula, scene=SCENE):
     return Translation(True, formula, [], scene=scene)
@@ -126,15 +130,74 @@ def test_an_llm_error_fails_that_case_only(tmp_path):
     assert "60 秒" in seen[0].reason and seen[0].translation is None
 
 
+def test_an_unexpected_error_fails_that_case_only(tmp_path):    # review J Minor 8
+    groups = {"regression": [("挨拶して", SCENE, "F hello", None), ("お座りして", SCENE, "F sitting", None)]}
+    llm = FakeLLM([RuntimeError("返事が壊れていました"), {"formula": "F sitting", "unsupported": []}])
+    seen = []
+    assert run_groups(llm, groups, tmp_path, on_result=seen.append) == {"regression": (1, 2)}
+    assert not seen[0].ok and seen[0].translation is None
+    assert "RuntimeError" in seen[0].reason and "返事が壊れていました" in seen[0].reason
+    assert seen[0].record()["reason"] == seen[0].reason and seen[1].ok
+
+
+def test_an_error_while_judging_fails_that_case_only(monkeypatch, tmp_path):
+    real = trials.judge
+
+    def judge(case, tr, workdir):
+        if case[0] == "挨拶して":
+            raise KeyError("no plan")
+        return real(case, tr, workdir)
+
+    monkeypatch.setattr(trials, "judge", judge)
+    groups = {"regression": [("挨拶して", SCENE, "F hello", None), ("お座りして", SCENE, "F sitting", None)]}
+    llm = FakeLLM([{"formula": "F hello", "unsupported": []}, {"formula": "F sitting", "unsupported": []}])
+    seen = []
+    assert run_groups(llm, groups, tmp_path, on_result=seen.append) == {"regression": (1, 2)}
+    assert not seen[0].ok and "KeyError" in seen[0].reason and "no plan" in seen[0].reason
+    assert seen[0].record()["formula"] == "F hello"           # what the LLM wrote is kept
+
+
+def test_pass_needs_both_lap_and_near():                       # review J Minor 1
+    assert trials.passed({"lap": (9, 10), "near": (10, 10)}) is True
+    assert trials.passed({"lap": (8, 10), "near": (10, 10), "objects": (7, 7)}) is False
+    assert trials.passed({"lap": (10, 10), "near": (8, 10)}) is False
+    assert trials.passed({"lap": (10, 10)}) is None
+    assert trials.passed({"near": (10, 10), "regression": (12, 12)}) is None
+    assert trials.passed({"objects": (7, 7), "refusals": (7, 7)}) is None
+
+
+def test_the_checkout_goes_first_on_sys_path_even_when_already_there():   # review J Minor 9
+    root, nl = str(trials.ROOT), str(trials.ROOT / "nl_control")
+    path = ["/another/checkout", nl, "/somewhere", root, root]
+    trials._checkout_first(path)
+    assert path == [root, nl, "/another/checkout", "/somewhere"]
+
+
+def test_the_script_imports_this_checkout_before_another_one_on_the_path(tmp_path):
+    other = tmp_path / "other-checkout"
+    (other / "voice_ltl").mkdir(parents=True)
+    (other / "voice_ltl" / "__init__.py").write_text("raise ImportError('the other checkout')\n")
+    code = ("import runpy, sys; sys.path[:0] = [sys.argv[1]]; sys.path.append(sys.argv[2]); "
+            "runpy.run_path(sys.argv[3]); import voice_ltl; print(voice_ltl.__file__)")
+    run = subprocess.run([sys.executable, "-c", code, str(other), str(trials.ROOT), trials.__file__],
+                         capture_output=True, text=True, timeout=120, cwd=tmp_path)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert Path(run.stdout.strip()) == trials.ROOT / "voice_ltl" / "__init__.py"
+
+
 class LLMByInstruction:
-    """Answers by the instruction in the prompt: table[instruction] is the reply (default: a refusal)."""
+    """Answers by the instruction in the prompt: table[instruction] is the reply (default: a refusal).
+    A reply that is an Exception is raised."""
 
     def __init__(self, table):
         self.table = table
 
     def __call__(self, prompt, schema):
         instruction = json.loads(prompt.split("## Query\n指示: ", 1)[1].split("\n", 1)[0])
-        return self.table.get(instruction, {"formula": None, "unsupported": ["x"], "substitutions": []})
+        reply = self.table.get(instruction, {"formula": None, "unsupported": ["x"], "substitutions": []})
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
 
 def _right_answers(wrong_laps=0):
@@ -156,3 +219,23 @@ def test_main_exits_0_only_when_lap_and_near_reach_9_of_10(monkeypatch, capsys, 
     assert all({"instruction", "scene", "formula", "attempts", "message", "reason"} <= set(c) for c in cases)
     summary = json.loads(lines[-1])
     assert summary["summary"] == {"lap": [10 - wrong_laps, 10], "near": [10, 10]} and summary["pass"] == (code == 0)
+
+
+@pytest.mark.parametrize("groups", ["lap", "near", "objects,refusals"])
+def test_main_exits_2_with_pass_null_unless_lap_and_near_both_ran(monkeypatch, capsys, tmp_path, groups):
+    monkeypatch.setattr(trials, "make_llm", lambda env: LLMByInstruction(_right_answers()))
+    assert main(["--groups", groups, "--workers", "2", "--workdir", str(tmp_path)]) == 2
+    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert summary["pass"] is None and list(summary["summary"]) == groups.split(",")
+
+
+def test_main_prints_the_summary_after_an_unexpected_error(monkeypatch, capsys, tmp_path):
+    table = _right_answers()
+    table[GROUPS["lap"][0][0]] = ValueError("どこかの不具合")
+    monkeypatch.setattr(trials, "make_llm", lambda env: LLMByInstruction(table))
+    assert main(["--groups", "lap,near", "--workers", "2", "--workdir", str(tmp_path)]) == 0   # 9/10 still passes
+    lines = capsys.readouterr().out.strip().splitlines()
+    crashed = [json.loads(line) for line in lines if "どこかの不具合" in line]
+    assert len(crashed) == 1 and crashed[0]["ok"] is False and "ValueError" in crashed[0]["reason"]
+    summary = json.loads(lines[-1])
+    assert summary == {"summary": {"lap": [9, 10], "near": [10, 10]}, "pass": True}

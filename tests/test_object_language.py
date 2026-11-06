@@ -3,6 +3,7 @@
 import dataclasses
 import json
 
+from voice_ltl import objects, translator
 from voice_ltl.grammar import check
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import DEFAULT_LAYOUT, Obj, Scene, msg_ambiguous, msg_not_found, msg_too_far
@@ -224,3 +225,29 @@ def test_words_that_only_look_like_handling_verbs_keep_the_object_message():
                         ("箱のまわりをもっと回る", "box")):
         t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=Scene())
         assert t.message == msg_not_found(label), item
+
+
+def test_polite_negative_and_imperative_handling_verbs_are_never_object_items():   # R16, review J Minor 2
+    for item in ("箱をおします", "箱をもちます", "箱をおすな", "箱をおさないで", "箱をはこべ", "箱をもちあげて",
+                 "箱をもつの", "箱をはこびました", "箱をひろいません", "椅子をうごかさないで", "箱をもたないで",
+                 "箱をどけます", "椅子をどけろ", "椅子をどかせ", "箱をひろえ", "箱をおせ", "いすをもちあげる"):
+        for scene in (Scene(), Scene((Obj("box_1", "box", 2, 1), Obj("box_2", "box", 2, -1),
+                                      Obj("chair_1", "chair", 2, 1.5), Obj("chair_2", "chair", 2, -1.5)), (0, 0, 0))):
+            t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=scene)
+            assert t.message == f"「{item}」は単語帳にないので、まだできません。", (item, scene)
+
+
+def test_other_words_around_the_handling_verbs_keep_the_object_message():
+    # でもって (and then), とおす / とおして (pass through), にもつ (luggage), もちろん (of course),
+    # おしえて (tell), おしまい (the end), おもて (front), ひろい (wide), おしい (close) hold no handling verb
+    for item, label in (("でもって箱まで", "box"), ("それでもって箱まで", "box"), ("箱のあいだをとおして", "box"),
+                        ("箱のあいだをとおします", "box"), ("椅子のあいだをとおさないで", "chair"),
+                        ("にもつの横の箱", "box"), ("箱とにもつのあいだ", "box"), ("もちろん箱まで", "box"),
+                        ("箱のことをおしえて", "box"), ("おしまいに箱を回る", "box"), ("おもての箱", "box"),
+                        ("ひろい部屋の箱", "box"), ("おしいところの椅子", "chair")):
+        t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=Scene())
+        assert t.message == msg_not_found(label), item
+
+
+def test_handling_verbs_share_the_word_start_of_the_label_words():   # one boundary rule (objects.word_start)
+    assert translator.word_start is objects.word_start
