@@ -248,6 +248,8 @@ def _script(ch: str) -> str | None:
                  if re.fullmatch(f"[{chars}]", ch)), None)
 
 
+# 語の境目は word_start / word_end の一か所だけで決める（助詞の一覧もここだけ）。
+
 def word_start(word: str) -> str:
     """word の前に置く正規表現：word がそこで語として始まるときだけ当たる（長さ 0）。
     カタカナで始まる語はカタカナの後ろでは始まらない。ひらがなで始まる語は、ひらがなでない字の後ろか
