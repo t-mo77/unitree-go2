@@ -12,6 +12,13 @@
   /utlidar/cloud（frame utlidar_lidar）に出し直す。
 - /sim/obstacles（std_msgs/String、{"cmd": "front" | "back" | "clear"}）で Gazebo に箱を出し入れし
   （/world/empty/create・/world/empty/remove）、/sim/world（{"boxes": [[x, y, size], ...], "collided": bool}）を出す。
+- 起動時に物（voice_ltl/objects.py の DEFAULT_LAYOUT：box_1 と chair_1）を Gazebo に 1 回だけ置く
+  （すでにあれば、あるものとして扱う）。
+- logical camera（/gazebo/logical_camera、ros_gz_interfaces/LogicalCameraImage）が見た model を名前で絞り
+  （box_<n>・chair_<n> だけ。ground_plane・robot・sim_box_<n> は除く）、世界（= odom）の位置に直して覚え、
+  ほとんど回っていないとき（|yaw_speed| ≤ 0.1 rad/s）に LiDAR の点で底面の大きさを測る（画面のボタンで置いた箱の
+  点は除く）。覚えている物を 2 Hz で /go2/objects
+  （std_msgs/String の JSON、voice_ltl/objects.py の形）に出す。時刻（stamp・seen）は実際の時間（time.time()）。
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
 controller へ command を送る間隔はシミュレーションの時間（/clock）で数える（bridge_core.py の説明）。
@@ -39,7 +46,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from ros_gz_interfaces.msg import Entity
+from ros_gz_interfaces.msg import Entity, LogicalCameraImage
 from ros_gz_interfaces.srv import DeleteEntity, SpawnEntity
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -48,9 +55,12 @@ from unitree_api.msg import Request
 from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE
-from gazebo.bridge_core import (BoxWorld, BridgeCore, ControllerInput, api_name, box_sdf,
-                                drop_ground_and_self_points)
+from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_MAX_YAW_SPEED, BoxWorld, BridgeCore,
+                                ControllerInput, ObjectMemory, api_name, box_sdf, compose,
+                                drop_box_points, drop_ground_and_self_points, footprint_size,
+                                lidar_points_world, object_label, object_sdf)
 from sim.sim_core import BOX_HEIGHT
+from voice_ltl.objects import DEFAULT_LAYOUT, OBJECTS_HZ, OBJECTS_TOPIC
 
 # 実機と同じトピック
 REQUEST_TOPIC = "/api/sport/request"
@@ -66,6 +76,7 @@ MODEL_NAME = "robot"
 CONTROL_TOPIC = "/control_input"
 ODOM_TOPIC = f"/model/{MODEL_NAME}/odometry"
 RAW_CLOUD_TOPIC = "/gazebo/lidar/points"
+LOGICAL_CAMERA_TOPIC = "/gazebo/logical_camera"
 ROSOUT_TOPIC = "/rosout"
 TROT_SWITCH_LOG = "Switched from fixed stand to trotting"   # unitree_guide controller のログ
 CREATE_SERVICE = f"/world/{WORLD_NAME}/create"
@@ -73,6 +84,7 @@ REMOVE_SERVICE = f"/world/{WORLD_NAME}/remove"
 
 TICK_HZ = 20.0     # BridgeCore.step を回す周期（実際の時間）
 WORLD_HZ = 10.0
+SPAWN_HZ = 1.0     # 物を置けるようになったか（create のサービスと Go2 の位置）を見る周期
 
 # (x, y, z, roll, pitch, yaw, vx, vy, vz, yaw_speed)。速度は世界の座標
 Pose = Tuple[float, float, float, float, float, float, float, float, float, float]
@@ -91,6 +103,7 @@ class GazeboBridge(Node):
                          parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
         self.core = BridgeCore(*self._now(), reports_trot_entry=True)
         self.boxes = BoxWorld()
+        self.memory = ObjectMemory()   # logical camera が見た物（box_1・chair_1）
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)
         self._last_note = ""
@@ -101,9 +114,12 @@ class GazeboBridge(Node):
         self._state_pub = self.create_publisher(SportModeState, STATE_TOPIC, qos_profile_sensor_data)
         self._cloud_pub = self.create_publisher(PointCloud2, LIDAR_TOPIC, qos_profile_sensor_data)
         self._world_pub = self.create_publisher(String, WORLD_TOPIC, 10)
+        self._objects_pub = self.create_publisher(String, OBJECTS_TOPIC, 10)
         self.create_subscription(Request, REQUEST_TOPIC, self._on_request, qos_profile_sensor_data)
         self.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, RAW_CLOUD_TOPIC, self._on_cloud, qos_profile_sensor_data)
+        self.create_subscription(LogicalCameraImage, LOGICAL_CAMERA_TOPIC, self._on_logical_camera,
+                                 qos_profile_sensor_data)
         self.create_subscription(String, OBSTACLES_TOPIC, self._on_obstacles, 10)
         # controller のログ。過去の分は要らないので volatile で受ける
         self.create_subscription(Log, ROSOUT_TOPIC, self._on_log, QoSProfile(
@@ -113,6 +129,8 @@ class GazeboBridge(Node):
         wall = Clock(clock_type=ClockType.STEADY_TIME)   # Gazebo が止まっても回る
         self.create_timer(1.0 / TICK_HZ, self._on_tick, clock=wall)
         self.create_timer(1.0 / WORLD_HZ, self._publish_world, clock=wall)
+        self.create_timer(1.0 / OBJECTS_HZ, self._publish_objects, clock=wall)
+        self._spawn_timer = self.create_timer(1.0 / SPAWN_HZ, self._spawn_objects, clock=wall)
 
     def _now(self) -> Tuple[float, float]:
         """(実際の時間, シミュレーションの時間)"""
@@ -186,6 +204,62 @@ class GazeboBridge(Node):
             drop_ground_and_self_points(pts, self._pose[2], self._quat), dtype=np.float32)
         header = Header(frame_id=LIDAR_FRAME, stamp=msg.header.stamp)
         self._cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, kept))
+        # 回っていると点群と位置の時刻のずれで点が広がるので、ほぼ回っていないときだけ大きさを測る
+        if abs(self._pose[9]) <= SIZE_MAX_YAW_SPEED:
+            self._measure_sizes(kept)
+
+    # ---------- 物（box_1・chair_1） ----------
+    def _measure_sizes(self, kept: np.ndarray) -> None:
+        """覚えている物ごとに、近くの LiDAR の点で底面の大きさを測って入れる。画面のボタンで置いた箱の点は
+        先に除く（箱が物のそばにあると、物の大きさが膨らんだまま戻らないので）。"""
+        objects = self.memory.objects()
+        if not objects or len(kept) == 0:
+            return
+        world = drop_box_points(lidar_points_world(kept, self._pose[0:3], self._quat),
+                                self.boxes.sizing_boxes(time.time()))
+        for o in objects:
+            size = footprint_size(world, o.x, o.y)
+            if size is not None:
+                self.memory.set_size(o.id, size)
+
+    def _on_logical_camera(self, msg: LogicalCameraImage) -> None:
+        """msg.pose はカメラの世界の位置と向き、model[i].pose はカメラから見た model の原点。"""
+        p, q = msg.pose.position, msg.pose.orientation
+        camera_pos, camera_quat = (p.x, p.y, p.z), (q.w, q.x, q.y, q.z)
+        rows = []
+        for model in msg.model:
+            label = object_label(model.name)
+            if label is None:      # ground_plane・robot・画面のボタンで置いた sim_box_<n> など
+                continue
+            r = model.pose.position
+            x, y, _ = compose(camera_pos, camera_quat, (r.x, r.y, r.z))
+            rows.append((model.name, label, x, y))
+        self.memory.update(rows, time.time())
+
+    def _publish_objects(self) -> None:
+        self._objects_pub.publish(String(data=json.dumps(self.memory.message(time.time()))))
+
+    def _spawn_objects(self) -> None:
+        """create のサービスが使えて Go2 の位置が分かったら、DEFAULT_LAYOUT の物を 1 回だけ置く。"""
+        if self._pose is None or not self._create.service_is_ready():
+            return
+        self._spawn_timer.cancel()
+        for obj in DEFAULT_LAYOUT:
+            req = SpawnEntity.Request()
+            req.entity_factory.name = obj.id
+            req.entity_factory.sdf = object_sdf(obj.id, obj.label)
+            req.entity_factory.pose.position.x = float(obj.x)
+            req.entity_factory.pose.position.y = float(obj.y)
+            req.entity_factory.pose.position.z = float(OBJECT_SPAWN_Z[obj.label])
+
+            def done(future, obj=obj) -> None:
+                res = future.result()
+                if res is not None and res.success:
+                    self.get_logger().info(f"物を置きました: {obj.id} x={obj.x:.2f} y={obj.y:.2f}")
+                else:   # 橋渡しだけを起動し直したときなど。同じ名前の物はもうある
+                    self.get_logger().info(f"すでにあります（{obj.id}）")
+
+            self._create.call_async(req).add_done_callback(done)
 
     # ---------- 箱 ----------
     def _on_obstacles(self, msg: String) -> None:
@@ -223,12 +297,13 @@ class GazeboBridge(Node):
                 self.get_logger().info(f"箱を置きました（{where}）: {name} x={box.x:.2f} y={box.y:.2f}")
                 self._publish_world()
             else:
+                self.boxes.failed(name)
                 self.get_logger().warning(f"箱を置けませんでした（{where}）: {name}")
 
         self._create.call_async(req).add_done_callback(done)
 
     def _clear_boxes(self) -> None:
-        for name in self.boxes.clear():
+        for name in self.boxes.clear(time.time()):   # 消えるまでの点群は、しばらく大きさを測る点から除く
             req = DeleteEntity.Request()
             req.entity.name = name
             req.entity.type = Entity.MODEL

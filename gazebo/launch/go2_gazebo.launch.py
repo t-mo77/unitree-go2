@@ -1,8 +1,10 @@
 """Gazebo Harmonic に Go2 を出し、unitree_guide controller と橋渡し（gazebo.gazebo_bridge）を起動する。
 
-docs/reference/gazebo_feasibility_jazzy.md の「構成 B」：Gazebo の画面あり、センサーは LiDAR だけ
-（カメラなし）、rviz2 なし、位置は OdometryPublisher。upstream の gz_quadruped_playground の
-gazebo.launch.py は、カメラ 2 台と rviz2 で CPU が足りず RTF が 0.13 になる（NO-GO）ので使わない。
+docs/reference/gazebo_feasibility_jazzy.md の「構成 B」：Gazebo の画面あり、センサーは LiDAR と
+logical camera（画像は出さず、見えている model の名前と位置だけ。画像を出すカメラは無い）、rviz2 なし、
+位置は OdometryPublisher。upstream の gz_quadruped_playground の gazebo.launch.py は、カメラ 2 台と
+rviz2 で CPU が足りず RTF が 0.13 になる（NO-GO）ので使わない。
+物（box_1・chair_1）は橋渡しが起動時に置く。
 
 使い方（gazebo コンテナの中）: ros2 launch /work/gazebo/launch/go2_gazebo.launch.py
 画面: http://localhost:6080/vnc.html?autoconnect=1
@@ -62,19 +64,21 @@ def generate_launch_description() -> LaunchDescription:
     controllers = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(playground, "launch", "unitree_guide.launch.py")))
 
-    # Gazebo ↔ ROS：時計、LiDAR、本当の位置、箱を出し入れするサービス（カメラは無い）
+    # Gazebo ↔ ROS：時計、LiDAR、logical camera（画像は無く、見えている model の名前と位置だけ）、
+    # 本当の位置、箱と物を出し入れするサービス
     gz_bridge = Node(
         package="ros_gz_bridge", executable="parameter_bridge", output="screen",
         arguments=[
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
             "/gazebo/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
+            "/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage",
             f"/model/{MODEL}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             f"/world/{WORLD}/create@ros_gz_interfaces/srv/SpawnEntity",
             f"/world/{WORLD}/remove@ros_gz_interfaces/srv/DeleteEntity",
         ],
         parameters=[sim_time])
 
-    # 実機と同じ窓口（/api/sport/request・/sportmodestate・/utlidar/cloud）と /sim/*
+    # 実機と同じ窓口（/api/sport/request・/sportmodestate・/utlidar/cloud）、/go2/objects と /sim/*
     bridge = ExecuteProcess(
         cmd=["python3", "-m", "gazebo.gazebo_bridge"], cwd=str(ROOT), output="screen",
         additional_env={"PYTHONPATH": os.pathsep.join(
