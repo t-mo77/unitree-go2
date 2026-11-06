@@ -76,6 +76,20 @@ def _is_number(item: str) -> bool:
 # Handling an object (design §3: not this step). An item with one of these is never an object's name,
 # so 「箱を持つ」 keeps the 単語帳 message however many boxes there are (R16).
 OBJECT_ACTION_WORDS = ("持", "押", "運", "拾", "動か", "どけ", "どか")
+# The same verbs in hiragana, as whole words: after a non-hiragana character or a particle, so おもって
+# and なおして are not hits, and a plain form (もつ, おす) not followed by more hiragana, so おすわり and
+# おすすめ are not. もっと never holds もつ or もって.
+OBJECT_ACTION_KANA = ("もって", "おして", "はこんで", "ひろって", "うごかして", "どけて", "どかして",
+                      "もつ", "おす", "はこぶ", "ひろう", "うごかす", "どける", "どかす")
+_KANA_ACTION = re.compile(
+    r"(?:(?<![ぁ-ゖ])|(?<=[をにでもはがへと]))(?:"
+    + "|".join(w for w in OBJECT_ACTION_KANA if w.endswith(("て", "で")))
+    + "|(?:" + "|".join(w for w in OBJECT_ACTION_KANA if not w.endswith(("て", "で")))
+    + r")(?![ぁ-ゖ]))")
+
+
+def _handles_object(item: str) -> bool:
+    return any(w in item for w in OBJECT_ACTION_WORDS) or _KANA_ACTION.search(item) is not None
 
 
 def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[str], list[str]]:
@@ -85,7 +99,7 @@ def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[
     listed = scene.listed() if scene is not None else ()
     messages, rest, told = [], [], set()
     for item in unsupported:
-        label = None if any(w in item for w in OBJECT_ACTION_WORDS) else label_in(item)
+        label = None if _handles_object(item) else label_in(item)
         n = sum(o.label == label for o in listed)
         if label is None or n == 1:
             rest.append(item)

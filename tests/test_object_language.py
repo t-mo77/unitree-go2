@@ -205,3 +205,22 @@ def test_far_objects_are_left_to_the_grid_without_a_pose():
 def test_without_a_scene_nothing_changes():
     t = translate("x", FakeLLM([{"formula": "F hello", "unsupported": []}]))
     assert t.ok and t.scene is None
+
+
+def test_hiragana_handling_verbs_are_never_object_items():   # R16, wave-2 addendum J3
+    for item in ("箱をもつ", "箱をもって", "箱もって", "箱をおす", "箱をおして", "箱をはこぶ", "いすをはこんで",
+                 "箱をひろう", "箱をひろって", "椅子をうごかす", "椅子をうごかして", "箱をどける", "箱をどけて",
+                 "椅子をどかす", "椅子をどかして", "箱をもってきて", "箱をおしてください"):
+        for scene in (Scene(), Scene((Obj("box_1", "box", 2, 1), Obj("box_2", "box", 2, -1),
+                                      Obj("chair_1", "chair", 2, 1.5), Obj("chair_2", "chair", 2, -1.5)), (0, 0, 0))):
+            t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=scene)
+            assert t.message == f"「{item}」は単語帳にないので、まだできません。", (item, scene)
+
+
+def test_words_that_only_look_like_handling_verbs_keep_the_object_message():
+    # もっと (more), おすわり (sit), おすすめ, おもって (think), なおして (fix) hold no handling verb
+    for item, label in (("もっと箱に近づく", "box"), ("箱の前でおすわり", "box"), ("椅子のそばでおすわりして", "chair"),
+                        ("おすすめの箱", "box"), ("箱だとおもって", "box"), ("椅子をなおして", "chair"),
+                        ("箱のまわりをもっと回る", "box")):
+        t = translate("x", FakeLLM([{"formula": None, "unsupported": [item]}]), scene=Scene())
+        assert t.message == msg_not_found(label), item
