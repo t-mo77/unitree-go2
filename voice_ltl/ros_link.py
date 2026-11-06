@@ -8,6 +8,7 @@ RosLink は Session の Link（send / posture / pose / reading）を満たす。
   呼び出し側は finally で close(3) を呼ぶ。呼び忘れても、プロセスの終わりに close(3) が走る（atexit）。
 - close は StopMove を送り切るまで、Ctrl+C・SIGTERM・SIGHUP を受け流す。
 - /sportmodestate が 0.5 秒途切れたら、前後とも SENSOR_LOST にする（移動を保留させる）。
+- /go2/objects（物の一覧の JSON）を受け、検査した行を objects() で返す。2 秒途切れたら []。
 
 時刻 now はすべて time.time() で渡す。
 """
@@ -35,12 +36,15 @@ from go2_nl_control.executor import STOP, Command
 from go2_nl_control.perception import PerceptionConfig
 from go2_nl_control.supervisor import SENSOR_LOST
 
+from voice_ltl.objects import OBJECTS_STALE_S, OBJECTS_TOPIC, parse
 from voice_ltl.sensing import Reading, Sensing
 
 # 実機と同じトピック
 REQUEST_TOPIC = "/api/sport/request"
 STATE_TOPIC = "/sportmodestate"
 LIDAR_TOPIC = "/utlidar/cloud"
+# 物の一覧 OBJECTS_TOPIC（/go2/objects）は voice_ltl.objects から読み込んで、ここからも出す
+# （にせ Go2 はトピック名をこのモジュールから取る）
 # シミュレーションだけのトピック（にせ Go2・Gazebo の橋渡しが受ける）
 OBSTACLES_TOPIC = "/sim/obstacles"
 WORLD_TOPIC = "/sim/world"
@@ -78,6 +82,7 @@ class RosLink:
             self._pub = self.node.create_publisher(Request, REQUEST_TOPIC, 10)
             self.node.create_subscription(SportModeState, STATE_TOPIC, self._on_state, qos_profile_sensor_data)
             self.node.create_subscription(PointCloud2, LIDAR_TOPIC, self._on_cloud, qos_profile_sensor_data)
+            self.node.create_subscription(String, OBJECTS_TOPIC, self._on_objects, qos_profile_sensor_data)
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self.node)
         except BaseException:
@@ -90,6 +95,7 @@ class RosLink:
         self._error_code: Optional[int] = None
         self._state_time: Optional[float] = None
         self._cloud_time: Optional[float] = None
+        self._objects: Optional[Tuple[float, list]] = None   # (受けた time.time(), 検査した行)
         self._req_id = 0
         self._send_lock = threading.Lock()   # Web の「止める」は別のスレッドから send する
         self._closed = False
@@ -110,6 +116,16 @@ class RosLink:
         pts = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"), skip_nans=True)
         self._cloud_time = time.time()
         self._sensing.update(pts, self._cloud_time)
+
+    def _on_objects(self, msg: String) -> None:
+        """/go2/objects を受ける。JSON でない・dict でない中身は無視する（前の一覧を残す）。"""
+        try:
+            payload = json.loads(msg.data)
+        except (ValueError, RecursionError):   # 入れ子が深すぎる JSON も、受信を止めずに無視する
+            return
+        if isinstance(payload, dict):
+            # frame や行の検査（R21）は objects.parse の一か所で行う。受けた時刻と一緒に 1 回で入れ替える
+            self._objects = (time.time(), [o.to_row() for o in parse(payload)])
 
     def spin_once(self) -> None:
         """届いている受信をすべて処理する（待たない）。制御ループから毎周期呼ぶ。"""
@@ -150,6 +166,13 @@ class RosLink:
     def error_code(self) -> Optional[int]:
         """最後に受けた /sportmodestate の error_code。まだ届いていなければ None。"""
         return self._error_code
+
+    def objects(self) -> list[dict]:
+        """最後に受けた /go2/objects の検査済みの行。まだ届いていないか、OBJECTS_STALE_S 途切れたら []。"""
+        last = self._objects   # 受信と同時でも、時刻と行は組で読む
+        if last is None or time.time() - last[0] > OBJECTS_STALE_S:
+            return []
+        return list(last[1])
 
     def reading(self, now: float) -> Reading:
         r = self._sensing.current(now)

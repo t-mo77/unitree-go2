@@ -6,6 +6,8 @@
 - 10 Hz で /utlidar/cloud（PointCloud2、frame utlidar_lidar、x/y/z float32）を出す。
 - /sim/obstacles（std_msgs/String、{"cmd": "front" | "back" | "clear"}）で箱を出し入れし、
   /sim/world（{"boxes": [[x, y, size], ...], "collided": bool}）を 10 Hz と箱を動かしたときに出す。
+- 名前つきの物（既定の置き方 DEFAULT_LAYOUT：box_1・chair_1）を置き、前カメラ（FakeCamera）で見た物の一覧を
+  2 Hz で /go2/objects（std_msgs/String の JSON、odom、時刻は time.time()）に出す。物は /sim/world には入らない。
 
 実機に移したら、このノードを起動しないだけで本物の Go2 と入れ替わる。
 使い方: python3 -m sim.fake_go2
@@ -29,9 +31,11 @@ from unitree_go.msg import SportModeState
 
 from go2_nl_control import actions as A
 from go2_nl_control.perception import PerceptionConfig
-from sim.sim_core import SimGo2
+from sim.sim_core import FakeCamera, SimGo2
+from voice_ltl.objects import OBJECTS_HZ, format_message
 # トピック名は voice_ltl.ros_link を正とする（実機・にせ Go2 でずれないように）
-from voice_ltl.ros_link import LIDAR_TOPIC, OBSTACLES_TOPIC, REQUEST_TOPIC, STATE_TOPIC, WORLD_TOPIC
+from voice_ltl.ros_link import (LIDAR_TOPIC, OBJECTS_TOPIC, OBSTACLES_TOPIC, REQUEST_TOPIC, STATE_TOPIC,
+                                WORLD_TOPIC)
 
 LIDAR_FRAME = "utlidar_lidar"
 
@@ -51,15 +55,21 @@ def _api_name(api_id: int) -> str:
 class FakeGo2(Node):
     def __init__(self, sim: Optional[SimGo2] = None):
         super().__init__("fake_go2")
-        self.sim = sim or SimGo2(PerceptionConfig())
+        if sim is None:
+            sim = SimGo2(PerceptionConfig())
+            sim.place_objects()            # box_1・chair_1（Gazebo と同じ置き方）。渡された sim の物はそのまま
+        self.sim = sim
+        self.camera = FakeCamera()
         # 実機と同じく、状態と点群は best effort で出す
         self._state_pub = self.create_publisher(SportModeState, STATE_TOPIC, qos_profile_sensor_data)
         self._cloud_pub = self.create_publisher(PointCloud2, LIDAR_TOPIC, qos_profile_sensor_data)
         self._world_pub = self.create_publisher(String, WORLD_TOPIC, 10)
+        self._objects_pub = self.create_publisher(String, OBJECTS_TOPIC, 10)
         self.create_subscription(Request, REQUEST_TOPIC, self._on_request, qos_profile_sensor_data)
         self.create_subscription(String, OBSTACLES_TOPIC, self._on_obstacles, 10)
         self.create_timer(1.0 / STATE_HZ, self._on_state_timer)
         self.create_timer(1.0 / CLOUD_HZ, self._on_cloud_timer)
+        self.create_timer(1.0 / OBJECTS_HZ, self._on_objects_timer)
         self._last_code = self.sim.error_code
         self._last_collided = self.sim.collided
 
@@ -116,6 +126,11 @@ class FakeGo2(Node):
         pts = np.ascontiguousarray(self.sim.cloud_lidar(), dtype=np.float32)
         self._cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, pts))
         self._publish_world()
+
+    def _on_objects_timer(self) -> None:
+        now = time.time()
+        msg = format_message(self.camera.see(self.sim, now), now)
+        self._objects_pub.publish(String(data=json.dumps(msg)))
 
     def _publish_world(self) -> None:
         world = {"boxes": [[round(b.x, 3), round(b.y, 3), b.size] for b in self.sim.boxes],

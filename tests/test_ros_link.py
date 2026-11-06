@@ -13,6 +13,7 @@ import time
 import numpy as np
 import pytest
 from rclpy.signals import SignalHandlerOptions
+from std_msgs.msg import String
 from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE, STANDING, STOP_MOVE, UNKNOWN
@@ -275,3 +276,20 @@ def test_posture_and_pose_come_from_sportmodestate(ros):
     assert link.posture() == STANDING and link.error_code() == 1013 and link.pose()[0] == 1.5
     link._on_state(_state(error_code=1002))        # StandUp's locked stand: not walkable yet
     assert link.posture() == UNKNOWN
+
+
+def test_objects_come_from_go2_objects_and_go_stale(ros, monkeypatch):
+    _, make = ros
+    link = make()
+    assert ros_link.OBJECTS_TOPIC in link.node.subscriptions and link.objects() == []
+    monkeypatch.setattr(ros_link.time, "time", lambda: 100.0)
+    msg = {"frame": "odom", "stamp": 1.0, "objects": [
+        {"id": "box_1", "label": "box", "x": 2.5, "y": 1.5, "size": [0.5, 0.5], "seen": 1.0, "visible": True},
+        {"id": "ground_plane", "label": "box", "x": 0, "y": 0}]}
+    link._on_objects(String(data=json.dumps(msg)))
+    link._on_objects(String(data="not json"))
+    link._on_objects(String(data="[" * 100000))     # too deeply nested for json: ignored, not raised
+    link._on_objects(String(data="[1, 2]"))         # JSON, but not a dict
+    assert [r["id"] for r in link.objects()] == ["box_1"]
+    monkeypatch.setattr(ros_link.time, "time", lambda: 102.1)
+    assert link.objects() == []
