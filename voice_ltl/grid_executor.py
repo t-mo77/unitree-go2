@@ -1,4 +1,4 @@
-"""The executor for plans on the grid (design §6.5, Rulings R11, R12, P7, M1).
+"""The executor for plans on the grid (design §6.5, Rulings R11, R12, P7, M1; the Gazebo tuning C2).
 
 GridExecutor is the zip's Executor with another move: a GridStep carries the odom pose it must
 reach (the centre of the next cell, or the yaw of the next heading), and each tick steers
@@ -26,6 +26,13 @@ towards it from the Go2's pose (closed loop), so errors do not add up from step 
   from the walk never stops the controller's stepping. So a plan of forwards and single turns
   stops once, at its end. A turn after a forward that ran through its goal at full speed (the
   plan changed at the pass) still gets StopMove first.
+- Turn, then walk (C2, the Gazebo tuning round of 2026-11-06): a forward that goes on from a
+  turn first ramps the turn's z down to 0 with x at 0 (no StopMove: the controller keeps
+  stepping), and only in the tick after the one at zero velocity does x ramp up from 0; the
+  turn and the walk no longer overlap. Forwards cruise at 0.22 m/s and turns at 0.4 rad/s
+  (GRID_EXEC_CONFIG), the ramps as before. Five laps each in Gazebo (falls per move step):
+  z carried into the walk (c2641ce) 4 in 120, the sequenced start 2 in 149, that with both
+  gentler speeds 2 in 176 (the fewest), with the gentler turns alone 5 in 80.
 - load() forgets the last tick's time, so each step's ramp starts from 0 however long the
   executor went unticked before it (not for a step that goes on from one that flowed on).
 - Everything else is the Executor's: gestures and posture changes, the holds (a blocked front,
@@ -55,12 +62,15 @@ from go2_nl_control.supervisor import Step
 GRID_SETTLE_S = 0.2
 GRID_DONE_DIST = 0.03                  # [m] a move is done this close to its goal (along its heading)
 GRID_DONE_YAW = math.radians(3.0)      # [rad] a turn is done this close to its goal yaw
-GRID_EXEC_CONFIG = ExecConfig(speed=(0.3, 0.3, 0.5), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
+# C2: forwards at most 0.22 m/s, turns at most 0.4 rad/s (P7 had 0.3 and 0.5), measured together
+# (above). The sideways speed is not used on the grid; it stays 0.3, so a move's timeout is P7's.
+GRID_EXEC_CONFIG = ExecConfig(speed=(0.22, 0.3, 0.4), acc=(0.6, 0.6, 1.0), block_timeout=15.0,
                               move_timeout_margin=2.5)
 
 # P7. Task I tried other gains in Gazebo (gentler steering while walking, a faster end of a move,
 # a 0.25 rad/s turn floor, 0.3 rad/s turns): none completed a lap, so P7 stays
 # (docs/reference/gazebo_objects_e2e.md). The gazebo bridge ramps a held first Move in instead.
+# (Those tries stopped at every step; C2 lowered only the top speeds, in plans that flow.)
 K_YAW = 1.5          # [1/s] yaw error -> z
 K_CROSS = 1.0        # [rad/(m·s)] offset across the line through the goal -> z
 K_ALONG = 1.2        # [1/s] distance left -> forward speed
@@ -142,6 +152,7 @@ class GridExecutor(Executor):
     def _reset_step(self):
         super()._reset_step()
         self.settle_until: Optional[float] = None   # set when the goal is reached (StopMove sent)
+        self._unwind = False      # C2: a forward after a turn: the turn's z goes to 0 before x rises
 
     def _take_roll(self) -> bool:
         """The current step comes right after one that flowed on (M1): a forward in its heading,
@@ -154,6 +165,7 @@ class GridExecutor(Executor):
         cur = self.current
         if _continues(prev, cur) and (cur.action == "forward" or into in TURNS):
             self.vel = list(vel)
+            self._unwind = prev.action in TURNS     # C2: the turn ends before the walk starts
             return True
         self._halt_due = True
         return False
@@ -212,6 +224,11 @@ class GridExecutor(Executor):
                      else _clip(K_ALONG * along, MIN_SPEED, self.cfg.speed[0]))
             target = (sign * speed, 0.0, _clip(K_YAW * yaw_err + sign * K_CROSS * cross, -MOVE_TURN, MOVE_TURN))
             ideal = step.value / max(self.cfg.speed[0], self.cfg.speed[1])
+            if self._unwind:
+                if any(self.vel):
+                    target = (0.0, 0.0, 0.0)   # the turn's z down to 0 first, x not yet up
+                else:
+                    self._unwind = False       # the turn has ended: x ramps from 0 as after a stop
 
         self.active += dt
         if self.active > ideal * self.cfg.move_timeout_margin + 5.0:

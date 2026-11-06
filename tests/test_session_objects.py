@@ -832,12 +832,30 @@ def stop_points(actions):
     return sum(not flows_on(a, b) for a, b in zip(moves, moves[1:] + [None]))
 
 
+def turns_end_before_walks(link, actions):
+    """C2 (the Gazebo tuning round): every forward that goes on from a turn sends x 0 until the
+    turn's z is down to 0 (one Move at zero velocity, no StopMove), and x rises only after it.
+    The number of such forwards."""
+    walks = {}
+    for _, c, a, n in link.sent:
+        if c.api_id == MOVE and a == "forward":
+            walks.setdefault(n, []).append(c.parameter)      # n: the steps done before it
+    count = 0
+    for n, ms in walks.items():
+        if actions[n - 1] in ("turn_left", "turn_right"):
+            k = next(i for i, m in enumerate(ms) if m["x"] > 0)
+            assert k >= 1 and ms[k - 1] == {"x": 0.0, "y": 0.0, "z": 0.0}, ms[:k + 1]
+            assert all(m["x"] == 0 for m in ms[:k])
+            count += 1
+    return count
+
+
 def test_box_lap_stops_only_at_its_end(tmp_path):
     """M1 and corners on the fake Go2's lap (design §2): it still passes, and StopMove comes only
     where no move goes on (here the plan's end): no StopMove between consecutive forwards (x
-    stays positive across them), after a turn that a forward follows (no wait at zero velocity),
-    or after a forward that a turn follows (the forward slows down, the turn goes on from that
-    velocity in the next tick). One 開始 / 完了 per step, as before."""
+    stays positive across them), after a turn that a forward follows (C2: its z ramps down to 0,
+    then x up), or after a forward that a turn follows (the forward slows down, the turn goes on
+    from that velocity in the next tick). One 開始 / 完了 per step, as before."""
     sess, link = timed_session(tmp_path, "F around_box_1")
     sess.submit_text("箱の周りを一周して")
     path = [(0.0, 0.0)]
@@ -867,6 +885,9 @@ def test_box_lap_stops_only_at_its_end(tmp_path):
     assert boundaries == sum(flows_on(a, b) for a, b in zip(moves, moves[1:]))
     assert corners == sum(a == "forward" and b != "forward" for a, b in zip(moves, moves[1:])) >= 4
     assert_moves_ramp([c for _, c, _, _ in link.sent])
+    turns = ("turn_left", "turn_right")
+    assert turns_end_before_walks(link, actions) == sum(
+        a in turns and b == "forward" for a, b in zip(moves, moves[1:])) >= 4
     log = snap["log"]
     assert sum(line.startswith("開始：") for line in log) == len(actions)
     assert sum(line.startswith("完了：") for line in log) == len(actions)
@@ -874,7 +895,8 @@ def test_box_lap_stops_only_at_its_end(tmp_path):
 
 def test_walk_to_the_chair_with_continuous_moves(tmp_path):
     """The chair (design §2) with M1 and corners: the four forwards flow into the turn, the turn
-    into the last forward, and only that one stops; ≤ 1.5 m and ≤ 45° from the chair, as before."""
+    into the last forward (C2: the turn ends before it walks), and only that one stops; ≤ 1.5 m
+    and ≤ 45° from the chair, as before."""
     sess, link = timed_session(tmp_path, "F near_chair_1")
     sess.submit_text("椅子まで歩いて")
     path = []
@@ -888,6 +910,7 @@ def test_walk_to_the_chair_with_continuous_moves(tmp_path):
     assert sum(c.api_id == STOP_MOVE for _, c, _, _ in link.sent) == stop_points(actions) == 1
     turn = [c.parameter for _, c, a, _ in link.sent if a == "turn_right"]
     assert 0 < turn[0]["x"] <= MIN_SPEED + 1e-9 and turn[2]["x"] == 0   # x ramps down as the turn starts
+    assert turns_end_before_walks(link, actions) == 1                   # C2: the turn ends, then the walk
 
 
 def forward_running(k, near=None):
@@ -923,7 +946,8 @@ def test_a_box_ahead_mid_run_stops_at_once(tmp_path):
     first = blocked[0]
     assert STOP_MOVE in [c.api_id for t, c, _, _ in link.sent[n:] if t == first]   # at once
     assert not [c for t, c, _, _ in link.sent if t in blocked and c.api_id == MOVE and c.parameter["x"] > 0]
-    assert max(c.parameter["x"] for t, c, _, _ in link.sent[n:] if c.api_id == MOVE and t < first) == 0.3
+    assert (max(c.parameter["x"] for t, c, _, _ in link.sent[n:] if c.api_id == MOVE and t < first)
+            == GRID_EXEC_CONFIG.speed[0])                             # at the cruise speed
 
 
 def test_drift_during_a_continued_forward_stops(tmp_path):
@@ -955,7 +979,7 @@ def test_a_jump_to_the_next_row_at_a_pass_continues_the_walk(tmp_path):
     assert "位置合わせ: (2, 0),0 -> (2, 1),0" in sess.snapshot()["debug_log"]
     now = [c for t, c, _, _ in link.sent[n:] if t == link.now]
     assert sess._action == "forward" and sess.grid_executor.current.goal_xy == pytest.approx((1.5, 0.5))
-    assert [c.api_id for c in now] == [MOVE] and now[0].parameter["x"] == 0.3
+    assert [c.api_id for c in now] == [MOVE] and now[0].parameter["x"] == GRID_EXEC_CONFIG.speed[0]
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "done", snap["message"]
     distance, angle = to_chair(link.sim)
