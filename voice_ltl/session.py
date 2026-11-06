@@ -58,9 +58,9 @@ from voice_ltl.diagrams import MAX_DRAW_STATES, render_focus_svg, render_svg, to
 from voice_ltl.grid import GridError, GridState, GridWorld, grid_world
 from voice_ltl.grid_executor import GridExecutor, GridStep
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
-# MSG_TOO_SPREAD reaches the page as a GridError's text; it is named here with the other copy
-from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,  # noqa: F401
-                               Obj, Scene, formula_atoms, formula_object_props, parse_rows, snapshot_rows)
+# objects.py has the copy (P3); MSG_TOO_SPREAD and the others of grid_world come as a GridError
+from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, NO_PATH_REASON, Obj, Scene, formula_atoms,
+                               formula_object_props, parse_rows, snapshot_rows)
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.translator import Translation, translate
