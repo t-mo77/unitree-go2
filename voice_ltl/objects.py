@@ -82,12 +82,13 @@ class Scene:
     pose: Pose | None = None
 
     def listed(self) -> tuple[Obj, ...]:
-        """プロンプト・語彙・検査に載せる物：位置から近い順に 8 個（位置がなければ id 順に 8 個）。"""
+        """プロンプト・語彙・検査に載せる物：位置から近い順に 8 個（位置がなければ id 順に 8 個）。
+        id はラベルの中で番号の順（box_2 は box_10 より前）。"""
         if self.pose is None:
-            ordered = sorted(self.objects, key=lambda o: o.id)
+            ordered = sorted(self.objects, key=lambda o: _id_key(o.id))
         else:
             px, py = self.pose[0], self.pose[1]
-            ordered = sorted(self.objects, key=lambda o: (math.hypot(o.x - px, o.y - py), o.id))
+            ordered = sorted(self.objects, key=lambda o: (math.hypot(o.x - px, o.y - py), _id_key(o.id)))
         return tuple(ordered[:MAX_PROMPT_OBJECTS])
 
     def find(self, obj_id: str) -> Obj | None:
@@ -143,13 +144,17 @@ def label_in(text: str) -> str | None:
 
 
 def where(obj: Obj, pose: Pose | None) -> str | None:
-    """Go2 から見た向き（45° ごとの 8 方位）と中心どうしの距離。例：「左前 2.9 m」。"""
-    if pose is None:
+    """Go2 から見た向き（45° ごとの 8 方位）と中心どうしの距離。例：「左前 2.9 m」。
+    位置がないか、位置・物の x, y・距離が有限でなければ None（例外は出さない）。"""
+    if pose is None or not all(math.isfinite(v) for v in (obj.x, obj.y, pose[0], pose[1], pose[2])):
         return None
     dx, dy = obj.x - pose[0], obj.y - pose[1]
+    distance = math.hypot(dx, dy)
+    if not math.isfinite(distance):                         # finite inputs can still overflow
+        return None
     bearing = _wrap_deg(math.degrees(math.atan2(dy, dx) - pose[2]))
     k = math.floor((bearing + 22.5) / 45) % 8
-    return f"{_DIRECTION_WORDS[k]} {math.hypot(dx, dy):.1f} m"
+    return f"{_DIRECTION_WORDS[k]} {distance:.1f} m"
 
 
 def describe(obj: Obj, pose: Pose | None) -> str:
@@ -188,20 +193,24 @@ def format_message(objs: Iterable[Obj], stamp: float) -> dict:
 
 
 def snapshot_rows(objs: Iterable[Obj], pose: Pose | None) -> list[dict]:
-    rows = []
-    for o in objs:
-        row = o.to_row()
-        rows.append({"id": row["id"], "label": row["label"], "name": o.name, "x": row["x"], "y": row["y"],
-                     "size": row["size"], "visible": row["visible"], "seen": row["seen"],
-                     "where": where(o, pose)})
-    return rows
+    """Session.snapshot() の "objects"：to_row() のすべての鍵に name と where を足す。"""
+    return [{**o.to_row(), "name": o.name, "where": where(o, pose)} for o in objs]
+
+
+def wrap_rad(a: float) -> float:
+    """(−π, π] に折り返す。grid と sim_core もこれを使う。"""
+    a %= 2 * math.pi
+    return a - 2 * math.pi if a > math.pi else a
+
+
+_wrap_rad = wrap_rad            # the name before it was public
 
 
 def winding_number(path: Sequence[tuple[float, float]], centre: tuple[float, float]) -> float:
     """centre から見た角度の変化（各区間 (−π, π] に折り返す）の和を 2π で割る。左回りが正。"""
     cx, cy = centre
     angles = [math.atan2(y - cy, x - cx) for x, y in path]
-    return sum(_wrap_rad(b - a) for a, b in zip(angles, angles[1:])) / (2 * math.pi)
+    return sum(wrap_rad(b - a) for a, b in zip(angles, angles[1:])) / (2 * math.pi)
 
 
 def edge_distance(x: float, y: float, obj: Obj) -> float:
@@ -263,10 +272,10 @@ def _wrap_deg(d: float) -> float:
     return d - 360.0 if d > 180.0 else d
 
 
-def _wrap_rad(a: float) -> float:
-    """(−π, π] に折り返す。"""
-    a %= 2 * math.pi
-    return a - 2 * math.pi if a > math.pi else a
+def _id_key(obj_id: str) -> tuple[str, int]:
+    """並べるときの id：(ラベル, 番号)。ID_RE に合わない id は (id, 0)。"""
+    m = ID_RE.fullmatch(obj_id)
+    return (m.group(1), int(obj_id[len(m.group(1)) + 1:])) if m else (obj_id, 0)
 
 
 def _number(v: object) -> bool:

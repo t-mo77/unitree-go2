@@ -8,6 +8,7 @@ from collections import deque
 import pytest
 from go2_nl_control.actions import LYING, STANDING
 
+from voice_ltl import grid, objects
 from voice_ltl.grid import CELL, Grid, GridError, grid_world, next_lap
 from voice_ltl.objects import DEFAULT_LAYOUT, Obj, edge_distance, winding_number
 
@@ -191,3 +192,7 @@ def test_lap_and_chair_world_builds_quickly():
     t0 = time.monotonic()
     gw = gw_of(LAP | NEAR)
     assert time.monotonic() - t0 < 2.0 and len(gw.world.states) < 30_000
+
+
+def test_grid_uses_the_shared_wrap():          # one (−π, π] wrap for the whole project (objects.wrap_rad)
+    assert grid.wrap_rad is objects.wrap_rad and not hasattr(grid, "_wrap")

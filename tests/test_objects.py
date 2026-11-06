@@ -12,7 +12,7 @@ from voice_ltl.objects import (
     DEFAULT_LAYOUT, DEFAULT_SIZE, KEYWORDS, Obj, Scene, around_cw_prop, around_prop, describe,
     edge_distance, format_message, formula_atoms, formula_object_props, label_in, msg_ambiguous,
     msg_not_found, msg_too_far, near_prop, parse, parse_rows, snapshot_rows, split_prop, where,
-    winding_number,
+    winding_number, wrap_rad,
 )
 
 
@@ -100,6 +100,20 @@ def test_where_is_relative_to_the_pose():
     assert where(box, None) is None
 
 
+@pytest.mark.parametrize("pose", [(float("nan"), 0.0, 0.0), (0.0, float("nan"), 0.0), (0.0, 0.0, float("nan")),
+                                  (float("inf"), 0.0, 0.0), (0.0, float("-inf"), 0.0), (0.0, 0.0, float("inf"))])
+def test_where_without_a_finite_pose_is_none(pose):   # Session.snapshot() calls it at 5 Hz: never raises
+    box = DEFAULT_LAYOUT[0]
+    assert where(box, pose) is None
+    assert describe(box, pose) == "box_1（箱）"
+    assert snapshot_rows((box,), pose)[0]["where"] is None
+
+
+@pytest.mark.parametrize("x,y", [(float("nan"), 1.0), (1.0, float("inf")), (float("-inf"), 1.0), (1e308, 0.0)])
+def test_where_of_an_object_without_a_finite_position_is_none(x, y):   # Obj built directly, not parsed
+    assert where(Obj("box_1", "box", x, y), (-1e308, 0.0, 0.0)) is None
+
+
 def test_default_layout_reads_left_front_and_right_front():
     box, chair = DEFAULT_LAYOUT
     assert where(box, (0, 0, 0)) == "左前 2.9 m" and where(chair, (0, 0, 0)) == "右前 2.9 m"
@@ -122,6 +136,17 @@ def test_scene_without_pose_lists_by_id_and_finds_among_all():
     assert scene.find("chair_9") == objs[0] and scene.find("chair_10") is None
     assert len(scene.propositions()) == 24 and set(scene.descriptions()) == set(scene.propositions())
     assert Scene().listed() == () and Scene().propositions() == () and Scene().descriptions() == {}
+
+
+def test_scene_without_pose_sorts_ids_by_number_within_a_label():
+    objs = tuple(Obj(f"box_{k}", "box", 0.0, float(k)) for k in (10, 2, 1)) + \
+        tuple(Obj(f"chair_{k}", "chair", 0.0, -float(k)) for k in (11, 9))
+    assert [o.id for o in Scene(objs).listed()] == ["box_1", "box_2", "box_10", "chair_9", "chair_11"]
+
+
+def test_scene_with_pose_breaks_distance_ties_by_number():
+    objs = (Obj("box_10", "box", 2.0, 0.0), Obj("box_2", "box", -2.0, 0.0), Obj("box_1", "box", 0.0, 3.0))
+    assert [o.id for o in Scene(objs, (0.0, 0.0, 0.0)).listed()] == ["box_2", "box_10", "box_1"]
 
 
 def test_descriptions_copy():
@@ -182,6 +207,31 @@ def test_snapshot_rows_shape():
     assert row == {"id": "box_1", "label": "box", "name": "箱", "x": 2.5, "y": 1.5, "size": [0.5, 0.5],
                    "visible": True, "seen": None, "where": "左前 2.9 m"}
     assert snapshot_rows(DEFAULT_LAYOUT, None)[1]["where"] is None and snapshot_rows((), None) == []
+
+
+def test_snapshot_rows_keep_every_to_row_key(monkeypatch):
+    (row,) = snapshot_rows(DEFAULT_LAYOUT[:1], (0, 0, 0))
+    assert set(row) == set(DEFAULT_LAYOUT[0].to_row()) | {"name", "where"}
+    real = Obj.to_row
+    monkeypatch.setattr(Obj, "to_row", lambda self: {**real(self), "height": 0.5})   # a key added later
+    (row,) = snapshot_rows(DEFAULT_LAYOUT[:1], None)
+    assert row["height"] == 0.5 and set(row) == set(real(DEFAULT_LAYOUT[0])) | {"height", "name", "where"}
+
+
+def test_wrap_rad_is_public_and_wraps_to_minus_pi_exclusive():
+    assert objects._wrap_rad is wrap_rad                  # the old private name still works
+    assert wrap_rad(math.pi) == math.pi and wrap_rad(-math.pi) == math.pi and wrap_rad(0.0) == 0.0
+    assert wrap_rad(3 * math.pi) == pytest.approx(math.pi) and wrap_rad(0.5 + 4 * math.pi) == pytest.approx(0.5)
+    assert wrap_rad(-0.5 - 6 * math.pi) == pytest.approx(-0.5)
+
+
+def test_shared_constants():   # the values the other tasks code against (plan Global Constraints, design §6.2)
+    assert objects.OBJECTS_TOPIC == "/go2/objects" and objects.FRAME == "odom"
+    assert objects.OBJECTS_HZ == 2.0 and objects.OBJECTS_STALE_S == 2.0
+    assert (objects.CAMERA_HFOV, objects.CAMERA_NEAR, objects.CAMERA_FAR, objects.CAMERA_HZ) == (2.094, 0.1, 8.0, 5.0)
+    assert objects.CAMERA_IN_BODY == (0.32715, -0.00003, 0.04297)
+    assert objects.MAX_OBJECT_DISTANCE == 6.0 and objects.MAX_PROMPT_OBJECTS == 8
+    assert objects.DEFAULT_SIZE == (0.5, 0.5)
 
 
 def test_imports_only_the_standard_library():
