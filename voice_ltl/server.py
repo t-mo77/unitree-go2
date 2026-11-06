@@ -45,6 +45,7 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from voice_ltl.llm import MSG_LOGIN, make_llm
+from voice_ltl.objects import MSG_POSITION_DRIFT
 from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
                                MSG_POSTURE_CHANGED, MSG_SETTLING, MSG_STOPPED, MSG_UNSATISFIABLE, MSG_WAITING, Session)
 
@@ -122,7 +123,8 @@ def message_kind(status: str, message: str) -> str | None:
     "stopped", "done", "unsat", "login", "unheard" (聞き取れなかった; the plan goes on), "busy"
     (R27/R28: the instruction starts by itself), "waiting", "error", "info"; None for no message.
     Decided from Session's own messages first, so that 聞き取れなかった after an error is not an
-    error, then from the status."""
+    error, then from the status. MSG_UNSATISFIABLE may carry a reason after it (R15:
+    NO_PATH_REASON); MSG_POSITION_DRIFT is an error whatever the status (R11)."""
     if not message:
         return None
     if message == MSG_STOPPED:
@@ -135,11 +137,12 @@ def message_kind(status: str, message: str) -> str | None:
         return "waiting"
     if message == MSG_DONE and status == "done":
         return "done"
-    if message == MSG_UNSATISFIABLE:
+    if message.startswith(MSG_UNSATISFIABLE):
         return "unsat"
     if message.startswith(MSG_LOGIN):
         return "login"
-    if message in (MSG_OTHER_SENDERS, MSG_POSTURE_CHANGED):  # both end with the page's 続けられませんでした
+    # stopped or refused whatever the status: the page says 続けられませんでした after a plan began
+    if message in (MSG_OTHER_SENDERS, MSG_POSTURE_CHANGED, MSG_POSITION_DRIFT):
         return "error"
     return "error" if status == "error" else "info"
 

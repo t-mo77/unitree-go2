@@ -7,8 +7,10 @@ const MIME = "audio/webm;codecs=opus";
 const STOP_DISTANCE = 0.5;   // [m] perception.py stop_distance
 const HALF_WIDTH = 0.3;      // [m] perception.py half_width
 const BODY = { length: 0.7, width: 0.31 };  // Go2 [m]
-const GRID = 0.2;            // [m] one square of the top view
-const VIEW_HALF = 1.6;       // [m] the top view shows this far to the left and right of the Go2
+const GRID = 0.5;            // [m] one square of the top view (= one cell of a plan with objects)
+const VIEW_HALF = 1.6;       // [m] the top view shows at least this far to each side (its largest scale)
+const VIEW_PAD = 0.4;        // [m] the margin around what the top view frames
+const HIDDEN_ALPHA = 0.45;   // an object that is not seen now is drawn faint
 
 const POSTURE_JA = { LYING: "伏せ", STANDING: "立ち", SITTING: "おすわり", UNKNOWN: "不明" };
 const SENSE_JA = { CLEAR: "なし", BLOCKED: "あり", SENSOR_LOST: "途切れ" };
@@ -293,12 +295,19 @@ async function loadDiagram(follow = true) {
     $("diagram-empty").hidden = false;
     return;
   }
+  img.classList.toggle("placeholder", isPlaceholder(text));
   diagramFocus = follow ? focusPoint(text) : null;
   const old = diagramUrl;
   diagramUrl = URL.createObjectURL(new Blob([text], { type: "image/svg+xml" }));
   img.alt = `状態遷移図（${TAB_JA[name]}）`;
   img.src = diagramUrl;
   if (old) URL.revokeObjectURL(old);
+}
+
+// diagrams.py sends a short message instead of an automaton too big to draw; its root has
+// class "too-big" (P10). The page centres it and 幅に合わせる leaves it as it is.
+function isPlaceholder(svgText) {
+  return svgText.includes('class="too-big"');
 }
 
 // The highlighted state (diagrams.py marks it class "hl"), else state 0, as fractions of the
@@ -694,16 +703,67 @@ function render(s) {
   }
 
   renderGo2(s);
-  if (changed("map", [s.pose, s.world ?? null])) drawMap(s.pose, s.world ?? null);
+  setText("objects-seen", objectsLine(s.objects ?? []));
+  if (changed("map", [s.pose, s.world ?? null, s.objects ?? [], s.grid ?? null, s.plan_cells ?? []])) drawMap(s);
+}
+
+// The line under the top view: the objects seen now (snapshot "objects", visible ones), each
+// with where it is from the Go2 (its "where", null without a position).
+function objectsLine(objects) {
+  const seen = objects.filter((o) => o.visible).map((o) => (o.where ? `${o.name}（${o.where}）` : o.name));
+  return `見えている物：${seen.length ? seen.join("、") : "なし"}`;
 }
 
 // ---------------- top view ----------------
-// World x to the right, world y up, centred on the Go2; a square is GRID m.
-function drawMap(pose, world) {
+// Odom x to the right, odom y up. A plan with objects has a grid (snapshot "grid"): the centre
+// of cell (i, j) is origin + R(yaw)·(cell·i, cell·j); i and j between two cells give the points
+// between their centres.
+function cellCenter(grid, i, j) {
+  const c = Math.cos(grid.yaw), s = Math.sin(grid.yaw);
+  const u = i * grid.cell, v = j * grid.cell;
+  return [grid.origin[0] + c * u - s * v, grid.origin[1] + s * u + c * v];
+}
+
+function cellCorners(grid, i, j) {
+  return [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([a, b]) => cellCenter(grid, i + a, j + b));
+}
+
+// What the top view shows: {cx, cy} (odom) at the canvas centre and the scale [px/m].
+// With a grid: its whole rectangle and every object, not the pose, so the view stays still
+// while the Go2 walks the plan. With objects only: the Go2 and the objects. With neither:
+// centred on the Go2, VIEW_HALF to each side. Never closer than that last view.
+function mapView(s, w, h) {
+  const pose = s.pose ?? null, grid = s.grid ?? null, objects = s.objects ?? [];
+  const most = w / 2 / VIEW_HALF;
+  const points = [];
+  if (grid) {
+    const [i0, i1] = grid.i, [j0, j1] = grid.j;
+    for (const [i, j] of [[i0 - 0.5, j0 - 0.5], [i1 + 0.5, j0 - 0.5], [i1 + 0.5, j1 + 0.5], [i0 - 0.5, j1 + 0.5]]) {
+      points.push(cellCenter(grid, i, j));
+    }
+  } else if (objects.length && pose) {
+    points.push([pose[0], pose[1]]);
+  }
+  for (const o of objects) {
+    points.push([o.x - o.size[0] / 2, o.y - o.size[1] / 2], [o.x + o.size[0] / 2, o.y + o.size[1] / 2]);
+  }
+  if (!points.length) return { cx: pose?.[0] ?? 0, cy: pose?.[1] ?? 0, scale: most };
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const bw = x1 - x0 + 2 * VIEW_PAD, bh = y1 - y0 + 2 * VIEW_PAD;
+  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, scale: Math.min(w / bw, h / bh, most) };
+}
+
+// The top view of snapshot s, bottom to top: lines every GRID m; the plan's cells (blocked
+// ones filled grey); the simulator's boxes (world); the objects, with their names; the plan's
+// path from the Go2's cell and its goal cell; the Go2 with its 0.5 m stop lines.
+function drawMap(s) {
+  const pose = s.pose, world = s.world ?? null, objects = s.objects ?? [];
+  const grid = s.grid ?? null, planCells = s.plan_cells ?? [];
   const canvas = $("map");
   const ratio = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 480;
-  const h = canvas.clientHeight || 240;
+  const h = canvas.clientHeight || 320;
   if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
     canvas.width = Math.round(w * ratio);
     canvas.height = Math.round(h * ratio);
@@ -722,22 +782,59 @@ function drawMap(pose, world) {
     return;
   }
   const [gx, gy, yaw] = pose;
-  const scale = w / 2 / VIEW_HALF;  // [px/m]
-  const sx = (x) => w / 2 + (x - gx) * scale;
-  const sy = (y) => h / 2 - (y - gy) * scale;
+  const view = mapView(s, w, h);
+  const scale = view.scale;  // [px/m]
+  const sx = (x) => w / 2 + (x - view.cx) * scale;
+  const sy = (y) => h / 2 - (y - view.cy) * scale;
+  // A line between two odom points; an upright or a level one sits on whole pixels (crisp).
+  const segment = ([ax, ay], [bx, by]) => {
+    let x1 = sx(ax), y1 = sy(ay), x2 = sx(bx), y2 = sy(by);
+    if (Math.abs(x1 - x2) < 1e-6) x1 = x2 = Math.round(x1) + 0.5;
+    if (Math.abs(y1 - y2) < 1e-6) y1 = y2 = Math.round(y1) + 0.5;
+    ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+  };
+  const cellPath = (i, j) => {
+    const [first, ...rest] = cellCorners(grid, i, j);
+    ctx.moveTo(sx(first[0]), sy(first[1]));
+    for (const [x, y] of rest) ctx.lineTo(sx(x), sy(y));
+    ctx.closePath();
+  };
 
+  // Lines every GRID m over the whole canvas: on the borders of the plan's cells when there
+  // is a grid (so both line up, at its yaw), else along odom. (ox, oy) is the crossing of two
+  // lines nearest the view's centre; u = (ux, uy) and v = (-uy, ux) are the lines' directions.
+  const turn = grid ? grid.yaw : 0;
+  const [ux, uy] = [Math.cos(turn), Math.sin(turn)];
+  const corner = grid ? cellCenter(grid, -0.5, -0.5) : [0, 0];  // one crossing
+  const dx = view.cx - corner[0], dy = view.cy - corner[1];
+  const ku = Math.round((dx * ux + dy * uy) / GRID), kv = Math.round((dy * ux - dx * uy) / GRID);
+  const ox = corner[0] + (ku * ux - kv * uy) * GRID, oy = corner[1] + (ku * uy + kv * ux) * GRID;
+  const reach = Math.hypot(w, h) / 2 / scale + GRID;  // [m] from (ox, oy), past the canvas corners
+  const n = Math.ceil(reach / GRID);
   ctx.strokeStyle = color("--map-grid");
   ctx.lineWidth = 1;
   ctx.beginPath();
-  for (let k = Math.ceil((gx - w / 2 / scale) / GRID); k * GRID <= gx + w / 2 / scale; k++) {
-    const x = Math.round(sx(k * GRID)) + 0.5;
-    ctx.moveTo(x, 0); ctx.lineTo(x, h);
-  }
-  for (let k = Math.ceil((gy - h / 2 / scale) / GRID); k * GRID <= gy + h / 2 / scale; k++) {
-    const y = Math.round(sy(k * GRID)) + 0.5;
-    ctx.moveTo(0, y); ctx.lineTo(w, y);
+  for (let k = -n; k <= n; k++) {
+    // k·GRID along a = (ax, ay) from (ox, oy), a line in the direction b = (bx, by), both ways
+    for (const [ax, ay, bx, by] of [[ux, uy, -uy, ux], [-uy, ux, ux, uy]]) {
+      const px = ox + k * GRID * ax, py = oy + k * GRID * ay;
+      segment([px - reach * bx, py - reach * by], [px + reach * bx, py + reach * by]);
+    }
   }
   ctx.stroke();
+
+  if (grid) {  // the plan's cells: the blocked ones filled, then every cell's lines on top
+    ctx.fillStyle = color("--map-blocked");
+    ctx.beginPath();
+    for (const [i, j] of grid.blocked) cellPath(i, j);
+    ctx.fill();
+    const [i0, i1] = grid.i, [j0, j1] = grid.j;
+    ctx.strokeStyle = color("--map-cell");
+    ctx.beginPath();
+    for (let i = i0 - 0.5; i <= i1 + 0.5; i++) segment(cellCenter(grid, i, j0 - 0.5), cellCenter(grid, i, j1 + 0.5));
+    for (let j = j0 - 0.5; j <= j1 + 0.5; j++) segment(cellCenter(grid, i0 - 0.5, j), cellCenter(grid, i1 + 0.5, j));
+    ctx.stroke();
+  }
 
   const boxes = world?.boxes ?? [];
   for (const [bx, by, size] of boxes) {
@@ -752,6 +849,57 @@ function drawMap(pose, world) {
     ctx.textAlign = "center";
     ctx.fillText("箱", sx(bx), sy(by - half) + 15);
     ctx.textAlign = "start";
+  }
+
+  // The objects: size [along x, along y] in odom; one not seen now is faint, its line dashed.
+  for (const o of objects) {
+    const [ex, ey] = o.size;
+    const box = o.label === "box";
+    ctx.save();
+    if (!o.visible) {
+      ctx.globalAlpha = HIDDEN_ALPHA;
+      ctx.setLineDash([4, 3]);
+    }
+    ctx.beginPath();
+    roundRect(ctx, sx(o.x - ex / 2), sy(o.y + ey / 2), ex * scale, ey * scale, 6);
+    ctx.fillStyle = color(box ? "--box-fill" : "--obj-fill");
+    ctx.strokeStyle = color(box ? "--box-line" : "--obj-line");
+    ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = color("--muted");
+    ctx.textAlign = "center";
+    ctx.fillText(o.name, sx(o.x), sy(o.y - ey / 2) + 15);
+    ctx.textAlign = "start";
+  }
+
+  // The plan: its goal cell, and the path through the centres of the Go2's cell and of the
+  // cell after each step still to do, with a dot on each.
+  if (grid?.goal) {
+    ctx.strokeStyle = color("--ok");
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    cellPath(grid.goal[0], grid.goal[1]);
+    ctx.stroke();
+  }
+  if (grid && planCells.length) {
+    const points = [grid.robot, ...planCells].map(([i, j]) => cellCenter(grid, i, j)).map(([x, y]) => [sx(x), sy(y)]);
+    ctx.save();
+    ctx.strokeStyle = ctx.fillStyle = color("--accent-text");
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(...points[0]);
+    for (const p of points.slice(1)) ctx.lineTo(...p);
+    ctx.stroke();
+    ctx.beginPath();
+    for (const [x, y] of points.slice(1)) {
+      ctx.moveTo(x + 3, y);
+      ctx.arc(x, y, 3, 0, 2 * Math.PI);
+    }
+    ctx.fill();
+    ctx.restore();
   }
 
   // The Go2 in its own frame (x forward, y left), drawn in pixels.
@@ -792,7 +940,13 @@ function drawMap(pose, world) {
     ctx.font = `600 12px ${color("--font")}`;
     ctx.fillText("箱にぶつかりました", 14, 22);
   }
-  canvas.setAttribute("aria-label", `上から見た図：箱 ${boxes.length} 個${world?.collided ? "。箱にぶつかりました" : ""}`);
+  // 「箱 1 個、椅子 1 個」: the simulator's boxes count as 箱; with no objects, 「箱 N 個」 as before.
+  const counts = new Map([["箱", boxes.length]]);
+  for (const o of objects) counts.set(o.name, (counts.get(o.name) ?? 0) + 1);
+  const things = [...counts].filter(([, k]) => k > 0 || !objects.length).map(([name, k]) => `${name} ${k} 個`);
+  canvas.setAttribute("aria-label", `上から見た図：${things.join("、")}`
+    + (planCells.length ? `。計画の道 ${planCells.length} 手` : "")
+    + (world?.collided ? "。箱にぶつかりました" : ""));
 }
 
 function roundRect(ctx, x, y, w, h, r) {
