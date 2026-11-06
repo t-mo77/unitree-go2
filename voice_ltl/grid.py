@@ -28,9 +28,11 @@ from voice_ltl.world import (
 CELL = STEP_DISTANCE                     # 0.5 [m]
 MAX_CELLS = 256                          # the rectangle's area [cells] (R8)
 BLOCK_MARGIN = 0.45                      # blocked: d <= r + 0.45 (R5)
-NEAR_MIN_MARGIN = 0.75                   # near: r + 0.75 <= d <= min(r + 1.5, 1.4), heading within 40° (R4)
+NEAR_MIN_MARGIN = 0.75                   # near: r + 0.75 <= d <= min(r + 1.5, 1.3), heading within 40° (R4)
 NEAR_MAX_MARGIN = 1.5
-NEAR_MAX_DISTANCE = 1.4
+# Ruling N1 (Gazebo, 2026-11-06): 1.4 -> 1.3. The executor ends up to ~0.15 m off a cell centre;
+# a goal cell 1.395 m from the chair ended 1.539 m away, over the design §2's 1.5 m.
+NEAR_MAX_DISTANCE = 1.3
 NEAR_MAX_ANGLE_DEG = 40.0
 RING_MIN_MARGIN = 0.75                   # lap ring: r + 0.75 <= d <= r + 1.75 (R6)
 RING_MAX_MARGIN = 1.75

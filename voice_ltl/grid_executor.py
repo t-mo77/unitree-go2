@@ -168,7 +168,10 @@ class GridExecutor(Executor):
             self.vel = list(vel)
             self._unwind = prev.action in TURNS     # C2: the turn ends before the walk starts
             return True
-        self._halt_due = f"{cur.text(self.cat)} は {prev.text(self.cat)} の続きではありません"
+        if _continues(prev, cur):   # a turn in its cell, but the forward did not slow down for it
+            self._halt_due = f"{cur.text(self.cat)} は全速で通り過ぎた {prev.text(self.cat)} の続きではありません"
+        else:
+            self._halt_due = f"{cur.text(self.cat)} は {prev.text(self.cat)} の続きではありません"
         return False
 
     def _flows_into(self, step: Step) -> Optional[str]:

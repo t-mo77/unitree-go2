@@ -80,9 +80,20 @@ def test_near_cells_face_the_object_within_the_band():    # R4
     assert ((3, -2), 0) in cells and ((3, -2), 1) not in cells and ((3, -3), 0) not in cells
     for cell, h in cells:
         x, y = gw.grid.center(cell)
-        assert chair.radius + 0.75 <= math.hypot(chair.x - x, chair.y - y) <= min(chair.radius + 1.5, 1.4)
+        assert chair.radius + 0.75 <= math.hypot(chair.x - x, chair.y - y) <= min(chair.radius + 1.5, 1.3)
         bearing = math.atan2(chair.y - y, chair.x - x)
         assert abs(math.remainder(bearing - gw.grid.heading_yaw(h), 2 * math.pi)) <= math.radians(40) + 1e-9
+
+
+def test_the_default_layout_keeps_near_cells_for_both_objects():   # R4 with ruling N1 (1.3 m)
+    """The outer bound min(r + 1.5, 1.3) still holds the four cells 0.5·√5 m (1.118 m) from each
+    object of the default layout, two headings each; the cells 1.414 m away are out now."""
+    for prop in ("near_box_1", "near_chair_1"):
+        gw = gw_of({prop})
+        o = next(obj for obj in DEFAULT_LAYOUT if prop == f"near_{obj.id}")
+        cells = gw.near[prop]
+        assert len(cells) == 8, prop
+        assert {round(math.hypot(o.x - gw.grid.center(c)[0], o.y - gw.grid.center(c)[1]), 3) for c, _ in cells} == {1.118}
 
 
 @pytest.mark.parametrize("p,a,b,cw,want", [(0, 0, 1, False, 1), (3, 3, 0, False, 4), (4, 3, 0, False, 5), (2, 1, 0, False, 0),
@@ -209,7 +220,7 @@ def test_grid_uses_the_shared_wrap():          # one (−π, π] wrap for the wh
 def test_numbers():                            # plan Global Constraints, R4-R8, P4
     assert CELL == 0.5 and grid.MAX_CELLS == 256 and grid.BLOCK_MARGIN == 0.45 and LAP_DONE == 5
     assert (grid.NEAR_MIN_MARGIN, grid.NEAR_MAX_MARGIN, grid.NEAR_MAX_DISTANCE, grid.NEAR_MAX_ANGLE_DEG) == \
-        (0.75, 1.5, 1.4, 40.0)
+        (0.75, 1.5, 1.3, 40.0)          # ruling N1: 1.4 -> 1.3 m
     assert (grid.RING_MIN_MARGIN, grid.RING_MAX_MARGIN) == (0.75, 1.75)
 
 

@@ -1002,8 +1002,10 @@ def test_a_jump_to_another_heading_at_a_pass_stops_at_once(tmp_path):
     assert [c.api_id for t, c, _, _ in link.sent[n:] if t == jumped] == [STOP_MOVE]
     assert sess._action != "forward"
     snap = sess.snapshot()                    # the review of M1: why, in the debug log only
+    # from (2, 0),1 the plan turns back in this cell: a turn the forward ran through at full speed
+    assert sess._action == "turn_right"
     assert [line for line in snap["debug_log"] if line.startswith("M1: ")] == [
-        f"M1: 続けないので止めます（{sess.grid_executor.current.text(EXEC_ACTIONS)} は "
+        f"M1: 続けないので止めます（{sess.grid_executor.current.text(EXEC_ACTIONS)} は全速で通り過ぎた "
         "forward(0.5m) の続きではありません）"]
     assert not [line for line in snap["log"] if "M1" in line]
     snap = run_to_the_end(sess, link)
@@ -1044,6 +1046,34 @@ def test_a_pass_with_nothing_loaded_next_stops_at_once(tmp_path):
     assert_moves_ramp([c for _, c, _, _ in link.sent[n:]])
     first_move = min(t for t, c, _, _ in link.sent[n:] if c.api_id == MOVE)
     assert first_move >= max(link.unknown[1], passed + GRID_SETTLE_S) - 1e-9
+
+
+def test_a_pass_while_the_supervisor_waits_stops_at_once(tmp_path, monkeypatch):
+    """M1: a forward flowed on, but as it passes the supervisor has no action to go on with (it
+    waits): StopMove in that tick, and the debug log says why (「今は進める動作がありません」);
+    the people-facing log has no M1 line. Once the supervisor plans again, the walk goes on
+    from 0 and the chair is reached."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(1, near=0.08))
+    assert sess._flow == "forward"
+    monkeypatch.setattr(sess.runtime, "next_event", lambda: None)    # the supervisor waits
+    drive_while(sess, link, lambda s, _: s._done.count("forward") == 1)
+    passed = link.now
+    snap = sess.snapshot()
+    assert sess._action is None and snap["status"] == "waiting"
+    assert [c.api_id for t, c, _, _ in link.sent if t == passed] == [STOP_MOVE]
+    assert [line for line in snap["debug_log"] if line.startswith("M1: ")] == [
+        "M1: 続けないので止めます（今は進める動作がありません）"]
+    assert not [line for line in snap["log"] if "M1" in line]
+    monkeypatch.undo()                                                # it plans again
+    n = len(link.sent)
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    assert_moves_ramp([c for _, c, _, _ in link.sent[n:]])
+    assert min(t for t, c, _, _ in link.sent[n:] if c.api_id == MOVE) >= passed + GRID_SETTLE_S - 1e-9
+    distance, angle = to_chair(link.sim)
+    assert distance <= 1.5 and angle <= 45
 
 
 def test_plan_cells_stay_right_through_continuous_moves(tmp_path):

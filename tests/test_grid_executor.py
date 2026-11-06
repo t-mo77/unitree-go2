@@ -288,7 +288,10 @@ def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
     cmds = []
     _tick(sim, ex, t, CLEAR, cmds)                                    # the same tick
     assert [c.api_id for _, c in cmds] == [STOP_MOVE]
-    why = f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} は forward(0.5m) の続きではありません）"
+    # the turn is in the forward's cell, but the forward ran through it at full speed (it flowed
+    # into a forward): the debug line says so, not that the turn does not follow it
+    after = "は全速で通り過ぎた" if nxt.action == "turn_left" else "は"
+    why = f"M1: 続けないので止めます（{nxt.text(EXEC_ACTIONS)} {after} forward(0.5m) の続きではありません）"
     assert [e for e in ex.events if e.startswith("M1: ")] == [why]    # for the debug log (the review of M1)
     for k in range(1, 40):
         _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)

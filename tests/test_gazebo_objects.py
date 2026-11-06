@@ -13,6 +13,7 @@ from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_BOX_GRACE_S, SIZE_BOX_MARGI
                                 ObjectMemory, compose, drop_box_points, footprint_size,
                                 lidar_points_world, object_label, object_sdf, quat_to_matrix)
 from sim.sim_core import BOX_HEIGHT, Box
+from voice_ltl.grid import NEAR_MAX_DISTANCE, NEAR_MAX_MARGIN, NEAR_MIN_MARGIN
 from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_HZ, CAMERA_IN_BODY, CAMERA_NEAR,
                                DEFAULT_LAYOUT, DEFAULT_SIZE, parse)
 
@@ -115,7 +116,8 @@ def test_a_box_put_in_front_at_the_chair_keeps_its_near_band():   # Review Focus
     before = m.objects()[0].size
     assert before == pytest.approx((0.45, 0.45), abs=0.03)
     w = BoxWorld()
-    # 「椅子まで歩いて」 ended in the near band (1.07-1.4 m, heading within 40°), then 「前に箱を置く」
+    # 「椅子まで歩いて」 ended in the near band (1.07-1.3 m, heading within 40°; the executor stops up to
+    # ~0.15 m off the cell centre, so up to 1.4 m), then 「前に箱を置く」
     for dist, yaw in ((1.4, 0.0), (1.1, 0.0), (1.2, math.radians(30)), (1.3, math.radians(-25))):
         _, sim = w.place("front", x=chair.x - dist, y=chair.y, yaw=yaw)
         frame = np.vstack([points, side_points(sim.x, sim.y, sim.size, sim.size, top=BOX_HEIGHT)])
@@ -124,7 +126,8 @@ def test_a_box_put_in_front_at_the_chair_keeps_its_near_band():   # Review Focus
         m.set_size(chair.id, footprint_size(drop_box_points(frame, w.sizing_boxes(11.0)), chair.x, chair.y))
         assert m.objects()[0].size == pytest.approx(before), (dist, yaw)
     r = math.hypot(*m.objects()[0].size) / 2
-    assert min(r + 1.5, 1.4) - (r + 0.75) > 0.3                      # the near band stays open
+    # the near band stays open: the cells 0.5·√5 m (1.118 m) from the chair stay inside it (R4, ruling N1)
+    assert r + NEAR_MIN_MARGIN < 0.5 * math.sqrt(5) <= min(r + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE)
 
 
 def test_sim_boxes_stay_out_of_sizing_until_they_are_gone_from_the_cloud():
