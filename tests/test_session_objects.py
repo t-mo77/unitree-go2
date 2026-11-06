@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, SIT, STAND_DOWN, STAND_UP, STOP_MOVE
+from go2_nl_control.actions import BALANCE_STAND, HELLO, MOVE, SIT, STAND_DOWN, STAND_UP, STOP_MOVE, UNKNOWN
 from go2_nl_control.supervisor import BLOCKED, SENSOR_LOST
 
 import voice_ltl.automata as automata
@@ -16,7 +16,7 @@ import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
 from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
 from voice_ltl.grid import GridWorld
-from voice_ltl.grid_executor import GRID_EXEC_CONFIG
+from voice_ltl.grid_executor import GRID_EXEC_CONFIG, GRID_SETTLE_S
 from voice_ltl.llm import FakeLLM
 from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
                                winding_number)
@@ -790,3 +790,236 @@ def test_a_supervisor_that_cannot_take_the_bits_back_stops_the_plan(tmp_path, mo
     snap = run_to_the_end(sess, link)
     assert snap["status"] == "error" and snap["message"] == "監督器が許していない結果になりました（sit）"
     assert link.sim.accepted[-1] == STOP_MOVE
+
+
+# ---------------- M1: continuous grid moves ----------------
+class Timed(DirectSimLink):
+    """Keeps (time, command, the action loaded, how many steps were done) for every command sent,
+    and (time, front) for every reading. `sess` is set once the session is made."""
+
+    def __init__(self, sim):
+        super().__init__(sim)
+        self.sess = None
+        self.sent = []
+        self.fronts = []
+
+    def send(self, cmd):
+        s = self.sess
+        self.sent.append((self.now, cmd, s._action, len(s._done)))
+        super().send(cmd)
+
+    def reading(self, now):
+        r = super().reading(now)
+        self.fronts.append((now, r.front))
+        return r
+
+
+def timed_session(tmp_path, *formulas, link_cls=None):
+    sim = SimGo2()
+    sim.place_objects()
+    link = (link_cls or Timed)(sim)
+    sess, _ = make_objects(tmp_path, llm_for(*formulas), link=link)
+    link.sess = sess
+    return sess, link
+
+
+def runs_and_turns(actions):
+    """(straight runs of forwards, turns not followed by a forward) in a list of actions."""
+    moves = [a for a in actions if a in ("forward", "turn_left", "turn_right")]
+    runs = sum(a == "forward" and (i == 0 or moves[i - 1] != "forward") for i, a in enumerate(moves))
+    lone = sum(a != "forward" and (i + 1 == len(moves) or moves[i + 1] != "forward") for i, a in enumerate(moves))
+    return runs, lone
+
+
+def test_box_lap_stops_once_per_straight_run(tmp_path):
+    """M1 on the fake Go2's lap (design §2): it still passes, and StopMove comes only at the end of
+    each straight run (before a turn, or the last step): no StopMove between consecutive forwards
+    (x stays positive across them) or after a turn that a forward follows (no wait at zero
+    velocity: the forward's first Move is in the next tick). One 開始 / 完了 per step, as before."""
+    sess, link = timed_session(tmp_path, "F around_box_1")
+    sess.submit_text("箱の周りを一周して")
+    path = [(0.0, 0.0)]
+    snap = run_to_the_end(sess, link, path=path)
+    assert snap["status"] == "done", snap["message"]
+    assert 0.9 <= winding_number(path, (BOX.x, BOX.y)) < 1.5
+    assert min(edge_distance(x, y, BOX) for x, y in path) >= 0.6
+    assert not getattr(link, "hit", False) and not link.sim.collided
+    actions = [st["action"] for st in snap["steps"]]
+    moves = [a for a in actions if a != "stand"]
+    runs, lone = runs_and_turns(actions)
+    stops = [(t, a) for t, c, a, _ in link.sent if c.api_id == STOP_MOVE]
+    assert len(stops) <= runs + lone and len(stops) <= runs + (len(moves) - moves.count("forward"))
+    assert len(stops) < len(moves) / 2                                # it was one per step before M1
+    assert {a for _, a in stops} == {"forward"}                       # the ends of the straight runs
+    commands = [(t, c, a, n) for t, c, a, n in link.sent if c.api_id in (MOVE, STOP_MOVE)]
+    boundaries = 0
+    for (t0, c0, a0, n0), (t1, c1, a1, n1) in zip(commands, commands[1:]):
+        if n1 != n0 and a1 == "forward" and a0 in ("forward", "turn_left", "turn_right"):
+            boundaries += 1
+            assert c0.api_id == MOVE and c1.api_id == MOVE and t1 - t0 <= 0.1 + 1e-6, (t0, c0, a0, t1, c1, a1)
+            if a0 == "forward":
+                assert c0.parameter["x"] > 0 and c1.parameter["x"] > 0
+    assert boundaries == sum(a == "forward" and b in ("forward", "turn_left", "turn_right")
+                             for b, a in zip(moves, moves[1:]))
+    assert_moves_ramp([c for _, c, _, _ in link.sent])
+    log = snap["log"]
+    assert sum(line.startswith("開始：") for line in log) == len(actions)
+    assert sum(line.startswith("完了：") for line in log) == len(actions)
+
+
+def test_walk_to_the_chair_with_continuous_moves(tmp_path):
+    """The chair (design §2) with M1: the four forwards stop once, the turn flows into the last
+    forward; ≤ 1.5 m and ≤ 45° from the chair, as before."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    path = []
+    snap = run_to_the_end(sess, link, path=path)
+    assert snap["status"] == "done", snap["message"]
+    distance, angle = to_chair(link.sim)
+    assert distance <= 1.5 and angle <= 45
+    assert min(edge_distance(x, y, CHAIR) for x, y in path) >= 0.45
+    actions = [st["action"] for st in snap["steps"]]
+    runs, lone = runs_and_turns(actions)
+    assert sum(c.api_id == STOP_MOVE for _, c, _, _ in link.sent) == runs + lone
+
+
+def forward_running(k, near=None):
+    """The k-th forward of the chair plan's first straight run is running (its goal is (0.5 k, 0)),
+    and, with `near`, the Go2 is that close to its goal or closer."""
+    def cond(sess, link):
+        return (sess._action == "forward" and sess._done.count("forward") == k - 1
+                and (near is None or link.sim.x >= 0.5 * k - near))
+    return cond
+
+
+def drive_while(sess, link, cond, limit=60.0):
+    end = link.now + limit
+    while not cond(sess, link):
+        assert link.now < end, sess.snapshot()["status"]
+        drive(sess, link, 0.1)
+
+
+def test_a_box_ahead_mid_run_stops_at_once(tmp_path):
+    """M1: a box seen ahead while the Go2 walks through a cell centre at full speed stops it in
+    the tick the front reads blocked, and no forward Move goes out while it does: the safety
+    behaviour (never moved_forward while obstacle_front) is the same."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(2))                       # a continued forward
+    n = len(link.sent)
+    assert not [c for _, c, _, _ in link.sent if c.api_id == STOP_MOVE]   # nothing stopped it yet
+    link.sim.place_box("front", 0.9)
+    snap = run_to_the_end(sess, link, limit=120)
+    assert not link.sim.collided and no_supervisor_complaint(snap)
+    blocked = sorted({t for t, front in link.fronts if front == BLOCKED})
+    assert blocked
+    first = blocked[0]
+    assert STOP_MOVE in [c.api_id for t, c, _, _ in link.sent[n:] if t == first]   # at once
+    assert not [c for t, c, _, _ in link.sent if t in blocked and c.api_id == MOVE and c.parameter["x"] > 0]
+    assert max(c.parameter["x"] for t, c, _, _ in link.sent[n:] if c.api_id == MOVE and t < first) == 0.3
+
+
+def test_drift_during_a_continued_forward_stops(tmp_path):
+    """M1: a continued forward is snapped as it passes its cell centre, with the thresholds of
+    R11: 0.31 m off the nearest centre stops with MSG_POSITION_DRIFT (StopMove sent)."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(2))
+    assert not [c for _, c, _, _ in link.sent if c.api_id == STOP_MOVE]
+    link.sim.x, link.sim.y = 1.22, 0.22                               # past (1.0, 0) and 0.31 m off it
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "error" and snap["message"] == MSG_POSITION_DRIFT
+    assert link.sim.accepted[-1] == STOP_MOVE
+    assert [c.api_id for _, c, _, _ in link.sent].count(STOP_MOVE) == 1
+    assert any(line.startswith("位置のずれ: forward の後") for line in snap["debug_log"])
+    assert snap["grid"]["goal"] is None and snap["plan_cells"] == []
+
+
+def test_a_jump_to_the_next_row_at_a_pass_continues_the_walk(tmp_path):
+    """M1 and R10: a continued forward found one row of cells to the left as it passes is
+    snapped there; the supervisor jumps, and the forward the plan has from there, in the same
+    heading, continues the walk in that tick towards its own goal; the chair is reached."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(2, near=0.05))
+    link.sim.y += 0.3                                                 # into the next row of cells
+    n = len(link.sent)
+    drive_while(sess, link, lambda s, _: s._done.count("forward") == 2)
+    assert "位置合わせ: (2, 0),0 -> (2, 1),0" in sess.snapshot()["debug_log"]
+    now = [c for t, c, _, _ in link.sent[n:] if t == link.now]
+    assert sess._action == "forward" and sess.grid_executor.current.goal_xy == pytest.approx((1.5, 0.5))
+    assert [c.api_id for c in now] == [MOVE] and now[0].parameter["x"] == 0.3
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    distance, angle = to_chair(link.sim)
+    assert distance <= 1.5 and angle <= 45
+
+
+def test_a_jump_to_another_heading_at_a_pass_stops_at_once(tmp_path):
+    """M1 and R10: a continued forward found facing another heading as it reaches its cell centre
+    is snapped to it; the step the plan has from there is no forward in the old heading, so the
+    Go2 gets StopMove in that tick and the next step starts GRID_SETTLE_S later."""
+    sess, link = timed_session(tmp_path, "F near_chair_1")
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(2))
+    link.sim.x, link.sim.yaw = 1.0, 1.4                               # at (1, 0), 80 degrees left
+    n = len(link.sent)
+    drive_while(sess, link, lambda s, _: s._done.count("forward") == 2)
+    jumped = link.now
+    assert "位置合わせ: (2, 0),0 -> (2, 0),1" in sess.snapshot()["debug_log"]
+    assert [c.api_id for t, c, _, _ in link.sent[n:] if t == jumped] == [STOP_MOVE]
+    assert sess._action != "forward"
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    assert min(t for t, _, _, _ in link.sent[n:] if t > jumped) >= jumped + GRID_SETTLE_S - 1e-9
+    distance, angle = to_chair(link.sim)
+    assert distance <= 1.5 and angle <= 45
+
+
+class Unsettled(Timed):
+    """The posture reads UNKNOWN (a real Go2 between two error_codes) while now is in `unknown`."""
+
+    unknown = (float("inf"), float("inf"))
+
+    def posture(self):
+        return UNKNOWN if self.unknown[0] <= self.now < self.unknown[1] else super().posture()
+
+
+def test_a_pass_with_nothing_loaded_next_stops_at_once(tmp_path):
+    """M1: a forward flowed on, but the session cannot load the next one in that tick (here the
+    posture reads UNKNOWN for a moment): StopMove in that tick; the walk goes on from 0 once
+    it is known, and the plan ends."""
+    sess, link = timed_session(tmp_path, "F near_chair_1", link_cls=Unsettled)
+    sess.submit_text("椅子まで歩いて")
+    drive_while(sess, link, forward_running(1, near=0.08))
+    link.unknown = (link.now + 0.05, link.now + 0.45)
+    drive_while(sess, link, lambda s, _: s._done.count("forward") == 1)
+    passed = link.now
+    assert link.unknown[0] <= passed < link.unknown[1] and sess._action is None
+    assert [c.api_id for t, c, _, _ in link.sent if t == passed] == [STOP_MOVE]
+    n = len(link.sent)
+    snap = run_to_the_end(sess, link)
+    assert snap["status"] == "done", snap["message"]
+    assert_moves_ramp([c for _, c, _, _ in link.sent[n:]])
+    first_move = min(t for t, c, _, _ in link.sent[n:] if c.api_id == MOVE)
+    assert first_move >= max(link.unknown[1], passed + GRID_SETTLE_S) - 1e-9
+
+
+def test_plan_cells_stay_right_through_continuous_moves(tmp_path):
+    """R27 with M1: every tick, plan_cells has one cell per step not done, and while a move runs
+    its first cell is where that move goes from the cell the page shows the Go2 in."""
+    sess, link = make_objects(tmp_path, llm_for("F around_box_1"))
+    sess.submit_text("箱の周りを一周して")
+    ahead = {0: (1, 0), 1: (0, 1), 2: (-1, 0), 3: (0, -1)}
+    moves = 0
+    while sess.snapshot()["status"] not in FINAL and link.now < 300:
+        drive(sess, link, 0.1)
+        snap = sess.snapshot()
+        check_cells(snap)
+        i, j, h = snap["grid"]["robot"] if snap["grid"] else (0, 0, 0)
+        if snap["current"] == "forward":
+            assert snap["plan_cells"][0] == [i + ahead[h][0], j + ahead[h][1], h]
+            moves += 1
+        elif snap["current"] in ("turn_left", "turn_right"):
+            assert snap["plan_cells"][0] == [i, j, (h + (1 if snap["current"] == "turn_left" else -1)) % 4]
+    assert snap["status"] == "done" and moves > 0

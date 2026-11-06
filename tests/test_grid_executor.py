@@ -1,12 +1,12 @@
 """GridExecutor: closed-loop moves to a cell centre and a grid heading, a settle after StopMove,
-and the zip's holds and timeouts (R11, R12, P7)."""
+the zip's holds and timeouts (R11, R12, P7), and the steps that flow on without a stop (M1)."""
 
 import json
 import math
 
 import pytest
-from go2_nl_control.actions import MOVE, STANDING, STOP_MOVE
-from go2_nl_control.supervisor import CLEAR, SENSOR_LOST, Step
+from go2_nl_control.actions import HELLO, MOVE, STANDING, STOP_MOVE
+from go2_nl_control.supervisor import BLOCKED, CLEAR, SENSOR_LOST, Step
 
 from sim.sim_core import SimGo2
 from voice_ltl.grid_executor import (GRID_DONE_DIST, GRID_DONE_YAW, GRID_EXEC_CONFIG, GRID_SETTLE_S,
@@ -49,7 +49,7 @@ def run_until_done(sim, ex, step, env_at=lambda t: CLEAR, dt=0.1, limit=30.0):
 
 
 def test_constants():
-    assert GRID_SETTLE_S == 0.5 and GRID_DONE_DIST == 0.03 and GRID_DONE_YAW == math.radians(3.0)
+    assert GRID_SETTLE_S == 0.2 and GRID_DONE_DIST == 0.03 and GRID_DONE_YAW == math.radians(3.0)
     assert GRID_EXEC_CONFIG.speed == (0.3, 0.3, 0.5) and GRID_EXEC_CONFIG.acc == (0.6, 0.6, 1.0)
     assert GRID_EXEC_CONFIG.block_timeout == 15.0 and GRID_EXEC_CONFIG.move_timeout_margin == 2.5
     assert GridExecutor(EXEC_ACTIONS).cfg == GRID_EXEC_CONFIG
@@ -113,7 +113,7 @@ def test_sensor_lost_during_settle_delays_done():
     step = GridStep("forward", 0.5, (0.5, 0.0), 0.0)
     cmds, clear_done = run_until_done(sim, ex, step)
     stop_at = max(t for t, c in cmds if c.api_id == STOP_MOVE)
-    lost_from = round(stop_at + 0.2, 6)                                 # inside the 0.5 s settle
+    lost_from = round(stop_at + 0.1, 6)                                 # inside the 0.2 s settle
     sim2, ex2 = standing_sim(), GridExecutor(EXEC_ACTIONS)
     _, done_at = run_until_done(sim2, ex2, step,
                                 env_at=lambda t: SENSOR_LOST if lost_from <= t < lost_from + 1.0 else CLEAR)
@@ -191,3 +191,202 @@ def test_gestures_run_as_in_the_executor():
 def test_grid_step_text_is_the_step_text():
     assert GridStep("forward", 0.5, (1, 2), 0.3).text(EXEC_ACTIONS) == Step("forward", 0.5).text(EXEC_ACTIONS)
     assert GridStep("turn_left", 90.0, (1, 2), 0.3).text(EXEC_ACTIONS) == "turn_left(90度)"
+
+
+# ---------------- M1: steps that flow on without a stop ----------------
+RUN = [GridStep("forward", 0.5, (0.5, 0.0), 0.0), GridStep("forward", 0.5, (1.0, 0.0), 0.0),
+       GridStep("forward", 0.5, (1.5, 0.0), 0.0)]
+ACC_X, _, ACC_Z = (a * 0.1 for a in GRID_EXEC_CONFIG.acc)   # one 10 Hz tick of acceleration
+
+
+def assert_ramps(cmds):
+    """Every Move within one tick of acceleration of the command before it (StopMove is 0)."""
+    x0 = z0 = 0.0
+    for _, c in cmds:
+        if c.api_id == STOP_MOVE:
+            x0 = z0 = 0.0
+        elif c.api_id == MOVE:
+            x, z = c.parameter["x"], c.parameter["z"]
+            assert abs(x - x0) <= ACC_X + 1e-3 and abs(z - z0) <= ACC_Z + 1e-3, (c, x0, z0)
+            x0, z0 = x, z
+
+
+def assert_no_gap(cmds, until):
+    """A command in every tick from the first one to `until`: no tick left at the last velocity."""
+    ticks = sorted({t for t, _ in cmds if t <= until + 1e-9})
+    assert all(b - a <= 0.1 + 1e-6 for a, b in zip(ticks, ticks[1:])), ticks
+
+
+def flow_one(sim, ex, step):
+    """As the session drives a step it knows the next forward continues: flow set, one step loaded."""
+    ex.flow = True
+    cmds, t = run_until_done(sim, ex, step)
+    ex.flow = False
+    return cmds, t
+
+
+def test_consecutive_forwards_flow_without_a_stop():
+    """M1: a forward followed by a forward in its heading is done as it passes the cell centre,
+    with no StopMove and at full speed: x stays positive from the first Move to the last
+    forward's goal, which ends as before (StopMove, then the settle)."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    cmds = run(sim, ex, RUN)
+    stops = [t for t, c in cmds if c.api_id == STOP_MOVE]
+    assert len(stops) == 1                                            # the end of the run only
+    moves = [c.parameter for t, c in cmds if c.api_id == MOVE]
+    first = next(i for i, m in enumerate(moves) if m["x"] > 0)
+    assert all(m["x"] > 0 for m in moves[first:])
+    assert max(m["x"] for m in moves) == 0.3
+    assert_ramps(cmds)
+    assert_no_gap(cmds, stops[0])
+    assert abs(sim.x - 1.5) <= 0.06 and abs(sim.y) < 0.05
+    assert [c for t, c in cmds if t > stops[0]] == []                 # the settle after the last one
+    assert [e for e in ex.events if e.startswith("完了: ")] == ["完了: forward(0.5m)"] * 3
+
+
+def test_a_forward_loaded_after_one_that_flowed_on_continues_the_walk():
+    """M1 as the session drives it: one step at a time, `flow` set from the plan. The first forward
+    ends without StopMove as it passes (0.5, 0); the next, loaded in the same tick, goes on from
+    the velocity the Go2 has (no ramp from 0) towards its own goal."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    cmds, t = flow_one(sim, ex, RUN[0])
+    assert not [c for _, c in cmds if c.api_id == STOP_MOVE] and ex.rolling
+    assert 0.5 - GRID_DONE_DIST <= sim.x <= 0.5 + 0.03 + 1e-6        # done as it passed the centre
+    last = [c.parameter for _, c in cmds if c.api_id == MOVE][-1]
+    assert last["x"] == 0.3
+    ex.load([RUN[1]])
+    assert not ex.rolling
+    more = []
+    _tick(sim, ex, t, CLEAR, more)                                    # the same tick
+    assert [c.api_id for _, c in more] == [MOVE] and more[0][1].parameter["x"] == last["x"]
+    while ex.busy:
+        t = round(t + 0.1, 6)
+        _tick(sim, ex, t, CLEAR, more)
+    assert [c.api_id for _, c in more].count(STOP_MOVE) == 1         # the run ends here
+    assert all(c.parameter["x"] > 0 for _, c in more if c.api_id == MOVE)
+    assert_ramps(cmds + more)
+    assert abs(sim.x - 1.0) <= 0.06
+
+
+@pytest.mark.parametrize("nxt", [GridStep("turn_left", 90.0, (0.5, 0.0), math.pi / 2),
+                                 GridStep("forward", 0.5, (0.5, 0.5), math.pi / 2),
+                                 GridStep("backward", 0.5, (0.0, 0.0), 0.0),
+                                 Step("hello")],
+                         ids=["turn", "forward_other_heading", "backward", "hello"])
+def test_a_step_after_a_pass_that_does_not_continue_it_stops_first(nxt):
+    """M1: a step loaded after a pass that is not a forward in the same heading (a jump or a
+    sensor change changed the plan) gets StopMove in its first tick, then GRID_SETTLE_S of
+    nothing, then starts from 0."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    _, t = flow_one(sim, ex, RUN[0])
+    ex.load([nxt])
+    cmds = []
+    _tick(sim, ex, t, CLEAR, cmds)                                    # the same tick
+    assert [c.api_id for _, c in cmds] == [STOP_MOVE]
+    for k in range(1, 40):
+        _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
+    later = [(tt, c) for tt, c in cmds if tt > t]
+    assert later and min(tt for tt, _ in later) >= t + GRID_SETTLE_S - 1e-9
+    moves = [c.parameter for _, c in later if c.api_id == MOVE]
+    if moves:
+        assert abs(moves[0]["x"]) <= ACC_X + 1e-9 and abs(moves[0]["z"]) <= ACC_Z + 1e-9
+    else:
+        assert HELLO in [c.api_id for _, c in later]
+
+
+def test_halt_stops_a_step_that_flowed_on_at_once():
+    """M1: when nothing continues the walk (the supervisor waits or is done), halt() gives
+    StopMove at once; the next step starts GRID_SETTLE_S later, from 0. Once is enough."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    _, t = flow_one(sim, ex, RUN[0])
+    out = ex.halt(t)
+    assert [c.api_id for c in out] == [STOP_MOVE] and not ex.rolling and ex.halt(t) == []
+    ex.load([GridStep("turn_left", 90.0, (0.5, 0.0), math.pi / 2)])
+    cmds = []
+    for k in range(1, 40):
+        _tick(sim, ex, round(t + k * 0.1, 6), CLEAR, cmds)
+    assert min(tt for tt, _ in cmds) >= t + GRID_SETTLE_S - 1e-9
+    assert all(c.api_id == MOVE for _, c in cmds[:3]) and abs(cmds[0][1].parameter["z"]) <= ACC_Z + 1e-9
+
+
+def test_a_turn_flows_into_a_forward():
+    """M1: a turn whose next step is a forward ends at its yaw goal with no StopMove and no wait at
+    zero velocity: the forward's x ramps from 0 at once, and its z goes on from the turn's."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    steps = [GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2),
+             GridStep("forward", 0.5, (0.0, 0.5), math.pi / 2)]
+    cmds = run(sim, ex, steps)
+    stops = [t for t, c in cmds if c.api_id == STOP_MOVE]
+    assert len(stops) == 1                                            # the end of the forward only
+    moves = [c.parameter for t, c in cmds if c.api_id == MOVE]
+    assert moves[0] == {"x": 0.0, "y": 0.0, "z": 0.0}                # the first tick of a load has dt 0
+    assert not [m for m in moves[1:] if m == {"x": 0.0, "y": 0.0, "z": 0.0}]   # then never at zero velocity
+    assert_ramps(cmds)
+    assert_no_gap(cmds, stops[0])
+    assert abs(sim.y - 0.5) <= 0.06 and abs(sim.x) < 0.06
+
+
+def test_a_turn_loaded_one_at_a_time_flows_into_the_forward():
+    """The same, as the session drives it: the forward loaded in the tick the turn ends starts
+    with the turn's z and x 0, and x is up the next tick."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    cmds, t = flow_one(sim, ex, GridStep("turn_left", 90.0, (0.0, 0.0), math.pi / 2))
+    assert not [c for _, c in cmds if c.api_id == STOP_MOVE] and ex.rolling
+    z = [c.parameter for _, c in cmds if c.api_id == MOVE][-1]["z"]
+    assert z > 0
+    ex.load([GridStep("forward", 0.5, (0.0, 0.5), math.pi / 2)])
+    more = []
+    _tick(sim, ex, t, CLEAR, more)
+    _tick(sim, ex, round(t + 0.1, 6), CLEAR, more)
+    assert [c.api_id for _, c in more] == [MOVE, MOVE]
+    assert more[0][1].parameter == {"x": 0.0, "y": 0.0, "z": z}
+    assert 0 < more[1][1].parameter["x"] <= ACC_X + 1e-9
+
+
+def test_a_blocked_front_mid_run_stops_at_once():
+    """The holds are the Executor's in a run that flows too: a blocked front sends StopMove in
+    the tick it is seen, no forward Move while it lasts, and the walk ramps from 0 after it."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    ex.load(RUN)
+    cmds, t, x_held = [], 0.0, None
+    while ex.busy and t < 30:
+        t = round(t + 0.1, 6)
+        env = BLOCKED if 2.5 <= t < 3.5 else CLEAR
+        n = len(cmds)
+        _tick(sim, ex, t, env, cmds)
+        if env == BLOCKED:
+            assert not [c for _, c in cmds[n:] if c.api_id == MOVE and c.parameter["x"] > 0]
+            x_held = sim.x if x_held is None else x_held
+            assert sim.x == x_held
+    assert 0.5 < x_held < 1.0                                         # in the second forward, at speed
+    assert [c.api_id for tt, c in cmds if tt == 2.5] == [STOP_MOVE]
+    after = [c.parameter for tt, c in cmds if tt >= 3.5 and c.api_id == MOVE]
+    assert after[0]["x"] <= ACC_X + 1e-9
+    assert [c.api_id for _, c in cmds].count(STOP_MOVE) == 2          # the hold and the end
+    assert abs(sim.x - 1.5) <= 0.06 and any(e.startswith("一時停止") for e in ex.events)
+
+
+def test_flow_withdrawn_mid_step_ends_the_step_as_before():
+    """M1: when the plan no longer has a forward after it (a sensor change), the step slows down
+    and ends with StopMove and the settle at its goal."""
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    ex.flow = True
+    ex.load([RUN[0]])
+    cmds = []
+    for k in range(1, 8):
+        _tick(sim, ex, round(k * 0.1, 6), CLEAR, cmds)
+    ex.flow = False
+    t = 0.7
+    while ex.busy:
+        t = round(t + 0.1, 6)
+        _tick(sim, ex, t, CLEAR, cmds)
+    stops = [tt for tt, c in cmds if c.api_id == STOP_MOVE]
+    assert len(stops) == 1 and t - stops[0] >= GRID_SETTLE_S - 1e-9 and not ex.rolling
+    assert abs(sim.x - 0.5) <= 0.06
+
+
+def test_cancel_forgets_a_step_that_flowed_on():
+    sim, ex = standing_sim(), GridExecutor(EXEC_ACTIONS)
+    _, t = flow_one(sim, ex, RUN[0])
+    ex.cancel("止める")
+    assert not ex.rolling and ex.halt(t) == []
