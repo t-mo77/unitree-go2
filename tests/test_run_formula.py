@@ -6,7 +6,8 @@ import types
 import pytest
 
 from voice_ltl import run_formula
-from voice_ltl.run_formula import _follow, _new_lines, _parse, main
+from voice_ltl.objects import DEFAULT_LAYOUT
+from voice_ltl.run_formula import OBJECT_WAIT_S, _follow, _new_lines, _parse, main
 from voice_ltl.server import WAIT_READY_GAZEBO_S, WAIT_READY_S, wait_ready_seconds
 from voice_ltl.session import LOG_LINES, MSG_STOPPED
 
@@ -176,8 +177,11 @@ def fake_ros(monkeypatch, tmp_path):
         def other_senders(self):
             return behaviour["others"]
 
+        def objects(self):
+            return behaviour.get("objects", [])
+
         def spin_once(self):
-            pass
+            self.spins = getattr(self, "spins", 0) + 1
 
         def close(self, stop_times=3):
             self.closed_with = stop_times
@@ -257,3 +261,70 @@ def test_ctrl_c_ends_with_interrupted(fake_ros, capsys, where):
     assert main([FORMULA]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "結果：中断しました"
     assert [link.closed_with for link in fake_ros.made] == ([] if where == "init" else [3])
+
+
+# ---------------- 物の命題（R24） ----------------
+BOX_ROW = DEFAULT_LAYOUT[0].to_row()
+
+
+def test_object_formula_passes_the_precheck_and_runs(fake_ros, clock, capsys):
+    fake_ros.behaviour["objects"] = [BOX_ROW]
+    assert main(["F around_box_1"]) == 0
+    (link,), (session,) = fake_ros.made, fake_ros.sessions
+    assert session.texts == [run_formula.INSTRUCTION] and link.closed_with == 3
+    assert session.llm.replies == [{"formula": "F around_box_1", "unsupported": []}]
+
+
+class StepClock:
+    """time for run_formula: monotonic() goes on 1 s at every call; sleep() does nothing."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        self.t += 1.0
+        return self.t
+
+    def time(self):
+        return self.t
+
+    def sleep(self, seconds):
+        pass
+
+
+def test_missing_object_exits_1(fake_ros, monkeypatch, capsys):
+    assert OBJECT_WAIT_S == 3.0
+    monkeypatch.setattr(run_formula, "time", StepClock())
+    fake_ros.behaviour["objects"] = []
+    assert main(["F(near_chair_1 & X F around_box_1)"]) == 1
+    out = capsys.readouterr().out
+    assert "「box_1」が見つかりません" in out and "chair_1" not in out     # the first one, sorted
+    (link,) = fake_ros.made
+    assert link.closed_with == 3 and fake_ros.sessions == []
+    assert 1 <= link.spins <= 4                                             # spun while waiting, 3 s at most
+
+
+def test_an_object_arriving_while_waiting_is_taken(fake_ros, clock, capsys):
+    rows = []
+
+    def arrives():                                    # /go2/objects comes after 1 s
+        if clock.t >= 1001.0:
+            rows[:] = [BOX_ROW]
+        return rows
+
+    fake_ros.behaviour["objects"] = rows
+    original = run_formula.time.sleep
+
+    def sleep(seconds):
+        original(seconds)
+        arrives()
+
+    clock.sleep = sleep
+    assert main(["F around_box_1"]) == 0
+    assert fake_ros.sessions[0].texts == [run_formula.INSTRUCTION]
+
+
+def test_an_unknown_object_proposition_is_still_checked(fake_ros, capsys):
+    assert main(["F near_table_1"]) == 1                 # not an object proposition: not in the vocabulary
+    assert "式が文法か単語帳に合いません" in capsys.readouterr().out
+    assert fake_ros.made == []

@@ -4,8 +4,10 @@
 
 - 翻訳だけを、その式を 1 つ返す FakeLLM に置き換える。あとは Web のページと同じ道を通る：
   check()（文法と単語帳）→ 合成（監督器）→ 監督器と zip の実行器 → RosLink（実機と同じトピック）とセンサー。
+- 物の命題（near_box_1・around_box_1 など）も使える。そのときは、式の物が /go2/objects に
+  そろうまで最長 OBJECT_WAIT_S 秒待つ。そろわなければ「「box_1」が見つかりません」で終わる（R24）。
 - 標準出力に、計画・各動作の開始と完了（Session の、人が読むログ）と、最後の status を日本語で出す。
-- 終了コード：status が done なら 0、それ以外（error、時間切れ、Go2 が見つからない、式が却下）は 1。
+- 終了コード：status が done なら 0、それ以外（error、時間切れ、Go2 や物が見つからない、式が却下）は 1。
 - status が done か error になったら終わる。--timeout 秒たっても終わらなければ、止めて終わる。
 - 終わるときは RosLink.close(3)（StopMove を 3 回）。Ctrl+C・SIGTERM でも同じ。
 - Go2 を待つ秒数は Web のページと同じ（GO2_WAIT_READY_S。空なら SIM_KIND=gazebo で 90 秒、ほかは 5 秒）。
@@ -25,6 +27,7 @@ from typing import Optional
 
 from voice_ltl.grammar import check
 from voice_ltl.llm import FakeLLM
+from voice_ltl.objects import formula_object_props, split_prop
 from voice_ltl.server import wait_ready_seconds
 from voice_ltl.world import PROPOSITIONS
 
@@ -32,6 +35,7 @@ WORKDIR = Path("/work/out")   # 合成の作業場所（server.py と同じ）
 PERIOD = 0.1                  # 制御の周期（10 Hz）
 FINAL = ("done", "error")     # これになったら終わる
 INSTRUCTION = "(run_formula)"  # Session に渡す指示の文（ログに出るだけ。式は FakeLLM が返す）
+OBJECT_WAIT_S = 3.0           # 式の物が /go2/objects にそろうまで待つ秒数（R24）
 
 
 def _new_lines(seen: list[str], log: list[str]) -> list[str]:
@@ -58,8 +62,10 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
 
 def run(formula: str, timeout: float, wait_s: float) -> int:
     # 式は Session の中でも check() を通る。ここでも先に通すのは、却下の理由をそのまま出して、
-    # ROS 2 を起動せずに終わるため（FakeLLM は 1 回しか答えないので、聞き直すと理由が消える）
-    errors = check(formula, PROPOSITIONS)
+    # ROS 2 を起動せずに終わるため（FakeLLM は 1 回しか答えないので、聞き直すと理由が消える）。
+    # 物の命題は、物がそろったかを ROS 2 で確かめる前なので、式に出るものを単語帳に足す
+    props = formula_object_props(formula)
+    errors = check(formula, PROPOSITIONS + tuple(sorted(props)))
     if errors:
         print(f"式が文法か単語帳に合いません：{formula}", flush=True)
         for e in errors:
@@ -86,6 +92,10 @@ def run(formula: str, timeout: float, wait_s: float) -> int:
             if link.other_senders():  # そちらが Go2 を動かしているので、StopMove で割り込まない
                 stop_times = 0
             return 1
+        missing = _wait_for_objects(link, props)
+        if missing is not None:
+            print(f"「{missing}」が見つかりません", flush=True)
+            return 1
         llm = FakeLLM([{"formula": formula, "unsupported": []}])
         session = Session(link, llm, None, WORKDIR, background=False)
         session.submit_text(INSTRUCTION)
@@ -96,6 +106,24 @@ def run(formula: str, timeout: float, wait_s: float) -> int:
     finally:
         if link is not None:
             link.close(stop_times)
+
+
+def _wait_for_objects(link, props) -> Optional[str]:
+    """式の物の命題（props）の物が、すべて link.objects() にそろうまで、受信しながら最長
+    OBJECT_WAIT_S 秒待つ。そろえば None、そろわなければ、足りない最初の id（並べた順）。"""
+    ids = {split_prop(p)[1] for p in props}
+    if not ids:
+        return None
+    read = getattr(link, "objects", lambda: [])
+    end = time.monotonic() + OBJECT_WAIT_S
+    while True:
+        seen = {row["id"] for row in read()}
+        if ids <= seen:
+            return None
+        if time.monotonic() >= end:
+            return sorted(ids - seen)[0]
+        time.sleep(PERIOD)
+        link.spin_once()
 
 
 def _follow(link, session, timeout: float) -> int:
