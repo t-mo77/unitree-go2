@@ -48,6 +48,7 @@ from go2_nl_control.translator import STOP_WORDS, is_stop_command
 from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import render_focus_svg, render_svg
 from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
+from voice_ltl.objects import Obj, Scene, parse_rows, snapshot_rows
 from voice_ltl.planner import PlanError, Runtime
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.translator import Translation, translate
@@ -179,7 +180,10 @@ class Link(Protocol):
     A link may also have error_code() -> int | None; only then is Standing Lock (1002) turned
     into a standing Go2 with BalanceStand (R27). Without it an unknown posture is only waited for.
     A link may also have other_senders() -> int: how many other programs send commands to the
-    Go2; while there are any, instructions are refused (REAL-2)."""
+    Go2; while there are any, instructions are refused (REAL-2).
+    A link may also have objects() -> list[dict]: the objects the front camera has seen, as rows of
+    /go2/objects in odom (design §6.2; the session checks them again with objects.parse_rows).
+    Without it there are no objects: the Scene of every instruction is empty."""
 
     def send(self, cmd: Command) -> None: ...
     def posture(self) -> str: ...
@@ -191,8 +195,11 @@ class DirectSimLink:
     """For tests: a SimGo2 without ROS. Call advance(now) before each Session.tick(now)."""
 
     def __init__(self, sim: "SimGo2", perception: PerceptionConfig = PerceptionConfig()):
+        from sim.sim_core import FakeCamera   # tests only: the app never imports the simulator
+
         self.sim = sim
         self.sensing = Sensing(perception)
+        self.camera = FakeCamera()   # sees sim.objects as the Gazebo camera does, and remembers them
         self.now = 0.0  # time of the last advance(); commands are handled at this time
 
     def advance(self, now: float) -> None:
@@ -218,6 +225,9 @@ class DirectSimLink:
 
     def reading(self, now: float) -> Reading:
         return self.sensing.current(now)
+
+    def objects(self) -> list[dict]:
+        return [o.to_row() for o in self.camera.see(self.sim, self.now)]
 
 
 @dataclass
@@ -330,6 +340,9 @@ class Session:
         self._reading: Reading | None = None
         self._posture = UNKNOWN
         self._pose: tuple[float, float, float] | None = None
+        self._objects: tuple[Obj, ...] = ()     # what the link lists now (the page's live list)
+        self._object_rows: list[dict] = []      # self._objects for the snapshot, made in tick()
+        self._scene: Scene | None = None        # the objects and the pose frozen for the instruction
 
         if background:
             threading.Thread(target=self._work, name="session-worker", daemon=True).start()
@@ -340,8 +353,9 @@ class Session:
         """Empty -> 「聞き取れませんでした」; a stop word -> stop(); else a new instruction."""
         with self._lock:
             gen = self._accept_text(text, None, self._arrive())
+            scene = self._scene
         if gen is not None:
-            self._dispatch(("translate", gen, text))
+            self._dispatch(("translate", gen, (text, scene)))
 
     def submit_audio(self, audio: bytes) -> None:
         """Transcribe (on the worker), then the same as submit_text. Until the text is known
@@ -390,6 +404,7 @@ class Session:
             self._took_effect = n
             self._transcript, self._stt = text, stt
             refused = self._other_senders() > 0   # REAL-2, as nl_control.py does per instruction
+            self._scene = self._freeze_scene()
             self._gen += 1
             self._prep = None
             if self._running:
@@ -420,6 +435,16 @@ class Session:
         read = getattr(self.link, "other_senders", None)
         return read() if callable(read) else 0
 
+    def _link_objects(self) -> tuple[Obj, ...]:
+        """The link's objects, checked again (R21); () for a link without objects()."""
+        read = getattr(self.link, "objects", None)
+        return parse_rows(read()) if callable(read) else ()
+
+    def _freeze_scene(self) -> Scene:
+        """The objects and the pose as the instruction arrives (design §6.3, R2): the prompt,
+        the check and the grid's objects use them, whatever the link lists later."""
+        return Scene(self._link_objects(), self.link.pose())
+
     # ---------------- worker ----------------
     def _dispatch(self, job: tuple) -> None:
         if self.background:
@@ -441,8 +466,8 @@ class Session:
         kind, key, payload = job   # key: the generation; for "audio" the recording's number
         if kind == "audio":
             self._transcribe_then_translate(key, payload)
-        elif kind == "translate":
-            self._produce(key, self._translate, payload)
+        elif kind == "translate":   # (text, the Scene frozen for it)
+            self._produce(key, self._translate, *payload)
         else:  # "synthesize": (translation, initial state) once the Go2 is ready
             self._produce(key, self._synthesize, key, *payload)
 
@@ -473,8 +498,9 @@ class Session:
         with self._lock:
             self._transcribed(n)
             new_gen = self._accept_text(text, stt, n)
+            scene = self._scene
         if new_gen is not None:
-            self._produce(new_gen, self._translate, text)
+            self._produce(new_gen, self._translate, text, scene)
 
     def _transcribed(self, n: int) -> None:
         if self._transcribing == n:
@@ -492,10 +518,10 @@ class Session:
         if outcome is not None:
             self._results.put((gen, outcome))
 
-    def _translate(self, text: str) -> _Outcome:
+    def _translate(self, text: str, scene: Scene | None) -> _Outcome:
         """A translation alone: tick() makes its supervisor once the Go2 is ready."""
         try:
-            tr = translate(text, self.llm)
+            tr = translate(text, self.llm, scene=scene)
         except LLMError as exc:
             return _Outcome(error=str(exc))
         if not tr.ok:
@@ -540,6 +566,8 @@ class Session:
             self._reading = self.link.reading(now)
             self._posture = self.link.posture()
             self._pose = self.link.pose()
+            self._objects = self._link_objects()
+            self._object_rows = snapshot_rows(self._objects, self._pose)
             self._take_results()
             if self._prep is not None:
                 self._get_ready(now)
@@ -942,6 +970,7 @@ class Session:
                 "current": self._action,
                 "posture": self._posture,
                 "pose": list(self._pose) if self._pose is not None else None,
+                "objects": list(self._object_rows),
                 "front": r.front if r else SENSOR_LOST,
                 "back": r.back if r else SENSOR_LOST,
                 "front_dist": r.front_dist if r else None,
