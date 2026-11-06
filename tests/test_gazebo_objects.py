@@ -208,28 +208,33 @@ def test_the_readme_echo_shows_the_whole_objects_message():
 
 
 def test_the_docs_state_the_gazebo_lap_result():
-    """Design §2 is still not met in Gazebo: with the grid moves joined without stops (M1 and the
-    corners, c2641ce) the lap passed 2 of 3 and the chair 3 of 3; before, the lap ended 1 of 31
-    times (docs/reference/gazebo_objects_e2e.md, part 3 above its older conclusions). README §4
-    and §8 and design §12 say so and that the rest is undecided, and README does not read as if
-    the grid executor were checked in Gazebo."""
+    """Design §2 is still not met in Gazebo: on the final code (a2fe140: M1, corners, the turn ended
+    before the walk and the slower speeds of C2, the near band to 1.3 m of ruling N1) the lap passed
+    2 of 5 and the chair 3 of 3 (docs/reference/gazebo_objects_e2e.md, part 4 above the older parts
+    and conclusions). README §4 and §8 and design §12 say so, name the Gazebo controller's sway as
+    the cause and a controller patch as the open route, and that the rest is undecided; README
+    does not read as if the grid executor were checked in Gazebo."""
     readme = README.read_text(encoding="utf-8")
     assert "偽の Go2 と Gazebo でしか確かめていません" not in readme
     assert "確かめた範囲では転んでいません。" not in readme.replace("物を使わない指示で確かめた範囲では", "")
     objects = readme[readme.index("### 物を使う指示（箱と椅子）"):readme.index("## 5.")]
     lap_row = next(line for line in objects.splitlines() if line.startswith("| 箱の周りを一周して |"))
-    assert "Gazebo ではまだ毎回は通らない" in lap_row and "3 回のうち 2 回" in lap_row and "§8" in lap_row
+    assert "Gazebo ではまだ毎回は通らない" in lap_row and "5 回のうち 2 回" in lap_row and "§8" in lap_row
     assert "Gazebo では、設計書（物）§2 の合格の条件をまだ満たしていません" in objects
+    near_row = next(line for line in objects.splitlines() if line.startswith("| `near_<id>` |"))
+    assert "1.3 m" in near_row and "1.4 m" not in near_row
     unknown = readme[readme.index("## 8. わかっていないこと"):]
     gazebo = unknown[unknown.index("- **Gazebo での物を使う指示"):unknown.index("- **物を使う指示の実機での動き")]
-    for words in ("まだ満たせていません", "3 回のうち 2 回", "椅子までは 3/3", "31 回のうち 1 回", "unitree_guide",
-                  "まだ決めていません", "gazebo_objects_e2e.md"):
+    for words in ("まだ満たせていません", "5 回のうち 2 回", "椅子までは 3/3", "31 回のうち 1 回", "unitree_guide",
+                  "パッチ", "まだ決めていません", "gazebo_objects_e2e.md", "第 4 部", "椅子まで 1.28 m"):
         assert words in gazebo, words
     design = DESIGN.read_text(encoding="utf-8")
     results = design[design.index("**確かめた結果**"):]
-    for words in ("§2 の合格の条件は、Gazebo ではまだ満たせていない", "一周 2/3", "椅子まで 3/3", "25 回", "終えたのは 1 回",
-                  "10 回のうち 7 回合格", "まだ決めていないこと（利用者の判断を待つ）"):
+    for words in ("§2 の合格の条件は、Gazebo ではまだ満たせていない", "一周 2/5", "椅子まで 3/3", "25 回", "終えたのは 1 回",
+                  "10 回のうち 7 回合格", "unitree_guide", "まだ決めていないこと（利用者の判断を待つ）"):
         assert words in results, words
+    assert "min(物の半径 + 1.5 m, 1.3 m)" in design and "min(物の半径 + 1.5 m, 1.4 m)" not in design
     record = (ROOT / "docs" / "reference" / "gazebo_objects_e2e.md").read_text(encoding="utf-8")
-    assert record.index("## 第 3 部") < record.index("## 結論")
-    assert "**最後のコード（`c2641ce`）で一周 2/3・椅子 3/3・挨拶つき 1/1。**" in record
+    assert record.index("## 第 4 部") < record.index("## 第 3 部") < record.index("## 結論")
+    assert "**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**" in record
+    assert "終わって 1 秒（`TAIL_S`）しか見ない" not in record                  # TAIL_S is 3 s since 6bf599c
