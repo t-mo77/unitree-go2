@@ -362,11 +362,11 @@ ROS 2 のノードとしてコンテナ内で動かす。実機と同じトピ�
   - 使う部分：unitree_guide controller、`go2_description`、`gz_quadruped_playground`（Gazebo Harmonic 用の ros2_control のハードウェア `gz_quadruped_hardware` と world）。
   - 選んだ理由：ライセンスは Apache-2.0。unitree_guide controller が「脱力 → 伏せ → 立つ → 歩く（速度）」の状態の切り替えを持っている（`/control_input` の `command` で切り替える）。
   - 比べたもの：CHAMP を使う `anujjain-dev/unitree-go2-ros2` は立ち・伏せの切り替えがない。
-- **`docker/patches/` の 4 つのパッチ：** 固定した commit に、ビルドの前に名前の順で `git apply` する（upstream は書き換えない）。0001・0002 が無いと、その場で 90 度回った後に転ぶ。0003・0004 が無いと、歩き出し・旋回の終わり・角で揺れが育って転ぶ（物を使う指示の一周で 5 回のうち 3 回）。イメージは `go2-voice-ltl-gazebo:patch-0004`（0001・0002 だけの前のイメージは `go2-voice-ltl-gazebo:dev`、`GO2_GAZEBO_IMAGE` で戻せる）。
+- **`docker/patches/` の 4 つのパッチ：** 固定した commit に、ビルドの前に名前の順で `git apply` する（upstream は書き換えない）。0001・0002 が無いと、その場で 90 度回った後に転ぶ。0003・0004 が無いと、歩き出し・旋回の終わり・角で揺れが育つ（物を使う指示の一周 5 回のうち、転んだのが 2 回、揺れて位置がずれて止まったのが 1 回）。イメージは `go2-voice-ltl-gazebo:patch-0004`。0001・0002 だけの前のイメージは、作った Mac で `go2-voice-ltl-gazebo:patch-0002`（= 前の `:dev`）として残してあり、`GO2_GAZEBO_IMAGE` で戻せる（この Dockerfile からは作り直せないので、付けたまま build しない）。
   - `0001-estimator-world-frame-leg-odometry.patch`：状態推定（Estimator）が、脚の測定値を胴の座標のまま世界の座標のカルマンフィルタに入れていた。世界の座標に直してから入れる（元の unitree_guide と同じ式）。
   - `0002-feet-end-calc-body-frame-stance-angle.patch`：歩くに入るときの足の角度（`FeetEndCalc::init`）を胴の座標で測る。回った後に伏せて立ち直すと、最初の数歩でよろけていた。
   - 結果：その場の ±90 度、回った向きでの立ち直しとも 3/3 合格（[gazebo_turn_fix.md](reference/gazebo_turn_fix.md)）。
-  - `0003-estimator-velocity-low-pass-out-of-state.patch`：状態推定が、速度にかけた 3 Hz のローパスの値をカルマンフィルタの状態に書き戻していた（元の unitree_guide は書き戻さない）。推定の速さが約 0.1 秒遅れて小さく出て、歩き出しで胴が指令の 3 倍まで出ていた。書き戻さない。
+  - `0003-estimator-velocity-low-pass-out-of-state.patch`：状態推定が、速度にかけた 3 Hz のローパスの値をカルマンフィルタの状態に書き戻していた（元の unitree_guide は書き戻さない）。推定の速さが約 0.14 秒遅れて小さく出て、歩き出しで胴が指令の 3 倍まで出ていた。書き戻さない。
   - `0004-trotting-enter-from-stance-all.patch`：歩くに入るとき、4 本の足を着いた状態（`STANCE_ALL`）から始める。最初の周期に足踏みを始めると、最長 0.225 秒 4 本とも振り出しになっていた。
   - 結果：物を使う指示の一周 5/5・椅子 3/3（[gazebo_objects_e2e.md](reference/gazebo_objects_e2e.md) 第 5 部）。
 - **既知の注意：**
@@ -376,7 +376,7 @@ ROS 2 のノードとしてコンテナ内で動かす。実機と同じトピ�
 
 ### 作り
 
-- **Gazebo のコンテナ：** app とは別のイメージ（`go2-voice-ltl-gazebo:dev`）。`unitree_go`・`unitree_api` は app と同じ unitree_ros2 の commit から Jazzy の上でビルドする。起動は `docker compose --profile gazebo up gazebo`。
+- **Gazebo のコンテナ：** app とは別のイメージ（`go2-voice-ltl-gazebo:patch-0004`。0003・0004 の前は `go2-voice-ltl-gazebo:dev`）。`unitree_go`・`unitree_api` は app と同じ unitree_ros2 の commit から Jazzy の上でビルドする。起動は `docker compose --profile gazebo up gazebo`。
 - **画面：** コンテナの中の仮想の画面（Xvfb）で Gazebo の画面を動かし、noVNC でブラウザ（`http://localhost:6080/vnc.html`）から見る。Mac の Docker には GPU がないので、ソフトウェアで描く（llvmpipe）。
 - **launch（構成 B）：** `gazebo/launch/go2_gazebo.launch.py`。upstream の playground の launch は、カメラ 2 台と rviz2 で CPU が足りず、real-time factor が 0.13 になる（NO-GO）ので使わない。
   - Gazebo の画面あり（`gui:=false` でサーバーだけ）、センサーは LiDAR と logical camera（画像は出さず、見えている model の名前と位置だけ。画像を出すカメラはなし）、rviz2 なし。

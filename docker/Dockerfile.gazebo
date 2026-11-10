@@ -1,5 +1,6 @@
 # Image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0004 (compose.yaml; patches 0001-0004).
-# The older go2-voice-ltl-gazebo:dev (0001-0002) is kept for rollback: GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev
+# The image with 0001-0002 only is kept on this Mac as go2-voice-ltl-gazebo:patch-0002 (= the old :dev) for
+# rollback (GO2_GAZEBO_IMAGE, compose.yaml); this Dockerfile cannot rebuild it, so never build with that set.
 # Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic + legubiao/quadruped_ros2_control
 # (unitree_guide controller, Go2 model, gz_quadruped_playground with a LiDAR).
 # Gazebo Classic 11 has no arm64 build for Ubuntu 22.04, so only this container moves to

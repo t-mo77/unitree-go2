@@ -211,7 +211,9 @@ def test_the_docs_state_the_gazebo_lap_result():
     """Design §2 is met in Gazebo since the controller patches 0003-0004 (image
     go2-voice-ltl-gazebo:patch-0004, code a2fe140 unchanged): lap 5 of 5 in a row, chair 3 of 3,
     chair-and-hello 1 of 1 (docs/reference/gazebo_objects_e2e.md, part 5 above parts 4, 3 and the
-    conclusions), measured with the Mac in Low Power Mode (RTF 0.87). Before the patches the lap
+    conclusions). The RTF was measured once, on battery in Low Power Mode (0.87); the Mac went on AC
+    at 07:08:34 during L4, so only L5 is a lap fully on AC and no lap set ran on AC with a quiet host.
+    Like for like: 192 lap steps without a fall against C2's 336 with 6. Before the patches the lap
     passed 2 of 5 (part 4). README §4 and §8 and design §2 and §12 say so, name what is still
     unchecked, and README does not read as if the grid executor were checked on the real robot."""
     readme = README.read_text(encoding="utf-8")
@@ -227,16 +229,18 @@ def test_the_docs_state_the_gazebo_lap_result():
     assert "1.3 m" in near_row and "1.4 m" not in near_row
     unknown = readme[readme.index("## 8. わかっていないこと"):]
     gazebo = unknown[unknown.index("- **Gazebo での物を使う指示"):unknown.index("- **物を使う指示の実機での動き")]
-    for words in ("満たしました", "一周 5/5", "椅子 3/3", "低電力モード", "patch-0004", "電源につないだ組",
-                  "5 回のうち 2 回", "31 回のうち 1 回", "unitree_guide", "gazebo_objects_e2e.md", "第 5 部",
-                  "椅子まで 1.28 m"):
+    for words in ("満たしました", "一周 5/5", "椅子 3/3", "低電力モード", "patch-0004", "L4 の途中から電源",
+                  "電源につないだ静かな Mac", "一周の動作 192 回", "336 回で 6 回", "5 回のうち 2 回",
+                  "31 回のうち 1 回", "unitree_guide", "gazebo_objects_e2e.md", "第 5 部", "椅子まで 1.28 m"):
         assert words in gazebo, words
+    assert "ただし Mac が低電力モードのときに測りました" not in gazebo           # only R1 and L1-L3 were
+    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002" in readme and "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in readme
     design = DESIGN.read_text(encoding="utf-8")
     goal = design[design.index("## 2. ゴール"):design.index("## 3. やらないこと")]
     assert "**Gazebo での状態（2026-11-11、§12）：満たした。**" in goal and "patch-0004" in goal
     results = design[design.index("**確かめた結果**"):]
     for words in ("§2 の合格の条件は、Gazebo で満たした", "一周 5/5", "椅子まで 3/3", "低電力モード", "patch-0004",
-                  "一周 2/5", "25 回", "終えたのは 1 回", "10 回のうち 7 回合格", "unitree_guide",
+                  "07:08:34", "電源で最初から最後まで流した一周は L5 だけ", "一周の動作 192 回", "一周 2/5", "25 回", "終えたのは 1 回", "10 回のうち 7 回合格", "unitree_guide",
                   "決めたこと（利用者の判断、C4）"):
         assert words in results, words
     assert "Gazebo ではまだ満たせていない" not in results
@@ -246,7 +250,15 @@ def test_the_docs_state_the_gazebo_lap_result():
     assert record.index("## 第 5 部") < record.index("## 第 4 部") < record.index("## 第 3 部") < record.index("## 結論")
     part5 = record[record.index("## 第 5 部"):record.index("## 第 4 部")]
     assert "§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）を Gazebo で満たした。" in part5
-    assert "一周 5/5" in part5 and "低電力モード" in part5 and "RTF は 0.87" in part5
+    assert "一周 5/5" in part5 and "低電力モード" in part5 and "RTF は R1 で 1 回だけ測った（0.87" in part5
+    assert "07:08:34" in part5 and "L5 だけ" in part5 and "loadavg は、回の前と走っている間（30 秒ごと）で 3.9〜23" in part5
+    assert "測る間はつながらなかった" not in record and "loadavg は 5〜9" not in part5
+    assert "一周の動作（立つは数えない）192 回で転び 0" in part5 and "336 回で 6 回転んだ" in part5
+    assert "roll −0.323" in part5 and "一時停止：前進" in part5 and "約 0.14 秒遅れ" in part5
+    assert "go2-voice-ltl-gazebo:patch-0002" in part5
+    assert "## 結論（第 1 部・第 2 部）" in record
+    summary = record[record.index("## まとめ：一周・椅子・RTF の全部"):record.index("## 気づいたこと")]
+    assert "第 4 部の `a2fe140`" in summary and "第 5 部、`go2-voice-ltl-gazebo:patch-0004`" in summary
     assert "**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**" in record
     assert "終わって 1 秒（`TAIL_S`）しか見ない" not in record                  # TAIL_S is 3 s since 6bf599c
 
@@ -254,7 +266,8 @@ def test_the_docs_state_the_gazebo_lap_result():
 def test_the_gazebo_image_carries_the_controller_patches():
     """Patches 0003-0004 (gazebo_objects_e2e.md part 5) are applied by Dockerfile.gazebo with
     0001-0002, and compose builds and runs them as go2-voice-ltl-gazebo:patch-0004; the image
-    without them (:dev) stays reachable through GO2_GAZEBO_IMAGE. 0003 drops the three lines that
+    without them (kept as go2-voice-ltl-gazebo:patch-0002) is reached through GO2_GAZEBO_IMAGE, with a
+    warning never to build with it set (this tree would build 0001-0004 under that tag). 0003 drops the three lines that
     wrote the low-pass velocity back into the Kalman state and keeps feeding the filters; 0004 makes
     StateTrotting::enter() start from STANCE_ALL."""
     patches = sorted(p.name for p in (ROOT / "docker" / "patches").glob("*.patch"))
@@ -275,4 +288,6 @@ def test_the_gazebo_image_carries_the_controller_patches():
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     gazebo = compose[compose.index("\n  gazebo:"):compose.index("\nvolumes:")]
     assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}" in gazebo.splitlines()
-    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" in gazebo
+    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
+    assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
+    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in gazebo
