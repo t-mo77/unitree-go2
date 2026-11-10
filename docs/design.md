@@ -368,10 +368,10 @@ ROS 2 のノードとしてコンテナ内で動かす。実機と同じトピ�
   - 結果：その場の ±90 度、回った向きでの立ち直しとも 3/3 合格（[gazebo_turn_fix.md](reference/gazebo_turn_fix.md)）。
   - `0003-estimator-velocity-low-pass-out-of-state.patch`：状態推定が、速度にかけた 3 Hz のローパスの値をカルマンフィルタの状態に書き戻していた（元の unitree_guide は書き戻さない）。推定の速さが約 0.14 秒遅れて小さく出て、歩き出しで胴が指令の 3 倍まで出ていた。書き戻さない。
   - `0004-trotting-enter-from-stance-all.patch`：歩くに入るとき、4 本の足を着いた状態（`STANCE_ALL`）から始める。最初の周期に足踏みを始めると、最長 0.225 秒 4 本とも振り出しになっていた。
-  - 結果：物を使う指示の一周 5/5・椅子 3/3（[gazebo_objects_e2e.md](reference/gazebo_objects_e2e.md) 第 5 部）。
+  - 結果：物を使う指示の一周 2 組で 9/10（5/5・4/5）・椅子 6/6（[gazebo_objects_e2e.md](reference/gazebo_objects_e2e.md) 第 5 部）。転んだ 1 回は、Gazebo が続けて止まった後。
 - **既知の注意：**
   - legubiao の README には「KDL を使っているので動きが不安定なことがある」とある。
-  - 歩き方の周期は実際の時間で数える（`WaveGenerator`）。Gazebo が CPU 不足で止まったり進んだりすると傾くので、CPU に余裕を残す。
+  - 歩き方の周期は実際の時間で数える（`WaveGenerator`）。Gazebo が CPU 不足で止まったり進んだりすると傾くので、CPU に余裕を残す（0003・0004 の後も、Gazebo が 2 回続けて止まった後に 1 回転んだ）。
   - 前進して止めた直後に回ると、揺れが大きくなることがあった（roll が 0.5 rad を越えることがあった）。0003 の後は、一周の旋回中の roll（95 %）が 0.01〜0.05 rad。
 
 ### 作り
