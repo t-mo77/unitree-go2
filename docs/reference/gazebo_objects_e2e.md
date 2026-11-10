@@ -1,14 +1,15 @@
 # Gazebo での物の確認：箱の一周と椅子まで（Task I）
 
-設計書 `docs/superpowers/specs/2026-11-05-go2-objects-design.md` の §2 の合格の条件を Gazebo で測り、操作画面を本物の Claude で動かした記録。4 つに分かれる：
+設計書 `docs/superpowers/specs/2026-11-05-go2-objects-design.md` の §2 の合格の条件を Gazebo で測り、操作画面を本物の Claude で動かした記録。5 つに分かれる：
 
 - **第 1 部**（計画の Task I の手順 4〜6）：`objects/i` のフォルダで、LLM を通さずに、物の一覧・RTF・箱の一周・椅子までを測った。実行器と橋渡しを調整したのもここ。
 - **第 2 部**（手順 4〜7）：wave 3 を merge した後の本体のフォルダで、静かなときの RTF を測り、一周と椅子を 1 回ずつ流し、操作画面から本物の Claude で動かした（上から見た図の絵もここ）。
 - **第 3 部**：実行器を 3 回変えて（`4783846`、M1 の止まらずにつなぐ動き、角もつなぐ動き）、そのたびに一周 3 回・椅子 3 回を測った。**最後のコード（`c2641ce`）で一周 2/3・椅子 3/3・挨拶つき 1/1。**
-- **第 4 部**（いちばん新しい。下のすぐ次の節）：調整の回（C0〜C3、一周 5 回ずつ）で C2（旋回の後は z を 0 にしてから歩き出す、前進 0.22 m/s・旋回 0.4 rad/s）を選んで merge し、手前の帯の外側の線を 1.3 m にした（N1）。**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**
+- **第 4 部**：調整の回（C0〜C3、一周 5 回ずつ）で C2（旋回の後は z を 0 にしてから歩き出す、前進 0.22 m/s・旋回 0.4 rad/s）を選んで merge し、手前の帯の外側の線を 1.3 m にした（N1）。**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**
+- **第 5 部**（いちばん新しい。下のすぐ次の節）：controller の状態推定を直すパッチ 0003 と、歩くに入る所を直すパッチ 0004 を当てたイメージ `go2-voice-ltl-gazebo:patch-0004` で測り直した。実行器は第 4 部の `a2fe140` のまま。**一周 5/5・椅子 3/3・挨拶つき 1/1、§2 の合格の条件を満たした**（Mac は低電力モード、RTF 0.87）。
 
-- 日付：2026-11-06（第 4 部の最後の回は 2026-11-07）。場所：この Mac の Docker Desktop（arm64、CPU 8、メモリ 7.7 GiB）。
-- 回は 5 つの時間帯に分かれる：
+- 日付：2026-11-06（第 4 部の最後の回は 2026-11-07、第 5 部は 2026-11-11）。場所：この Mac の Docker Desktop（arm64、CPU 8、メモリ 7.7 GiB）。
+- 回は 6 つの時間帯に分かれる（第 5 部は 2026-11-11 06:34〜07:21。中身は「第 5 部」の節）：
   - **第 1 部・最初の回（13:11〜14:10）**：実行器の値を変えながら 15 回の一周と 5 回の椅子。この間、別の担当（Task H・Task L）がそれぞれのフォルダでテストを流していた
     （`obj-h-app-run-*`・`obj-l-app-run-*` が 100〜120 %）。とくに 13:14 と 13:34 は重かった（下の「負荷が重いとき」）。
   - **第 1 部・修正 1 回目（14:37〜14:46）**：レビューを受けて、実行器を計画の P7 に戻し、橋渡しを直して（下の「最初の動作の速度を 0 から上げる」）、手順 5・6 の 7 回を流し直した。
@@ -17,7 +18,7 @@
     実行器・橋渡しの中身は修正 1 回目と同じ。ほかのタスクは動いていなかった（`docker ps` は、自分で起動した使い捨てのコンテナだけ）。
   - **第 3 部（16:28〜17:30）**：組 A（16:28〜16:36）・組 B（17:01〜17:08）・組 C（17:23〜17:30）。中身は「第 3 部」の節。
   - **第 4 部（2026-11-06 17:46〜2026-11-07 06:52）**：調整の回（17:46〜18:36、`objects/n` のフォルダ）、`6825e2b` の回（18:48〜18:55）、最後のコード `a2fe140` の回（11-07 06:27〜06:41）と操作画面（06:42〜06:52）。間の 18:56〜06:26 は Mac のふたが閉じられて眠っていた。中身は「第 4 部」の節。
-- 使ったもの：app は `go2-voice-ltl:dev`（ROS 2 Humble）、gazebo は `go2-voice-ltl-gazebo:dev`（ROS 2 Jazzy + Gazebo Harmonic、`docker/patches/` の 0001・0002 入り。作り直していない）。
+- 使ったもの：app は `go2-voice-ltl:dev`（ROS 2 Humble）、gazebo は第 1〜4 部が `go2-voice-ltl-gazebo:dev`（ROS 2 Jazzy + Gazebo Harmonic、`docker/patches/` の 0001・0002 入り。作り直していない）、第 5 部が `go2-voice-ltl-gazebo:patch-0004`（0001〜0004 入り）。
   第 1 部のコードは `objects/i` のフォルダ（`../.go2-worktrees/obj-i`、compose の project は `obj-i`）。修正 1 回目は commit `97c3c64`：
   実行器（`voice_ltl/grid_executor.py`）は計画の P7 の値のまま、橋渡し（`gazebo/bridge_core.py`）は大きさの `StillGate` と、待たせた速度を 0 から上げる `RELEASE_ACC` 入り。
 - Gazebo は毎回、使い捨てのコンテナで起動し直した（compose の service は起動していない。計画の P8）：
@@ -37,6 +38,134 @@ docker compose --profile gazebo run -d --rm --no-deps -T -e ROS_DOMAIN_ID=77 --n
     最初の回は同じ中身の道具をコミットせずに使っていた。修正 1 回目で `motion_log.py` としてコミットし、最初の回の記録も数え直した（下の「動作ごとの最大傾き」の数はどれもこの道具の出力）。
   - 橋渡しが controller に送った値は、Gazebo のコンテナのログ（`controller へ: command …`）で見た。
   - 第 2 部の操作画面は Playwright（Chromium、幅 1400）で開き、ページの文字（記録・札・図の説明）を読み、絵を撮った。
+
+## 第 5 部：controller を直した（パッチ 0003・0004、イメージ `go2-voice-ltl-gazebo:patch-0004`、2026-11-11）
+
+第 4 部の後、利用者の判断で controller の道を試した（`objects/ctrl` のフォルダ `../.go2-worktrees/obj-ctrl`、compose の project は `obj-ctrl`）。実行器・橋渡し・`GRID_EXEC_CONFIG`（C2）は変えていない。
+
+**結論：揺れの元は、controller の状態推定が速度にかけたローパスをカルマンフィルタの中に書き戻していたこと（推定の速さが約 0.1 秒遅れて小さく、歩き出しで胴が指令の 3 倍の 0.6〜0.85 m/s まで出ていた）。それをやめるパッチ 0003 と、歩くに入った直後に 4 本とも振り出すことがあるのを止めるパッチ 0004 を当てたイメージで、一周 5/5（5 回続けて転ばない）・椅子 3/3・`F(near_chair_1 & X F hello)` 1/1。§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）を Gazebo で満たした。** 旋回中の |roll| の 95 % 値は 0.23〜0.43 → 0.011〜0.045 rad、0.22 m/s の歩き出しの胴の速さは 0.62〜0.76 → 0.33〜0.38 m/s。ただし測ったとき Mac はバッテリーの低電力モードで、RTF は 0.87（回ごとの odometry では 0.84〜0.99、Gazebo が最長 1.0 秒止まった回がある。下の「測った条件」）。
+
+### 何が起きていたか（第 4 部の記録を数え直した）
+
+- 第 4 部の最後のコード（`a2fe140`）の一周 5 回・椅子 3 回の odometry（`motion.jsonl`）を数え直した。前進を 0.22 m/s で指令しているのに、**歩き出すたびに胴は 0.62〜0.85 m/s まで出て**（歩き出し 1.5 秒の最大の中央値、回ごとに 0.62〜0.76）、その後に戻っていた。0.22 m/s で歩いている間の 95 % 値も 0.60〜0.69 m/s。
+- 旋回中の |roll| の 95 % 値は 0.23〜0.43 rad、前進中は 0.19〜0.45 rad。向きの速さ（指令 0.4 rad/s）の標準偏差は 0.43〜0.49 rad/s（向きが行ったり戻ったりしていた）。
+- 転んだ 16 回（第 4 部の C0〜C3・`6825e2b`・`a2fe140`）で、|roll| が 0.3 を越えた時の胴の速さは 0.18〜0.67 m/s（中央値 0.43）。その場の旋回（x = 0）の指令の中でも、胴は横や後ろへ 0.3〜0.6 m/s で流れ、そのまま倒れていた。
+
+### 調べ方：計測版の controller
+
+- イメージ `go2-voice-ltl-gazebo:dev` の上で unitree_guide controller だけをビルドし直した使い捨てのイメージ `go2-voice-ltl-gazebo:diag`（コミットしていない）。歩く状態（`StateTrotting`）の中から 50 Hz で、推定の位置・速さ、歩き方の状態（`STANCE_ALL`・`WAVE_ALL`）、足の接地、向きの目標などを `/tmp/ugc_diag.csv` に書く。直し方の候補は環境変数で入れたり外したりできる（`UGC_NO_LPF`・`UGC_STANCE_ENTER`・`UGC_FORCE_WAVE_ENTRY` など）。
+- 推定の速さを、Gazebo の本当の速さ（odometry の差分）と比べた。回の中身は第 4 部と同じ `objects_check.py run` と `motion_log.py record`（`gazebo-ctrl-runs/diag/`）。
+
+### 原因 1：推定の速さが遅れて小さい（パッチ 0003）
+
+- 直す前と同じ動き（D0、計測版で何も変えない一周、合格・max_tilt 0.784）で、controller の推定の速さは本当の速さから **約 0.14 秒遅れ、誤差の大きさ（rms）0.167 m/s**（本当の速さの rms は 0.248 m/s）。歩き出しの 0.5 秒では、本当の速さが 0.29 → 0.60 m/s と上がる間、推定は 0.02 → 0.10〜0.16 m/s だった。
+- `Estimator::update()` の最後が、速度に 3 Hz のローパスをかけた値をカルマンフィルタの状態 `x_hat_` に書き戻していた。元の unitree_guide（`Estimator::run`）は、ローパスに値を入れるだけで `_xhat` は変えない（`getVelocity()` は `_xhat` のまま）。ROS 2 版で書き戻しが入った。
+  書き戻すと、ローパスがフィルタの中に入る：1 周期（5 ms）ごとに更新の 8.6 %（重み 1/(1 + 1/(2π·0.005·3))）しか残らない。加速度の積分も脚の速さの測定値も 1/12 ほどしか効かず、推定はなかなか本当の速さに追いつかない。
+- `StateTrotting` の速度の PD（`Kdp` 10）、目標の速さの上限（推定 ± 0.2 m/s）、足の置き場所（`FeetEndCalc`：推定の速さ × 時間）は、どれもこの推定で動く。推定が「まだ遅い」と言う間に体は 0.6 m/s を越え、足は短く置かれ、体が足の外へ出て横や後ろへ流れる。旋回の終わり・歩き出し・角はどれも速さが変わる所。
+- 書き戻しをやめた計測版（D2、`UGC_NO_LPF=1`）の一周：推定の遅れ **0.01 秒、誤差 0.049 m/s**。合格、max_tilt 0.289。
+  | | D0（直す前の動き） | D2（書き戻しなし） | 第 4 部 `a2fe140` の 5 周 |
+  |---|---|---|---|
+  | 旋回中の \|roll\| 95 % 値 | 0.314 | **0.019** | 0.23〜0.43 |
+  | 前進中の \|roll\| 95 % 値 | 0.104 | **0.023** | 0.20〜0.30 |
+  | 歩き出しの胴の速さ（最大の中央値、指令 0.22） | 0.58 m/s | **0.35 m/s** | 0.62〜0.76 m/s |
+  | max_tilt | 0.784 | **0.289** | 0.47〜3.14 |
+  D0 と D2 は、どちらもこの Mac の低電力モード（RTF 0.76・0.79。下の「測った条件」）。
+
+### 原因 2：歩くに入った直後、4 本とも振り出しになることがある（パッチ 0004）
+
+- `WaveGenerator` の状態は初めは `SWING_ALL`（4 本とも振り出し）で、`StateTrotting::exit()` も `SWING_ALL` にする。歩くに入った最初の周期に `checkStepOrNot()` が真（推定の速さ > 0.05 m/s）だと、`SWING_ALL → WAVE_ALL` に移る。その移り方は、波の上では着いているはずの足も自分の振り出しが来るまで振り出し（位相 0.5、足の目標は 8 cm 上）のままにするので、最長 0.225 秒（1 回の着地の時間）4 本とも振り出しになる。第 4 部の H1（歩くに入って 0.15 秒後に胴が 0.14 m）と調整の回の C3 L4 はこの形。
+- 立って歩くに入る時の推定の速さは、D0 で 0.045 m/s、D2 で 0.059 m/s（脚を信じない伏せ・立つの間に IMU の加速度のずれが溜まる）。しきい値 0.05 のすぐそばで、入るかどうかは運だった（D2 は最初の周期に `WAVE_ALL` を選び、次の周期に推定が下がって `STANCE_ALL` に戻ったので助かった）。
+- 確かめた（計測版、椅子まで 1 回ずつ、歩くに入って 0.5 秒は必ず足踏みさせる `UGC_FORCE_WAVE_ENTRY=1`）：
+  - E1（0004 なし）：歩くに入ってから約 0.1 秒、足の接地が `0000`（4 本とも振り出し）で、推定の胴の高さが 1.7 cm 下がった（本当の高さは 0.322 → 0.315 m）。今回は波の位相の運で短く済んだ（最長は 0.225 秒）。
+  - E2（0004 あり）：`1111` → `1001`（いつも 2 本以上着いている）。胴の高さは 0.307〜0.311 m のまま。
+
+### 確かめて、原因ではなかったこと
+
+- **向きの目標（`yaw_cmd_`）の溜まり：** 橋渡しが controller に送った値（Gazebo のログの「controller へ」）から `yaw_cmd_` を作り直すと、旋回の終わりの `yaw_cmd_ − 実際の向き` は −2〜+7 度、転んだ L1・L3 の 0.5 秒前は +2.3 度・+0.3 度。胴を大きくねじる量ではない（Task 16fix の H2 と同じ結論）。
+- **Gazebo の速さ（RTF）の揺れ：** 歩き方の周期は実際の時間で数える（`WaveGenerator`）が、1 秒ごとの RTF（0.85〜1.0）と、その 1 秒の最大 |roll| には関係が見えなかった（第 4 部・調整の回の、動いていた約 1260 秒）。
+- **実行器の旋回の最後（`MIN_TURN` 0.15 rad/s）と controller の足踏みのしきい値（0.2 rad/s）：** 転んだ 16 回のうち 7 回は旋回の最後の 0.15 rad/s の間に始まっていたが、D2 は実行器を変えずに揺れが消えた。変えていない。
+- 実行器・橋渡し・`GRID_EXEC_CONFIG` は変えていない（C2 のまま）。
+
+### パッチとイメージ
+
+- `docker/patches/0003-estimator-velocity-low-pass-out-of-state.patch`（`Estimator.cpp`、3 行を消してコメント）：ローパスの値を `x_hat_` に書き戻さない。ローパスに値を入れる行は元の unitree_guide のとおり残す。
+- `docker/patches/0004-trotting-enter-from-stance-all.patch`（`StateTrotting.cpp`、1 行とコメント）：`StateTrotting::enter()` で `wave_generator_->status_ = WaveStatus::STANCE_ALL`。
+- どちらも upstream の commit に 0001・0002 の後で名前の順に `git apply` する（`docker/Dockerfile.gazebo`、4 つともそのまま当たることを確かめた）。
+- イメージは新しいタグ **`go2-voice-ltl-gazebo:patch-0004`**（`docker compose --profile gazebo build gazebo`、2026-11-11、id `0c539fac68f0`。キャッシュが効いて、controller などのビルドは 1 分 14 秒）。`compose.yaml` の gazebo はこのタグを使う（`image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}`）。
+- 前のイメージ `go2-voice-ltl-gazebo:dev`（0001・0002 だけ）は消さずに残した。戻すときは `GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev docker compose --profile gazebo …`。
+
+### 最後の確かめ（2026-11-11 06:58〜07:21）
+
+- コマンドは第 4 部と同じ（`objects_check.py` の `rtf --seconds 20` / `run --expect lap "F around_box_1"` / `run --expect near "F near_chair_1"` / `run --expect near "F(near_chair_1 & X F hello)"`）。回ごとに使い捨ての Gazebo `gz-ctrl` を起動し直し、`motion_log.py record`（`rec-ctrl`）を並べた。道具は第 4 部の `run_one.sh`・`guarded.sh` と同じ中身（ふたが開いている間だけ流し、`pmset -g log` に眠り・目覚めが入った回を無効にする）。11 回ともふたは開いていて、眠りは入っていない（`VALID`）。
+- 生の記録：`.superpowers/sdd/2026-11-05-go2-objects/gazebo-ctrl-runs/`（gitignore。`acc1/` が最後の確かめ、`diag/` が計測版の回、`tools/` が道具）。
+
+| 回 | 時刻 | 式 | 計画 | 結果 | 値 |
+|---|---|---|---|---|---|
+| R1 | 06:58:28 | — | — | RTF **0.87** | — |
+| L1 | 06:59:33 | `F around_box_1` | 39 | **合格** | 巻き数 1.041、箱の縁 0.860 m、max_tilt 0.326、立つから結果まで 121 秒 |
+| L2 | 07:02:30 | `F around_box_1` | 39 | **合格** | 1.042、0.869 m、0.058、115 秒 |
+| L3 | 07:05:21 | `F around_box_1` | 39 | **合格** | 1.042、0.871 m、0.058、114 秒 |
+| L4 | 07:08:10 | `F around_box_1` | 39 | **合格** | 1.042、0.862 m、0.116、124 秒 |
+| L5 | 07:11:09 | `F around_box_1` | 41 | **合格** | 1.037、0.779 m、0.439、133 秒 |
+| N1 | 07:14:11 | `F near_chair_1` | 8：右 → 前進 ×2 → 左 → 前進 ×3 | **合格** | 椅子まで 1.121 m・18.2°、max_tilt 0.064 |
+| N2 | 07:15:22 | `F near_chair_1` | 8：同上 | **合格** | 1.115 m・22.5°、0.096 |
+| N3 | 07:16:34 | `F near_chair_1` | 7：前進 ×4 → 右 → 前進 | **合格** | 1.104 m・25.0°、0.059 |
+| H1 | 07:17:38 | `F(near_chair_1 & X F hello)` | 9 | **合格** | 1.139 m・22.9°、0.107（挨拶まで終わった） |
+| B1 | 07:19:44 | `F near_box_1`（「箱の前まで」、Gazebo で初めて） | 7：前進 ×4 → 左 → 前進 | 終わりました（`objects_check.py` は椅子を測るので「不合格」と出る） | odometry から：箱の中心まで **1.181 m・20.9°**（1.5 m・45° の内）、箱の縁まで最短 0.861 m、max_tilt 0.25 |
+
+- 一周 5/5（5 回続けて）、椅子 3/3、挨拶つき 1/1。動作（立つは数えない）は一周 192・椅子 20・挨拶つき 8 の 220 回で、転び 0（第 4 部の C2 のコードは 336 回で 6）。位置のずれで止まった回も無い。
+- 揺れ（odometry から。前の値は第 4 部 `a2fe140` の同じ式の回）：
+
+| | 第 5 部（9 回） | 第 4 部 `a2fe140` |
+|---|---|---|
+| 旋回中の \|roll\| 95 % 値 | 0.011〜0.045 | 0.23〜0.43 |
+| 前進中の \|roll\| 95 % 値 | 0.014〜0.050 | 0.19〜0.45 |
+| 0.22 m/s の歩き出しの胴の速さ（最大の中央値） | 0.33〜0.38 m/s | 0.62〜0.76 m/s |
+| 0.22 m/s で歩く間の速さの 95 % 値 | 0.30〜0.33 m/s | 0.60〜0.69 m/s |
+| max_tilt | 0.058〜0.439（9 回のうち 7 回は 0.12 以下） | 0.47〜3.14 |
+
+- 大きめの傾きは L5 の 0.439（前進中）と L1 の 0.326（最初の旋回）。L5 は、Gazebo が 0.16 秒止まった（odometry の届く間が実際の時間で 0.198 秒、シミュレーションの時間で 0.040 秒）約 1 秒後。歩き方の周期は実際の時間で数えるので、Gazebo が止まると足の運びだけが進む（下の「残ること」）。
+- 「箱の前まで」の計画のマスは箱の中心から 1.118 m（R4 の帯の内側の線は、測った大きさ 0.511 × 0.514 で r + 0.75 = 1.112 m）。第 4 部の「気をつけること」のとおり余白は 6 mm しかないが、今回は残った。
+
+```text
+# R1 06:58:28
+{"rtf": 0.87}
+# L1 06:59:33
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.041, "min_edge_box_1": 0.86, "min_edge_chair_1": 1.21, "final_dist_chair_1": 2.204, "final_angle_chair_1_deg": 61.5, "max_tilt": 0.326, "passed": true, "failures": [], "samples": 6036}
+# L2 07:02:30
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.042, "min_edge_box_1": 0.869, "min_edge_chair_1": 1.209, "final_dist_chair_1": 2.199, "final_angle_chair_1_deg": 61.2, "max_tilt": 0.058, "passed": true, "failures": [], "samples": 6034}
+# L3 07:05:21
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.042, "min_edge_box_1": 0.871, "min_edge_chair_1": 1.211, "final_dist_chair_1": 2.202, "final_angle_chair_1_deg": 61.2, "max_tilt": 0.058, "passed": true, "failures": [], "samples": 5993}
+# L4 07:08:10
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.042, "min_edge_box_1": 0.862, "min_edge_chair_1": 1.201, "final_dist_chair_1": 2.202, "final_angle_chair_1_deg": 61.4, "max_tilt": 0.116, "passed": true, "failures": [], "samples": 6044}
+# L5 07:11:09
+{"formula": "F around_box_1", "expect": "lap", "exit_code": 0, "first_action": "立つ", "winding_box_1": 1.037, "min_edge_box_1": 0.779, "min_edge_chair_1": 1.23, "final_dist_chair_1": 2.235, "final_angle_chair_1_deg": 63.3, "max_tilt": 0.439, "passed": true, "failures": [], "samples": 6586}
+# N1 07:14:11
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.102, "min_edge_box_1": 2.466, "min_edge_chair_1": 0.838, "final_dist_chair_1": 1.121, "final_angle_chair_1_deg": 18.2, "max_tilt": 0.064, "passed": true, "failures": [], "samples": 1555}
+# N2 07:15:22
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.102, "min_edge_box_1": 2.418, "min_edge_chair_1": 0.825, "final_dist_chair_1": 1.115, "final_angle_chair_1_deg": 22.5, "max_tilt": 0.096, "passed": true, "failures": [], "samples": 1550}
+# N3 07:16:34
+{"formula": "F near_chair_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.126, "min_edge_box_1": 1.268, "min_edge_chair_1": 0.806, "final_dist_chair_1": 1.104, "final_angle_chair_1_deg": 25.0, "max_tilt": 0.059, "passed": true, "failures": [], "samples": 1277}
+# H1 07:17:38
+{"formula": "F(near_chair_1 & X F hello)", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.102, "min_edge_box_1": 2.408, "min_edge_chair_1": 0.837, "final_dist_chair_1": 1.139, "final_angle_chair_1_deg": 22.9, "max_tilt": 0.107, "passed": true, "failures": [], "samples": 1664}
+# B1 07:19:44
+{"formula": "F near_box_1", "expect": "near", "exit_code": 0, "first_action": "立つ", "winding_box_1": 0.099, "min_edge_box_1": 0.861, "min_edge_chair_1": 1.205, "final_dist_chair_1": 1.966, "final_angle_chair_1_deg": 164.6, "max_tilt": 0.25, "passed": false, "failures": ["final_dist_chair_1: 1.966 > 1.5", "final_angle_chair_1_deg: 164.589 > 45"], "samples": 1308}
+```
+
+#### 測った条件
+
+- この回は、Mac がバッテリーで動き、**低電力モード**（`pmset -g` の `lowpowermode 1`）だった。設定は変えていない（電源をつなぐよう利用者に頼んだが、測る間はつながらなかった）。
+- 静かなときの RTF は 0.87（R1。第 4 部は 0.98）。回ごとの odometry の進み（シミュレーションの時間 ÷ 実際の時間）は L2・L3・N1〜N3 で 0.97〜0.99（Gazebo の止まりなし、第 4 部と同じくらい）、L1 0.93・L4 0.91・L5 0.93・H1 0.84（0.12 秒を越える止まりが 9〜25 回、最長 1.0 秒）。止まりの無い回も、ある回も合格した。
+- ほかのコンテナは動いていなかった（各回の `docker stats` は `gz-ctrl` と `rec-ctrl` だけ）。Mac の 1 分の loadavg は 5〜9。
+- 計測版の回（D0・D2・E1・E2）も同じ低電力モード（RTF 0.74〜0.79）。
+
+### 残ること
+
+- **電源につないだ Mac（RTF 0.98）で、もう一度確かめるとよい。** 今回も止まりの無い 5 回（L2・L3・N1〜N3）は第 4 部と同じ速さで合格したが、組として電源につないで流したわけではない。
+- **歩き方の周期は今も実際の時間で数える（`WaveGenerator`）。** Gazebo が止まると、その分だけ足の運びが先へ進む。今回の大きめの傾き（L5 0.439）はその後に出た。倒れる線（1.0）からは遠い。直すなら周期をシミュレーションの時間で数える（Task 16fix の H3 は、0003 の前の推定の上で試して悪くなったので入れていない。0003 の後では試していない）。
+- 実行器の速さは C2（前進 0.22 m/s・旋回 0.4 rad/s）のまま。揺れが減ったので、P7 の速さ（0.3 m/s・0.5 rad/s）に戻せるかもしれない。測っていない。
+- 操作画面（本物の Claude）からの一周は、この部では流していない（第 4 部の P2〜P4 は 0003・0004 の前のイメージ）。
+- パッチは Gazebo の中の controller だけを変える。実機の Go2 の歩き方は Unitree のソフトなので、関係しない。
 
 ## 第 4 部：調整の回（C0〜C3）、手前の帯 1.3 m（N1）、最後の確かめ（2026-11-06 17:46〜11-07 06:52）
 
@@ -193,7 +322,7 @@ Playwright（Chromium、幅 1400）で http://localhost:8811 を開き、「文�
 
 - **§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）は、まだ満たしていない。** 最後のコードで一周 2/5（3 回続けては通らない）、椅子 3/3。C2 のコードの一周は `objects_check.py` の 13 回のうち 6 回、操作画面では 3 回のうち 1 回。
 - **転ぶのは今も Gazebo の unitree_guide controller の揺れ。** 最後のコードの失敗は、旋回が遅くなる所から始まる横の揺れの中での前進の歩き出し（L1・L3・P3）、角の旋回（L2・P2）、立った後の最初の旋回の始めの胴の落ち込み（H1）。旋回で横に流れて隣のマスへ移ることもある（P3）。L2 は角の旋回で揺れて位置がずれ、「位置がずれたので止めました」で止まった（隣のマスへは移っていない。その旋回の間に「前方に物が出た」の短い待ちが 2 回あった）。止まる所を減らし（M1・角）、旋回と歩き出しを順にし、遅くして（C2）、C2 のコード全体の転びは 336 動作に 6 回（およそ 56 動作に 1 回。組ごとには 26〜88 動作に 1 回で、`6825e2b` の組は C0 の 30 動作に 1 回より悪い）。減りはしたが、無くならない。翻訳・監督器・計画・Session は、転ぶまでどの回も計画どおりだった。
-- **残る手は controller にパッチを当ててイメージを作り直すこと**（例：歩く間の横の揺れを抑える、旋回の終わり・歩き出しの足の運びを変える）。このタスクの決まり（イメージを作り直さない、`docker/patches` を変えない）ではしていない。やるかどうかは利用者の判断を待つ。
+- **残る手は controller にパッチを当ててイメージを作り直すこと**（例：歩く間の横の揺れを抑える、旋回の終わり・歩き出しの足の運びを変える）。このタスクの決まり（イメージを作り直さない、`docker/patches` を変えない）ではしていない。やるかどうかは利用者の判断を待つ。（→ 利用者の判断で、第 5 部でパッチ 0003・0004 を当てた。§2 を満たした。）
 - 箱の手前のマスの余白（上の「手前の帯の外側の線を 1.3 m に」の「気をつけること」）。「箱の前まで」は Gazebo で流していない。
 - この Mac はふたを閉じると眠り、Gazebo の回は流せない（2026-11-06 18:56〜2026-11-07 06:26）。長く流すときはふたを開けたまま、電源につないでおく。
 

@@ -1,0 +1,31 @@
+unitree_guide_controller: 歩くに入るとき、4 本の足を着いた状態（STANCE_ALL）から始める
+
+legubiao/quadruped_ros2_control 5434c5810d1a7fe223bcfd04550e9d3bfdd4b458 に
+0001〜0003 の後で当てる（docker/Dockerfile.gazebo）。
+
+直すこと：WaveGenerator の状態は、初めは SWING_ALL（4 本とも振り出す）で、StateTrotting::exit()
+も SWING_ALL にする。伏せ・立つの間はそのまま。歩くに入った最初の周期に checkStepOrNot() が
+真（推定の速さが 0.05 m/s を超える）だと、SWING_ALL から WAVE_ALL へ移る。その移り方は、波の上で
+着いているはずの足も、自分の振り出しが来るまで振り出し（位相 0.5、足の高さ +8 cm の目標）のままに
+するので、最長で 1 回の着地の時間（0.225 秒）、4 本とも振り出しになり、胴が落ちる。
+Gazebo では、立った後の最初の旋回の始めに胴が 0.14 m に落ちた（第 4 部の H1、調整の回の C3 L4）。
+立って歩くに入るときの推定の速さは 0.04〜0.06 m/s で、しきい値 0.05 のすぐそばにあった。
+enter() で STANCE_ALL にしておけば、SWING_ALL → STANCE_ALL はすぐに 4 本着いた形になり、
+その後の STANCE_ALL → WAVE_ALL は、振り出しの番の足を着いたまま待たせる（いつも 2 本以上着いている）。
+diff --git a/controllers/unitree_guide_controller/src/FSM/StateTrotting.cpp b/controllers/unitree_guide_controller/src/FSM/StateTrotting.cpp
+index cee96b0..4185768 100644
+--- a/controllers/unitree_guide_controller/src/FSM/StateTrotting.cpp
++++ b/controllers/unitree_guide_controller/src/FSM/StateTrotting.cpp
+@@ -41,6 +41,12 @@ void StateTrotting::enter() {
+ 
+     ctrl_interfaces_.control_inputs_.command = 0;
+     gait_generator_.restart();
++    // Start from all feet down. The wave generator is in SWING_ALL here (its initial status, and
++    // exit() sets it), and run() picks WAVE_ALL at once when the estimated speed is over 0.05 m/s:
++    // the SWING_ALL -> WAVE_ALL switch holds the legs whose wave phase is stance in swing until
++    // their own swing comes, so for up to one stance time (0.225 s) all four feet are in swing
++    // and the body drops. From STANCE_ALL the switch to WAVE_ALL keeps them in stance instead.
++    wave_generator_->status_ = WaveStatus::STANCE_ALL;
+ }
+ 
+ void StateTrotting::run(const rclcpp::Time &/*time*/, const rclcpp::Duration &/*period*/) {

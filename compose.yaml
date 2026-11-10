@@ -47,7 +47,9 @@ services:
     build:
       context: ./docker
       dockerfile: Dockerfile.gazebo
-    image: go2-voice-ltl-gazebo:dev
+    # patches 0001-0004 (docker/patches). The image before 0003-0004 stays as go2-voice-ltl-gazebo:dev:
+    # GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev docker compose --profile gazebo ... to go back to it
+    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}
     init: true
     volumes:
       - ./:/work

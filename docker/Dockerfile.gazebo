@@ -1,4 +1,5 @@
-# Image for the `gazebo` service: go2-voice-ltl-gazebo:dev
+# Image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0004 (compose.yaml; patches 0001-0004).
+# The older go2-voice-ltl-gazebo:dev (0001-0002) is kept for rollback: GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev
 # Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic + legubiao/quadruped_ros2_control
 # (unitree_guide controller, Go2 model, gz_quadruped_playground with a LiDAR).
 # Gazebo Classic 11 has no arm64 build for Ubuntu 22.04, so only this container moves to
@@ -69,9 +70,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Our fixes to unitree_guide_controller (docker/patches/*.patch), applied in name order to the
-# pinned commit before the build; upstream is not forked. Without them the Go2 falls over right
+# pinned commit before the build; upstream is not forked. Without 0001-0002 the Go2 falls over right
 # after an in-place turn (the state estimator mixes body and world frames):
-# docs/reference/gazebo_turn_fix.md.
+# docs/reference/gazebo_turn_fix.md. Without 0003 the estimated velocity lags (a low-pass filter
+# written back into the Kalman state) and the trot sways until it falls at walk starts and corners;
+# without 0004 the first steps after standing can lift all four feet at once:
+# docs/reference/gazebo_objects_e2e.md part 5.
 COPY patches /tmp/quadruped_ros2_control_patches
 RUN cd /root/gz_ws/src/quadruped_ros2_control \
     && for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose "$p" || exit 1; done

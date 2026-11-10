@@ -1,0 +1,35 @@
+unitree_guide_controller: 状態推定（Estimator）の速度に、ローパスの値を書き戻さない
+
+legubiao/quadruped_ros2_control 5434c5810d1a7fe223bcfd04550e9d3bfdd4b458 に
+0001・0002 の後で当てる（docker/Dockerfile.gazebo がビルドの前に git apply する）。
+
+直すこと：Estimator::update() の最後で、速度（x_hat_ の 3〜5）に 3 Hz のローパスをかけた値を
+x_hat_ に書き戻していた。元の unitree_guide（Estimator::run）はローパスに値を入れるだけで、
+_xhat は変えない。書き戻すと、ローパスがカルマンフィルタの中に入る：毎周期、更新の約 9 %
+（0.005 秒 · 3 Hz の重み 0.086）しか残らず、加速度の積分も脚の速さの測定値もほとんど効かない。
+Gazebo の一周（docs/reference/gazebo_objects_e2e.md 第 5 部）では、推定の速さは本当の速さから
+約 0.1 秒遅れ、誤差は 0.17 m/s（本当の速さの 7 割）。0.22 m/s で歩き出すたびに体は 0.6〜0.85 m/s
+まで出ていたのに、推定は 0.1〜0.15 m/s だった。StateTrotting の速度の PD と足の置き場所
+（FeetEndCalc）はこの推定で動くので、歩き出し・旋回の終わり・角で横の揺れが育ち、倒れていた。
+書き戻しをやめると、推定の遅れは 0.01 秒、誤差は 0.05 m/s、一周の旋回中の roll（95 %）は
+0.31 → 0.02 rad。ローパスに値を入れる行は元のとおり残す（どこからも読まない）。
+diff --git a/controllers/unitree_guide_controller/src/control/Estimator.cpp b/controllers/unitree_guide_controller/src/control/Estimator.cpp
+index 8c65d00..b1d3e6b 100644
+--- a/controllers/unitree_guide_controller/src/control/Estimator.cpp
++++ b/controllers/unitree_guide_controller/src/control/Estimator.cpp
+@@ -230,10 +230,12 @@ void Estimator::update() {
+         Ppriori * C.transpose() * SR * STC * Ppriori.transpose();
+ 
+     // // Using low pass filter to smooth the velocity
++    // The filters only watch the estimate, as in the original unitree_guide (Estimator::run feeds
++    // _vxFilter.. and leaves _xhat alone). Writing their 3 Hz output back into x_hat_ put the filter
++    // inside the Kalman loop: each step kept ~9 % of the update, so the velocity lagged ~0.1 s and
++    // read 0.1-0.15 m/s while the body surged to 0.6 m/s, and the trot's velocity feedback and
++    // foot placement worked from that.
+     low_pass_filters_[0]->addValue(x_hat_(3));
+     low_pass_filters_[1]->addValue(x_hat_(4));
+     low_pass_filters_[2]->addValue(x_hat_(5));
+-    x_hat_(3) = low_pass_filters_[0]->getValue();
+-    x_hat_(4) = low_pass_filters_[1]->getValue();
+-    x_hat_(5) = low_pass_filters_[2]->getValue();
+ }

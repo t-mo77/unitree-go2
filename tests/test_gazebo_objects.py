@@ -208,33 +208,71 @@ def test_the_readme_echo_shows_the_whole_objects_message():
 
 
 def test_the_docs_state_the_gazebo_lap_result():
-    """Design §2 is still not met in Gazebo: on the final code (a2fe140: M1, corners, the turn ended
-    before the walk and the slower speeds of C2, the near band to 1.3 m of ruling N1) the lap passed
-    2 of 5 and the chair 3 of 3 (docs/reference/gazebo_objects_e2e.md, part 4 above the older parts
-    and conclusions). README §4 and §8 and design §12 say so, name the Gazebo controller's sway as
-    the cause and a controller patch as the open route, and that the rest is undecided; README
-    does not read as if the grid executor were checked in Gazebo."""
+    """Design §2 is met in Gazebo since the controller patches 0003-0004 (image
+    go2-voice-ltl-gazebo:patch-0004, code a2fe140 unchanged): lap 5 of 5 in a row, chair 3 of 3,
+    chair-and-hello 1 of 1 (docs/reference/gazebo_objects_e2e.md, part 5 above parts 4, 3 and the
+    conclusions), measured with the Mac in Low Power Mode (RTF 0.87). Before the patches the lap
+    passed 2 of 5 (part 4). README §4 and §8 and design §2 and §12 say so, name what is still
+    unchecked, and README does not read as if the grid executor were checked on the real robot."""
     readme = README.read_text(encoding="utf-8")
     assert "偽の Go2 と Gazebo でしか確かめていません" not in readme
     assert "確かめた範囲では転んでいません。" not in readme.replace("物を使わない指示で確かめた範囲では", "")
     objects = readme[readme.index("### 物を使う指示（箱と椅子）"):readme.index("## 5.")]
     lap_row = next(line for line in objects.splitlines() if line.startswith("| 箱の周りを一周して |"))
-    assert "Gazebo ではまだ毎回は通らない" in lap_row and "5 回のうち 2 回" in lap_row and "§8" in lap_row
-    assert "Gazebo では、設計書（物）§2 の合格の条件をまだ満たしていません" in objects
+    assert "controller のパッチ" in lap_row and "5 回のうち 5 回" in lap_row and "§8" in lap_row
+    assert "まだ毎回は通らない" not in lap_row
+    assert "Gazebo でも、controller のパッチ（0003・0004）の後に、設計書（物）§2 の合格の条件を満たしました" in objects
+    assert "§2 の合格の条件をまだ満たしていません" not in objects
     near_row = next(line for line in objects.splitlines() if line.startswith("| `near_<id>` |"))
     assert "1.3 m" in near_row and "1.4 m" not in near_row
     unknown = readme[readme.index("## 8. わかっていないこと"):]
     gazebo = unknown[unknown.index("- **Gazebo での物を使う指示"):unknown.index("- **物を使う指示の実機での動き")]
-    for words in ("まだ満たせていません", "5 回のうち 2 回", "椅子までは 3/3", "31 回のうち 1 回", "unitree_guide",
-                  "パッチ", "まだ決めていません", "gazebo_objects_e2e.md", "第 4 部", "椅子まで 1.28 m"):
+    for words in ("満たしました", "一周 5/5", "椅子 3/3", "低電力モード", "patch-0004", "電源につないだ組",
+                  "5 回のうち 2 回", "31 回のうち 1 回", "unitree_guide", "gazebo_objects_e2e.md", "第 5 部",
+                  "椅子まで 1.28 m"):
         assert words in gazebo, words
     design = DESIGN.read_text(encoding="utf-8")
+    goal = design[design.index("## 2. ゴール"):design.index("## 3. やらないこと")]
+    assert "**Gazebo での状態（2026-11-11、§12）：満たした。**" in goal and "patch-0004" in goal
     results = design[design.index("**確かめた結果**"):]
-    for words in ("§2 の合格の条件は、Gazebo ではまだ満たせていない", "一周 2/5", "椅子まで 3/3", "25 回", "終えたのは 1 回",
-                  "10 回のうち 7 回合格", "unitree_guide", "まだ決めていないこと（利用者の判断を待つ）"):
+    for words in ("§2 の合格の条件は、Gazebo で満たした", "一周 5/5", "椅子まで 3/3", "低電力モード", "patch-0004",
+                  "一周 2/5", "25 回", "終えたのは 1 回", "10 回のうち 7 回合格", "unitree_guide",
+                  "決めたこと（利用者の判断、C4）"):
         assert words in results, words
+    assert "Gazebo ではまだ満たせていない" not in results
+    assert "まだ決めていないこと（利用者の判断を待つ）" not in results
     assert "min(物の半径 + 1.5 m, 1.3 m)" in design and "min(物の半径 + 1.5 m, 1.4 m)" not in design
     record = (ROOT / "docs" / "reference" / "gazebo_objects_e2e.md").read_text(encoding="utf-8")
-    assert record.index("## 第 4 部") < record.index("## 第 3 部") < record.index("## 結論")
+    assert record.index("## 第 5 部") < record.index("## 第 4 部") < record.index("## 第 3 部") < record.index("## 結論")
+    part5 = record[record.index("## 第 5 部"):record.index("## 第 4 部")]
+    assert "§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）を Gazebo で満たした。" in part5
+    assert "一周 5/5" in part5 and "低電力モード" in part5 and "RTF は 0.87" in part5
     assert "**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**" in record
     assert "終わって 1 秒（`TAIL_S`）しか見ない" not in record                  # TAIL_S is 3 s since 6bf599c
+
+
+def test_the_gazebo_image_carries_the_controller_patches():
+    """Patches 0003-0004 (gazebo_objects_e2e.md part 5) are applied by Dockerfile.gazebo with
+    0001-0002, and compose builds and runs them as go2-voice-ltl-gazebo:patch-0004; the image
+    without them (:dev) stays reachable through GO2_GAZEBO_IMAGE. 0003 drops the three lines that
+    wrote the low-pass velocity back into the Kalman state and keeps feeding the filters; 0004 makes
+    StateTrotting::enter() start from STANCE_ALL."""
+    patches = sorted(p.name for p in (ROOT / "docker" / "patches").glob("*.patch"))
+    assert patches == ["0001-estimator-world-frame-leg-odometry.patch",
+                       "0002-feet-end-calc-body-frame-stance-angle.patch",
+                       "0003-estimator-velocity-low-pass-out-of-state.patch",
+                       "0004-trotting-enter-from-stance-all.patch"]
+    p3 = (ROOT / "docker" / "patches" / patches[2]).read_text(encoding="utf-8")
+    removed = [line for line in p3.splitlines() if line.startswith("-") and not line.startswith("---")]
+    assert removed == [f"-    x_hat_({i + 3}) = low_pass_filters_[{i}]->getValue();" for i in range(3)]
+    assert "     low_pass_filters_[0]->addValue(x_hat_(3));" in p3              # context: still fed
+    p4 = (ROOT / "docker" / "patches" / patches[3]).read_text(encoding="utf-8")
+    added = [line for line in p4.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    assert added[-1] == "+    wave_generator_->status_ = WaveStatus::STANCE_ALL;"
+    assert "@@ -41,6 +41,12 @@ void StateTrotting::enter() {" in p4
+    dockerfile = (ROOT / "docker" / "Dockerfile.gazebo").read_text(encoding="utf-8")
+    assert "for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose" in dockerfile
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    gazebo = compose[compose.index("\n  gazebo:"):compose.index("\nvolumes:")]
+    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}" in gazebo.splitlines()
+    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" in gazebo
