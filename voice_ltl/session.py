@@ -167,11 +167,14 @@ def _shown_substitutions(tr: Translation) -> list[dict[str, str]]:
 
 
 def _redacted(value):
-    """_redact() on a string, and on each string of a list."""
+    """_redact() on a string, and on every string inside a list or a dict, recursively (an attempt's
+    unresolved entries are dicts: a secret-like said is hidden too)."""
     if isinstance(value, str):
         return _redact(value)
     if isinstance(value, list):
         return [_redacted(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _redacted(v) for k, v in value.items()}
     return value
 
 # ---------------- stop words ----------------

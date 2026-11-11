@@ -2,7 +2,7 @@
 
 import json
 
-from voice_ltl.objects import Obj, Scene, describe
+from voice_ltl.objects import Obj, Scene, describe, kinds_in, name_of
 from voice_ltl.world import (MAX_REPEAT, MAX_TOTAL_STEPS, PROP_DESCRIPTION_JA, PROPOSITIONS, STEP_ANGLE,
                              STEP_DISTANCE)
 
@@ -21,9 +21,20 @@ SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        # an object the reply could not place on one listed object (open-objects spec §9.2, §9.3):
+        # only counted and named by the code, never acted on
+        "unresolved_objects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"said": {"type": "string"}, "label": {"type": "string"}},
+                "required": ["said", "label"],
+                "additionalProperties": False,
+            },
+        },
     },
     # all required: Codex's --output-schema is strict structured output (design §7.4.1)
-    "required": ["formula", "unsupported", "substitutions"],
+    "required": ["formula", "unsupported", "substitutions", "unresolved_objects"],
     "additionalProperties": False,
 }
 
@@ -87,30 +98,57 @@ _EXAMPLES = (
 
 # Object examples are written for this scene (design §6.3); real instructions use the ids in ## Objects.
 EXAMPLE_SCENE = Scene((Obj("box_9", "box", 2.0, 0.0, (0.5, 0.5)),
-                       Obj("chair_9", "chair", 1.77, -1.77, (0.45, 0.45))), (0.0, 0.0, 0.0))
+                       Obj("chair_9", "chair", 1.77, -1.77, (0.45, 0.45)),
+                       Obj("potted_plant_9", "potted_plant", 1.5, 1.5, (0.4, 0.4))), (0.0, 0.0, 0.0))
 
+# (instruction, formula, unsupported, substitutions, unresolved_objects): all four keys (open-objects spec §9.2).
+# 机 is a desk (vocabulary rev 2) and EXAMPLE_SCENE has none, so the refusal is right.
 _OBJECT_EXAMPLES = (
-    ("箱の周りを一周して", "F around_box_9", [], [_sub("周りを一周", "左回りに 1 周")]),
-    ("箱の周りを右回りで回って", "F around_cw_box_9", [], []),
-    ("箱を2周して", "F around_box_9", [], [_sub("2周", "左回りに 1 周（上限）")]),
-    ("椅子まで歩いて", "F near_chair_9", [], []),
-    ("立って、椅子まで歩いて、挨拶して", _chain("near_chair_9", "hello"), [], []),
-    ("障害物の周りを回って", None, ["障害物の周りを回る"], []),
-    ("机まで行って", None, ["机"], []),
+    ("箱の周りを一周して", "F around_box_9", [], [_sub("周りを一周", "左回りに 1 周")], []),
+    ("箱の周りを右回りで回って", "F around_cw_box_9", [], [], []),
+    ("箱を2周して", "F around_box_9", [], [_sub("2周", "左回りに 1 周（上限）")], []),
+    ("椅子まで歩いて", "F near_chair_9", [], [], []),
+    ("立って、椅子まで歩いて、挨拶して", _chain("near_chair_9", "hello"), [], [], []),
+    ("観葉植物の前まで行って", "F near_potted_plant_9", [], [], []),
+    ("障害物の周りを回って", None, ["障害物の周りを回る"], [], []),
+    ("机まで行って", None, ["机"], [], [{"said": "机", "label": "desk"}]),
+    ("箱を押して", None, ["箱を押す"], [], []),
 )
 
 _OBJECT_EXAMPLES_INTRO = (
     "（ここからの例は、Objects が"
     + "".join(f"「{describe(o, EXAMPLE_SCENE.pose)}」" for o in EXAMPLE_SCENE.listed())
-    + "のときです。本当の指示では Objects の id を使います）"
+    + "のときです。本当の指示では Objects の id を使います。ここより前の例の unresolved_objects は、どれも [] です）"
 )
 
 
 def _example_line(instruction: str, formula: str | None, unsupported: list[str],
-                  substitutions: list[dict]) -> str:
-    answer = json.dumps({"formula": formula, "unsupported": unsupported,
-                         "substitutions": substitutions}, ensure_ascii=False)
-    return f"指示: {json.dumps(instruction, ensure_ascii=False)}\n答え: {answer}"
+                  substitutions: list[dict], unresolved: list[dict] | None = None) -> str:
+    """One example answer. The 4th key only when unresolved is a list (the 30 general examples keep 3 keys)."""
+    answer = {"formula": formula, "unsupported": unsupported, "substitutions": substitutions}
+    if isinstance(unresolved, list):
+        answer["unresolved_objects"] = unresolved
+    return f"指示: {json.dumps(instruction, ensure_ascii=False)}\n答え: {json.dumps(answer, ensure_ascii=False)}"
+
+
+MAX_NOTE_WORDS = 4
+
+
+def word_note(instruction: str, scene: Scene | None) -> str:
+    """The word note under the object list (open-objects spec §9.1, O33): "" unless an object is listed and a
+    vocabulary word found in the instruction differs from its kind's ja. Words in instruction order, once each,
+    at most MAX_NOTE_WORDS, in the vocabulary's spelling (nothing of the instruction is copied)."""
+    if scene is None or not scene.listed():
+        return ""
+    pairs: list[tuple[str, str]] = []
+    for k in kinds_in(instruction):
+        ja = name_of(k.label)
+        if k.word != ja and all(k.word != w for w, _ in pairs):
+            pairs.append((k.word, ja))
+    pairs = pairs[:MAX_NOTE_WORDS]
+    if not pairs:
+        return ""
+    return "指示の" + "、".join(f"「{w}」は{ja}" for w, ja in pairs) + "のことです。"
 
 
 MAX_ECHO_LEN = 300
@@ -121,13 +159,16 @@ def _clip(text: object) -> str:
     return text if len(text) <= MAX_ECHO_LEN else text[:MAX_ECHO_LEN] + "…（以下略）"
 
 
-def _objects_section(scene: Scene | None) -> str:
-    """The body of ## Objects: the frozen objects, seen from the pose at the instruction (at most 8)."""
+def _objects_section(scene: Scene | None, instruction: str = "") -> str:
+    """The body of ## Objects: the frozen objects, seen from the pose at the instruction (at most 8), and the
+    word note when there is one."""
     listed = scene.listed() if scene is not None else ()
     if not listed:
         return "いま見えている物はありません。"
     lines = "\n".join(f"- {describe(o, scene.pose)}" for o in listed)
-    return f"Go2 のカメラで見つけた物です。向きと距離は、指示を受けたときの Go2 から見たものです。\n{lines}"
+    note = word_note(instruction, scene)
+    return (f"Go2 のカメラで見つけた物です。向きと距離は、指示を受けたときの Go2 から見たものです。\n{lines}"
+            + (f"\n{note}" if note else ""))
 
 
 def build_prompt(instruction: str, rejected: str | None = None, error: str | None = None,
@@ -137,13 +178,13 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
         descriptions = scene.descriptions()
         vocab_lines += [f"- {p}: {descriptions[p]}" for p in scene.propositions()]
     vocab = "\n".join(vocab_lines)
-    objects = _objects_section(scene)
+    objects = _objects_section(scene, instruction)
     examples = "\n\n".join([*(_example_line(*e) for e in _EXAMPLES), _OBJECT_EXAMPLES_INTRO,
                              *(_example_line(*e) for e in _OBJECT_EXAMPLES)])
     d, a, n = f"{STEP_DISTANCE:g}", f"{STEP_ANGLE:g}", MAX_REPEAT
     text = f"""## Goal
 ロボット犬への日本語の指示を、LTLf（有限列の線形時相論理）の式に翻訳してください。
-答えは JSON で、formula（式の文字列。翻訳できないときは null）、unsupported（表せなかった部分の一覧）、substitutions（言われた言葉と違う形にした部分の一覧）を返します。
+答えは JSON で、formula（式の文字列。翻訳できないときは null）、unsupported（表せなかった部分の一覧）、substitutions（言われた言葉と違う形にした部分の一覧）、unresolved_objects（Objects の 1 つに決められなかった物の名前。ふつうは []）を返します。
 
 ## Grammar
 使ってよい名前: 下の Vocabulary の命題、F、G、X、U、last
@@ -177,7 +218,9 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
 - 「〈物〉の周りを回って」「〈物〉の周りを一周して」「〈物〉を一周して」は F around_〈id〉、右回りと言われたら F around_cw_〈id〉 です。向きが言われていなければ左回りにして、substitutions に {{"said": 指示の中の言葉, "as": "左回りに 1 周"}} を入れます。
 - 物の周りは 1 周までです。「2周」のように 2 周以上言われたら 1 周にして、substitutions に {{"said": "2周", "as": "1 周（上限）"}} のように入れます（向きも言われていなければ、as を "左回りに 1 周（上限）" にして 1 つだけ入れます）。物を言わない「一周して」「その場で一周」は、今までどおりその場で回る動作です。
 - 名前（箱・椅子 など）に当てはまる物が Objects に 1 つだけなら、その物です。「右の箱」「左前の椅子」のように向きで言われたら、Objects の向きで選びます。
-- 当てはまる物が Objects にないとき、2 つ以上あって決められないときは、その物の名前（例：箱）を unsupported に入れて、formula を null にします。
+- 同じ物の別の言い方（いす・チェア など）はその物ですが、違う種類の物（棚と冷蔵庫 など）にはしません。「近いほうの椅子」「奥の箱」のように言われたら、Objects の距離で選びます。
+- 「家具」「家電」のように種類をまとめた言葉は、当てはまる物が Objects にちょうど 1 つのときだけその物にして、substitutions に {{"said": "家具", "as": "椅子（〈id〉）"}} のように入れます。そうでなければ unsupported だけに入れます。「あれ」「それ」も unsupported です。
+- 当てはまる物が Objects にないとき、2 つ以上あって決められないときは、その物の名前（例：箱）を unsupported に入れて、formula を null にします。物まで行く・物の周りを回る指示なら、unresolved_objects にも {{"said": 指示の中の物の名前, "label": 物の種類の英語（小文字の単数形。例：box、potted_plant）}} を入れます。ほかは [] です。
 - 「障害物」は、「障害物の周り」「障害物まで」「障害物のところ」のように行き先として言われ、向きに「前」が入る物（前・左前・右前）が Objects にちょうど 1 つのときだけ、その物です。そうでなければ「障害物の周りを回る」のように unsupported に入れます。「前に障害物があったら」のような条件は、今までどおり obstacle_front・obstacle_back です。
 
 ### 断るもの（代わりにせず unsupported に入れて、formula を null にします）
@@ -221,6 +264,6 @@ def build_prompt(instruction: str, rejected: str | None = None, error: str | Non
     if rejected is not None:
         text += (
             f"\n\n前の答えは {_clip(rejected)} で、{_clip(error)} という理由で却下されました。"
-            "直した答え（formula・unsupported・substitutions のすべて）を返してください。"
+            "直した答え（formula・unsupported・substitutions・unresolved_objects のすべて）を返してください。"
         )
     return text

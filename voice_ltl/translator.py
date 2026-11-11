@@ -1,14 +1,17 @@
 """Instruction -> LTLf formula, with up to max_tries re-asks on rejected formulas."""
 
+import dataclasses
 import math
 import re
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from voice_ltl import vocabulary
 from voice_ltl.grammar import check
 from voice_ltl.llm import LLM
-from voice_ltl.objects import (MAX_OBJECT_DISTANCE, Scene, label_in, msg_ambiguous, msg_not_found, msg_too_far,
+from voice_ltl.objects import (ID_RE, MAX_OBJECT_DISTANCE, Kind, Obj, Scene, direction, formula_object_props,
+                               kinds_in, labels_in, msg_ambiguous, msg_not_found, msg_not_listed, msg_too_far,
                                split_prop, word_end, word_start)
 from voice_ltl.prompt import SCHEMA, build_prompt
 from voice_ltl.world import MAX_REPEAT, PROPOSITIONS, STEP_ANGLE, STEP_DISTANCE
@@ -20,11 +23,19 @@ _NUMBER = re.compile(r"(?:マイナス|[-−－])?\s*(?:\d+(?:[.．]\d+)?|[〇�
                      r"(?:メートル|センチ|ミリ|cm|mm|m|ｍ|度|°|回|歩|周|秒間|秒|分間|分|時間)(?![A-Za-z])")
 
 
+@dataclass(frozen=True)
+class Entry:
+    """One accepted item of the reply's unresolved_objects (open-objects spec §9.3)."""
+    said: str                   # words of the instruction
+    label: str | None           # the vocabulary label vocabulary.lookup accepted, or None
+
+
 @dataclass
 class Attempt:
     formula: str | None
     unsupported: list[str]
     errors: list[str]
+    unresolved: list[dict] = field(default_factory=list)       # [{"said": ..., "label": ... or None}]
 
 
 @dataclass
@@ -41,6 +52,8 @@ class Translation:
 
 
 MAX_SUBSTITUTIONS = 10
+MAX_UNRESOLVED = 10
+MAX_UNRESOLVED_LABEL = 64
 
 
 def _plain(text: str) -> str:
@@ -66,6 +79,35 @@ def _substitutions(raw: object, instruction: str) -> list[dict[str, str]]:
             if said and as_ and _plain(said) in words:
                 out.append({"said": said, "as": as_})
     return out
+
+
+def _unresolved(raw: object, instruction: str) -> list[Entry]:
+    """The reply's unresolved_objects (open-objects spec §9.3). The CLIs' JSON Schema requires the key;
+    this guards replies that come another way (FakeLLM: a missing key reads as []). Only the first
+    MAX_UNRESOLVED items are read, and a bad item is dropped (never re-asked). `said` must be words of the
+    instruction (a note in brackets is cut off, a copy of an example is dropped), once each. `label` is
+    Claude's English: only vocabulary.lookup's answer is kept (None for no kind, or for more than
+    MAX_UNRESOLVED_LABEL characters), so Claude's text never reaches the page, the prompt or a message."""
+    if not isinstance(raw, list):
+        return []
+    words = _plain(instruction)
+    out: list[Entry] = []
+    seen: set[str] = set()
+    for item in raw[:MAX_UNRESOLVED]:
+        if not (isinstance(item, dict) and isinstance(item.get("said"), str) and isinstance(item.get("label"), str)):
+            continue
+        said = _TRAILING_NOTE.sub("", item["said"]).strip()
+        key = _plain(said)
+        if not key or key not in words or key in seen:
+            continue
+        seen.add(key)
+        label = item["label"]
+        out.append(Entry(said, None if len(label) > MAX_UNRESOLVED_LABEL else vocabulary.lookup(label)))
+    return out
+
+
+def _shown(entries: Sequence[Entry]) -> list[dict]:
+    return [{"said": e.said, "label": e.label} for e in entries]
 
 
 def _is_number(item: str) -> bool:
@@ -117,25 +159,167 @@ def _handles_object(item: str) -> bool:
 vocabulary.check_words(vocabulary.VOCABULARY, lambda w: not _handles_object(w), 6, "reads as a handling verb")
 
 
-def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[str], list[str]]:
-    """R16: an item naming a label (箱, 椅子, ...) that has 0 objects in the scene is 見つかりません and
-    with 2 or more it is 決められません, once per label. Returns (those messages, the other items);
-    an item whose label has exactly one object keeps today's message."""
-    listed = scene.listed() if scene is not None else ()
-    messages, rest, told = [], [], set()
-    for item in unsupported:
-        label = None if _handles_object(item) else label_in(item)
-        n = sum(o.label == label for o in listed)
-        if label is None or n == 1:
+# ---- object words (open-objects spec §9.6-§9.9: R16 rewritten, O34; the kind guard, O35) ----
+
+# The going and circling phrases after an object word (a closed list: the Go2 has only near and around).
+# fullmatch on the stripped rest of an item; .match on an instruction clause. Every part is optional, so it
+# also matches "": a clause counts only when the match holds more than a bare particle (_going).
+_GOING_TAIL = re.compile(
+    r"(?:の?(?:ところ|所|前|そば|横|近く|方|周り|まわり|周囲))?"
+    r"(?:まで|へ|に|を)?"
+    r"(?:(?:ぐるっと|ぐるりと)?(?:歩く|歩いて|あるく|あるいて|行く|行って|いく|いって|進む|進んで|近づく|近づいて"
+    r"|ちかづく|ちかづいて|向かう|向かって|回る|回って|まわる|まわって"
+    r"|(?:[0-9]+|[一二三四五六七八九十]+)周(?:する|して)?)){0,2}")
+_BARE = ("", "を", "に", "へ")                  # spec §9.6 rule 3: a bare particle is no going phrase
+_CLAUSE_END = re.compile(r"[、。,.，．！!？?]")
+_COORDINATORS = "とや、・"
+MAX_COORDINATION = 4
+
+
+def _squeezed(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def _nfkc(text: str) -> str:
+    return unicodedata.normalize("NFKC", text)
+
+
+def _loose(said: str) -> re.Pattern:
+    """said's letters (NFKC, no white space) with any white space between them: the said in a text."""
+    return re.compile(r"\s*".join(re.escape(ch) for ch in _plain(said)))
+
+
+def _going(clause: str) -> bool:
+    """The clause starts with a going or circling phrase that is more than a bare particle."""
+    return _GOING_TAIL.match(_squeezed(clause)).group() not in _BARE
+
+
+def _object_words_at(text: str, pos: int, kinds: Sequence[Kind], entries: Sequence[Entry]) -> list[int]:
+    """The ends of the object words (vocabulary words, entries' saids) that start at pos in text."""
+    ends = [k.end for k in kinds if k.start == pos]
+    for e in entries:
+        m = _loose(e.said).match(text, pos)
+        if m is not None and m.group():
+            ends.append(m.end())
+    return ends
+
+
+def _passes(text: str, end: int, kinds: Sequence[Kind], entries: Sequence[Entry], depth: int = 0) -> bool:
+    """spec §9.6 rule 3 at one occurrence (the word ends at `end` in the NFKC text): its clause, up to the
+    next 、。,.，．！!？? and without white space, starts with a going or circling phrase, or with と・や・、・・
+    and another object word that passes the same test (MAX_COORDINATION steps at most)."""
+    after = text[end:]
+    if _going(_CLAUSE_END.split(after, maxsplit=1)[0]):
+        return True
+    rest = after.lstrip()
+    if depth >= MAX_COORDINATION or not rest or rest[0] not in _COORDINATORS:
+        return False
+    pos = end + len(after) - len(rest) + 1
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return any(_passes(text, e, kinds, entries, depth + 1) for e in _object_words_at(text, pos, kinds, entries))
+
+
+def going_targets(instruction: str) -> dict[str, str]:
+    """The kinds the instruction names as a place to go to or to circle (spec §9.6 rule 3, §9.8): label ->
+    the user's vocabulary word (the first that passes, in the vocabulary's spelling), in instruction order."""
+    text = _nfkc(instruction)
+    kinds = kinds_in(text)
+    out: dict[str, str] = {}
+    for k in kinds:
+        if k.label not in out and _passes(text, k.end, kinds, ()):
+            out[k.label] = k.word
+    return out
+
+
+def _said_kind(e: Entry) -> tuple[str, str | None] | None:
+    """spec §9.7 for an entry: the said's own head word when it ends the said or is followed by a going tail
+    (that word's kind and word), else Claude's accepted label (named ja), else no kind."""
+    said = _nfkc(e.said)
+    heads = kinds_in(said)
+    if heads and _GOING_TAIL.fullmatch(_squeezed(said[heads[-1].end:])):
+        return heads[-1].label, heads[-1].word
+    return (e.label, None) if e.label is not None else None
+
+
+def _object_kind(item: str, entries: Sequence[Entry], instruction: str) -> tuple[str, str | None] | None:
+    """spec §9.6 and §9.7: (label, the user's word or None for ja) when the item names an object to go to or to
+    circle, else None (the item keeps the 単語帳 message)."""
+    if _handles_object(item):
+        return None
+    text = _nfkc(item)
+    kinds = kinds_in(text)
+    end, word, said = (kinds[-1].end, kinds[-1], None) if kinds else (-1, None, None)
+    for e in entries:                                 # the last object word; on a tie the said wins
+        found = [m for m in _loose(e.said).finditer(text) if m.group()]
+        if found and found[-1].end() >= end:
+            end, word, said = found[-1].end(), None, e
+    if word is None and said is None:
+        return None
+    rest = _squeezed(text[end:])
+    if not _GOING_TAIL.fullmatch(rest):
+        return None
+    if not rest:                                      # a name alone: its clause in the instruction decides
+        whole = _nfkc(instruction)
+        whole_kinds = kinds_in(whole)
+        if said is not None:
+            ends = [m.end() for m in _loose(said.said).finditer(whole) if m.group()]
+        else:
+            ends = [k.end for k in whole_kinds if k.word == word.word]
+        if ends and not any(_passes(whole, e, whole_kinds, entries) for e in ends):
+            return None                               # a word that is not in the instruction is trusted
+    return _said_kind(said) if said is not None else (word.label, word.word)
+
+
+def _distance(obj: Obj, scene: Scene) -> float:
+    return math.hypot(obj.x - scene.pose[0], obj.y - scene.pose[1])
+
+
+def _count_message(label: str, word: str | None, scene: Scene, listed: Sequence[Obj]) -> str | None:
+    """spec §9.9: the message for one kind, from the whole Scene, the listed objects and the frozen pose;
+    None when exactly one of the kind is listed (the item keeps the 単語帳 message)."""
+    of_kind = [o for o in scene.objects if o.label == label]
+    if not of_kind:
+        return msg_not_found(label, word)
+    if scene.pose is not None and all(_distance(o, scene) > MAX_OBJECT_DISTANCE for o in of_kind):
+        return msg_too_far(label, word)
+    shown = [o for o in listed if o.label == label]
+    if len(shown) >= 2:
+        return msg_ambiguous(label, len(of_kind), [direction(o, scene.pose) for o in shown], word)
+    if not shown:
+        return msg_not_listed(label, word)
+    return None
+
+
+def _object_messages(items: list[str], view: Scene | None, entries: Sequence[Entry],
+                     instruction: str) -> tuple[list[str], list[str]]:
+    """R16 (rewritten, spec §9.6-§9.9): the count message of each item that names an object to go to or to
+    circle, each kind told once. Returns (those messages, the other items)."""
+    scene = view if view is not None else Scene()
+    listed = scene.listed()
+    messages: list[str] = []
+    rest: list[str] = []
+    told: set[str] = set()
+    for item in items:
+        kind = _object_kind(item, entries, instruction)
+        if kind is None:
             rest.append(item)
-        elif label not in told:
+            continue
+        label, word = kind
+        if label in told:
+            continue
+        message = _count_message(label, word, scene, listed)
+        if message is None:
+            rest.append(item)
+        else:
             told.add(label)
-            messages.append(msg_not_found(label) if n == 0 else msg_ambiguous(label, n))
+            messages.append(message)
     return messages, rest
 
 
-def _unsupported_message(unsupported: list[str], scene: Scene | None = None) -> str:
-    parts, unsupported = _object_messages(unsupported, scene)
+def _unsupported_message(items: list[str], view: Scene | None = None, entries: Sequence[Entry] = (),
+                         instruction: str = "") -> str:
+    parts, unsupported = _object_messages(items, view, entries, instruction)
     numbers = [u for u in unsupported if _is_number(u)]
     words = [u for u in unsupported if u not in numbers]
     if words or not (numbers or parts):
@@ -146,6 +330,33 @@ def _unsupported_message(unsupported: list[str], scene: Scene | None = None) -> 
                      f"（0・マイナスの数と、秒・分などの時間は使えません。"
                      f"{STEP_DISTANCE:g} m・{STEP_ANGLE:g} 度・1 回を単位に、{MAX_REPEAT} 回まで）。")
     return "".join(parts)
+
+
+def _formula_labels(formula: str) -> set[str]:
+    """The labels of the objects the formula uses."""
+    out = set()
+    for prop in formula_object_props(formula):
+        m = ID_RE.fullmatch(split_prop(prop)[1])
+        if m is not None:
+            out.add(m.group(1))
+    return out
+
+
+def _kind_guard(formula: str, view: Scene | None, instruction: str) -> list[str]:
+    """O35 (spec §9.8): when the formula uses an object whose kind is not a named target and some named target
+    has no object in the Scene, the 見つかりません message of each such target, once; [] if fine."""
+    if view is None:
+        return []
+    targets = going_targets(instruction)
+    if not targets or all(label in targets for label in _formula_labels(formula)):
+        return []
+    return [msg_not_found(label, word) for label, word in targets.items()
+            if not any(o.label == label for o in view.objects)]
+
+
+def _users_word(label: str, instruction: str) -> str | None:
+    """The user's vocabulary word for that kind (the first, in the vocabulary's spelling), else None (ja)."""
+    return next((k.word for k in kinds_in(instruction) if k.label == label), None)
 
 
 def _too_far(formula: str, scene: Scene | None) -> str | None:
@@ -163,14 +374,21 @@ def _too_far(formula: str, scene: Scene | None) -> str | None:
 
 def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | None = None) -> Translation:
     """LLMError is not caught here; the caller handles it. `scene` is the object list frozen for this
-    instruction: its propositions join the vocabulary, and it is returned on every Translation."""
-    propositions = PROPOSITIONS + (scene.propositions() if scene is not None else ())
+    instruction: the kinds the instruction names are listed first (focus, spec §9.1), the listed objects'
+    propositions join the vocabulary, and the frozen Scene is returned on every Translation.
+    Order (spec §9.8): a refusal gets its messages from the items and the reply's unresolved_objects; a formula
+    that passes the check is refused for an entry of a kind it does not use (O8), then by the kind guard (O35),
+    then for a far object (P5)."""
+    labels = labels_in(instruction)
+    view = scene if scene is None or not labels else dataclasses.replace(scene, focus=labels)
+    propositions = PROPOSITIONS + (view.propositions() if view is not None else ())
     attempts: list[Attempt] = []
     rejected: str | None = None
     error: str | None = None
     earlier_subs: list[dict[str, str]] = []   # from a rejected answer: kept if the fix drops them
     for _ in range(max_tries):
-        reply = llm(build_prompt(instruction, rejected, error, scene=scene), SCHEMA)
+        reply = llm(build_prompt(instruction, rejected, error, scene=view), SCHEMA)
+        entries = _unresolved(reply.get("unresolved_objects"), instruction)
         formula = reply.get("formula")
         raw = reply.get("unsupported")
         if raw is None or raw == "":
@@ -179,22 +397,34 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | Non
             raw = [raw]
         if not isinstance(raw, list):
             errors = [f"unsupported は文字列の配列で渡してください（{type(raw).__name__} が渡されました）。"]
-            attempts.append(Attempt(formula if isinstance(formula, str) else None, [], errors))
+            attempts.append(Attempt(formula if isinstance(formula, str) else None, [], errors, _shown(entries)))
             rejected, error = str(formula), " ".join(errors)
             continue
         unsupported = [str(u) for u in raw]
         if unsupported or formula is None:
-            attempts.append(Attempt(formula, unsupported, []))
-            return Translation(False, None, unsupported, attempts, _unsupported_message(unsupported, scene),
-                               scene=scene)
+            items = unsupported + [e.said for e in entries
+                                   if not any(_plain(e.said) in _plain(u) for u in unsupported)]
+            attempts.append(Attempt(formula, items, [], _shown(entries)))
+            return Translation(False, None, items, attempts,
+                               _unsupported_message(items, view, entries, instruction), scene=scene)
         errors = check(formula, propositions)
-        attempts.append(Attempt(formula, [], errors))
         subs = _substitutions(reply.get("substitutions"), instruction)
         if not errors:
-            far = _too_far(formula, scene)
+            used = _formula_labels(formula)
+            open_items = [e.said for e in entries if e.label is None or e.label not in used]      # O8
+            attempts.append(Attempt(formula, open_items, [], _shown(entries)))
+            if open_items:
+                return Translation(False, None, open_items, attempts,
+                                   _unsupported_message(open_items, view, entries, instruction), scene=scene)
+            missing = _kind_guard(formula, view, instruction)                                    # O35
+            if missing:
+                return Translation(False, None, [], attempts, "".join(missing), scene=scene)
+            far = _too_far(formula, view)
             if far is not None:
-                return Translation(False, None, [], attempts, msg_too_far(far), scene=scene)
+                return Translation(False, None, [], attempts, msg_too_far(far, _users_word(far, instruction)),
+                                   scene=scene)
             return Translation(True, formula, [], attempts, "", subs or earlier_subs, scene=scene)
+        attempts.append(Attempt(formula, [], errors, _shown(entries)))
         earlier_subs = subs or earlier_subs
         rejected, error = formula, " ".join(errors)
     if attempts and any("長すぎ" in e for e in attempts[-1].errors):
