@@ -23,16 +23,21 @@ published box covers the object (O12; test_published_footprint_covers_the_object
   - the rectangle is fitted along the object's faces (the L-shape closeness criterion of Zhang et al. 2017,
     ties broken by least squares; the ray frame when it scores as well), not along the ray: a corner view then
     includes the hidden far corner, and a face seen at an angle is completed along its normal;
-  - the MAD trim never drops a point within the prior's diagonal hypot(L, S) of the median (per axis): the
-    returns of an elongated object seen at an angle are lopsided, and 3 MAD + 0.1 m cut its far end;
+  - the MAD trim (3 MAD + 0.1 m, per axis of the ray frame) keeps a point beyond it when the point could lie on
+    one object of the prior's size with the core (within hypot(L, S) + 0.1 m of the core's far end, per axis)
+    and a chain of returns links it to the core (links <= max(SEED_EPS, 8 point spacings)): the returns of an
+    elongated object seen at an angle are lopsided, and 3 MAD + 0.1 m alone cut its far end; a lone stray
+    return, or another object's cluster in a fused union, is still dropped, also for a large prior;
   - an observed depth is kept (filled False) in two cases: in a corner view (the depth axis is the face axis
     nearer the ray), when the face along the depth axis is seen to its far end (a face lies on the far side,
-    the end is seen at <= 60° incidence, or the returns there are as dense as that, which covers a union of
-    views) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches the prior's
-    depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled is True.
-    A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a sofa's
-    side), so its last return says little about its end. An object smaller than its prior, seen to its far
-    end, keeps its own depth (spec §11.6: a box seen from two sides gets its observed depth);
+    or the end is seen at <= 60° incidence, by the camera or, for a union, by one of the single views passed as
+    footprint(views=...)) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
+    the prior's depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled
+    is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
+    sofa's side), so its last return says little about its end, however close the returns there lie (the
+    rings of one column spread in XY on a leaning or curved face and with range noise). An object smaller than
+    its prior, seen to its far end, keeps its own depth (spec §11.6: a box seen from two sides gets its
+    observed depth);
   - the margin is EDGE_PAD on the near side and on sides along which a face lies, and one point spacing along
     the face (range x 1° / cos(incidence), up to 60°) where a face ends; beyond about 2.9 m the spacing exceeds
     EDGE_PAD.
@@ -73,10 +78,11 @@ GROW_EPS_SPACING = 1.5 * LIDAR_STEP          # 1.5 x the horizontal point spacin
 PAD_SPACINGS = 1.1                           # where a face ends: this many point spacings along the face (a bound)
 PAD_GAIN_MAX = 2.0                           # ... with the incidence counted up to 60°
 FLAT_TOL, FLAT_SPREAD = 0.02, 0.1            # m: points within FLAT_TOL of a side spread FLAT_SPREAD along it = a face
-SAME_POINT = 1e-3                            # m: returns closer than this are one spot (the rings on a vertical face)
+VIEW_MARGIN = 0.1                            # m: a single view's returns this far outside the union's rectangle count
 GROW_Z_MARGIN = 0.3                          # m above the vocabulary height
 PLAUSIBLE_GAIN, PLAUSIBLE_MARGIN = 2.0, 0.5  # a side > 2 L + 0.5 m merged with something else
-TRIM_MAD, TRIM_MARGIN = 3.0, 0.1             # drop points beyond 3 MAD + 0.1 m of the median (and beyond the diagonal)
+TRIM_MAD, TRIM_MARGIN = 3.0, 0.1             # the core: within 3 MAD + 0.1 m of the median (per axis)
+TRIM_LINK_SPACINGS = 8.0                     # beyond the core: linked to it by returns <= max(SEED_EPS, 8 spacings) apart
 DEPTH_SEEN = 0.6                             # an observed depth >= 0.6 S is taken as it is
 SHORT_FACE = 0.7                             # an observed width < 0.7 L: the short side faces us, so the depth is L
 FACE_STEP_DEG, FACE_FINE_DEG = 1.0, 0.05     # orientation search for the face frame
@@ -263,13 +269,45 @@ def _unit(v: np.ndarray) -> np.ndarray:
     return np.array([1.0, 0.0]) if n < 1e-9 else np.asarray(v, dtype=np.float64) / n
 
 
-def _trim(p: np.ndarray, cam: np.ndarray, floor: float) -> np.ndarray:
-    """Drop points beyond max(3 MAD + 0.1 m, floor) of the median, per axis of the ray frame."""
+def _trim(p: np.ndarray, cam: np.ndarray, diag: float) -> np.ndarray:
+    """Drop stray returns, on the two axes of the ray frame. The core is the points within 3 MAD + 0.1 m of the
+    median on both axes (the design's trim). A point beyond it is kept only when it could lie on one object of
+    the prior's size with the core (on each axis within diag + 0.1 m of the core's far end on the other side)
+    and a chain of returns links it to the core, each link at most max(SEED_EPS, TRIM_LINK_SPACINGS point
+    spacings at its range). The returns of an elongated object seen at an angle are lopsided and reach beyond
+    3 MAD; a lone stray return, or another object's cluster in a fused union, does not link."""
     r = _unit(np.median(p, axis=0) - cam)
     q = (p - cam) @ np.array([r, [-r[1], r[0]]]).T
     dev = np.abs(q - np.median(q, axis=0))
-    keep = (dev <= np.maximum(TRIM_MAD * np.median(dev, axis=0) + TRIM_MARGIN, floor)).all(axis=1)
-    return p[keep] if keep.any() else p
+    near_median = dev <= TRIM_MAD * np.median(dev, axis=0) + TRIM_MARGIN      # each axis: at least half the points
+    reach = diag + TRIM_MARGIN
+    fits = np.ones(len(p), dtype=bool)
+    for k in range(2):
+        lo, hi = q[near_median[:, k], k].min(), q[near_median[:, k], k].max()
+        fits &= near_median[:, k] | ((q[:, k] >= hi - reach) & (q[:, k] <= lo + reach))
+    core = near_median.all(axis=1)
+    if not core.any():
+        return p[fits] if fits.any() else p
+    cand = p[fits]
+    eps = np.maximum(SEED_EPS, TRIM_LINK_SPACINGS * LIDAR_STEP * np.hypot(*(cand - cam).T))
+    return cand[_reached(cand, eps, core[fits])]
+
+
+def _reached(xy: np.ndarray, eps: np.ndarray, start: np.ndarray) -> np.ndarray:
+    """The points that a chain of links (|xy_i - xy_j| <= max(eps_i, eps_j)) joins to the start points (a
+    boolean mask, start included), found breadth first from the start: cheap when few points are outside it."""
+    reached = start.copy()
+    frontier, rest = np.flatnonzero(start), np.flatnonzero(~start)
+    while len(frontier) and len(rest):
+        hit = np.zeros(len(rest), dtype=bool)
+        for s in range(0, len(frontier), _BLOCK):
+            f = frontier[s:s + _BLOCK]
+            d2 = (xy[rest, None, 0] - xy[None, f, 0]) ** 2 + (xy[rest, None, 1] - xy[None, f, 1]) ** 2
+            lim = np.maximum(eps[rest, None], eps[None, f])
+            hit |= (d2 <= lim * lim).any(axis=1)
+        frontier, rest = rest[hit], rest[~hit]
+        reached[frontier] = True
+    return reached
 
 
 def _edge_distances(q: np.ndarray, phis: np.ndarray) -> np.ndarray:
@@ -314,9 +352,14 @@ def _aabb(e1: np.ndarray, e2: np.ndarray, u0: float, u1: float, v0: float, v1: f
     return float(mid[0]), float(mid[1]), float(size[0]), float(size[1])
 
 
-def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, float]) -> Footprint | None:
+def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, float], *,
+              views: Sequence[tuple[np.ndarray, Sequence[float]]] | None = None) -> Footprint | None:
     """The axis-aligned footprint from one view (or the union of several) of one object's points (N x 2),
-    with the vocabulary size prior (L, S) completing a depth the view cannot see. None without points."""
+    with the vocabulary size prior (L, S) completing a depth the view cannot see. None without points.
+    views: for a union, the single views it was made from, as (points N_k x 2, camera XY) pairs (the tracker's
+    hits, before any thinning). They only add evidence that the far end was seen, by any of their cameras.
+    Without them the points are judged as one view from cam_xy, so a far end that only an older view saw
+    keeps the prior's depth (the larger side)."""
     p = _points(points_xy, 2)
     if len(p) == 0:
         return None
@@ -343,13 +386,20 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     # the near side is a face or a corner of two faces, both sampled on their plane: EDGE_PAD. The other sides
     # get one point spacing where a face ends there (side_pad)
     pad_seen, far_sampled = _side(u, v, rays, lateral, +1)
+    view_pad = 0.0
+    if corner and not far_sampled and views:  # a union: did one of its single views see the far end?
+        seen_by_view = _far_end_seen(views, depth, lateral, near, near + d_obs, float(v.min()), float(v.max()),
+                                     math.hypot(big, small))
+        if seen_by_view is not None:
+            far_sampled, view_pad = True, seen_by_view
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
     d_prior = big if w_obs < SHORT_FACE * big else small
     # the observed depth: in a corner view (the depth axis nearer the ray, so the face along it is the more
-    # grazing one), that face seen to its far end, also for an object smaller than its prior and for a union of
-    # views; or, as for any view, a depth >= 0.6 S that reaches the prior's
-    if ((corner and far_sampled and d_obs >= min(seen, FLAT_SPREAD))
-            or (d_obs >= seen and d_obs + pad_seen >= d_prior)):
+    # grazing one), that face seen to its far end, also for an object smaller than its prior; or, as for any
+    # view, a depth >= 0.6 S that reaches the prior's
+    if corner and far_sampled and d_obs >= min(seen, FLAT_SPREAD):
+        d, pad_far, filled = d_obs, max(pad_seen, view_pad), False
+    elif d_obs >= seen and d_obs + pad_seen >= d_prior:
         d, pad_far, filled = d_obs, pad_seen, False
     else:                                    # the far side is hidden (or its face grazed): the prior's depth
         d, pad_far, filled = max(d_prior, d_obs), EDGE_PAD, True
@@ -372,10 +422,10 @@ def side_pad(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np
 def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.ndarray,
           side: int) -> tuple[float, bool]:
     """side_pad's margin, and whether the returns reach the true end on that side (sampled): a face lies along
-    the side, or the face ending there is sampled at least as densely as at 60° incidence. The density is the
-    camera's incidence at the extreme point (one view), or the measured gap from the extreme point to its
-    nearest other return, at most PAD_GAIN_MAX point spacings (a union of views: another camera may have seen
-    that end face-on). Beyond 60° the last return can sit far short of the end (a grazing face)."""
+    the side, or the camera (rays from it) sees the face ending there at <= 60° incidence, at the extreme
+    point. Beyond 60° the last return can sit far short of the end (a grazing face). How close the other
+    returns lie is no evidence: the rings of one column spread in XY on a leaning or curved face and with range
+    noise, so a grazed end looks densely sampled (a union of views passes its single views to footprint)."""
     extreme = along.max() if side > 0 else along.min()
     on = np.flatnonzero(np.abs(along - extreme) <= FLAT_TOL)
     if float(np.ptp(across[on])) >= FLAT_SPREAD:
@@ -387,10 +437,33 @@ def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.nd
     r_end = float(ranges[k])
     facing = abs(float(rays[on[k]] @ normal)) / r_end
     pad = max(EDGE_PAD, PAD_SPACINGS * LIDAR_STEP * r_end / max(facing, 1.0 / PAD_GAIN_MAX))
-    gap = np.hypot(along - along[on[k]], across - across[on[k]])
-    gap = gap[gap > SAME_POINT]
-    dense = len(gap) > 0 and float(gap.min()) <= PAD_GAIN_MAX * LIDAR_STEP * r_end
-    return pad, bool(facing >= 1.0 / PAD_GAIN_MAX or dense)
+    return pad, bool(facing >= 1.0 / PAD_GAIN_MAX)
+
+
+def _far_end_seen(views: Sequence[tuple[np.ndarray, Sequence[float]]], depth: np.ndarray, lateral: np.ndarray,
+                  u_near: float, u_far: float, v_lo: float, v_hi: float, diag: float) -> float | None:
+    """For a union: the far margin (beyond u_far along depth) when one of its single views saw the far end,
+    else None. A view counts when its own returns (trimmed as the union is) near the union's rectangle
+    (within VIEW_MARGIN) end on that side as _side calls sampled, from that view's camera, and that end plus
+    its pad reaches u_far. The largest such margin (it also covers a view's returns that the union's thinning
+    left out)."""
+    best = None
+    for pts, cam in views:
+        q, c = _points(pts, 2), np.asarray(cam, dtype=np.float64)[:2]
+        if len(q) == 0:
+            continue
+        q = _trim(q, c, diag)
+        u, v = q @ depth, q @ lateral
+        inside = ((u >= u_near - VIEW_MARGIN) & (u <= u_far + VIEW_MARGIN)
+                  & (v >= v_lo - VIEW_MARGIN) & (v <= v_hi + VIEW_MARGIN))
+        if not inside.any():
+            continue
+        rays = q[inside] - c
+        pad, sampled = _side(u[inside], v[inside], rays, lateral, +1)
+        end = float(u[inside].max()) + pad
+        if sampled and end >= u_far:
+            best = end - u_far if best is None else max(best, end - u_far)
+    return best
 
 
 def plausible(fp: Footprint, prior: tuple[float, float]) -> bool:

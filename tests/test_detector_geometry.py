@@ -69,17 +69,42 @@ def _hit(origin, d, s):
     return np.where((t_in <= t_out) & (t_in > 0), t_in, np.inf)
 
 
-def scan(solids, base=BASE, q=Q0, floor=False, which=False):
-    """World points of one LiDAR scan: the nearest solid (or the floor) along each ray, 0.05-10 m."""
+def _hit_leaning(origin, d, s, lean_deg):
+    """The same solid with its four side faces leaning back by lean_deg (set back by z tan(lean) at the height z
+    above its base, which stays the true footprint): the rings of one column no longer share their XY."""
+    cx, cy, sx, sy, yaw, z0, z1 = s
+    lam = math.radians(lean_deg)
+    a, b = np.array([math.cos(yaw), math.sin(yaw)]), np.array([-math.sin(yaw), math.cos(yaw)])
+    planes = [(np.array([0.0, 0.0, 1.0]), z1), (np.array([0.0, 0.0, -1.0]), -z0)]
+    for nh, half in ((a, sx / 2), (-a, sx / 2), (b, sy / 2), (-b, sy / 2)):
+        n = np.array([nh[0] * math.cos(lam), nh[1] * math.cos(lam), math.sin(lam)])
+        planes.append((n, float(n @ [cx + nh[0] * half, cy + nh[1] * half, z0])))
+    t_in, t_out, ok = np.full(len(d), -np.inf), np.full(len(d), np.inf), np.ones(len(d), bool)
+    for n, off in planes:                              # a convex solid: inside every plane n . x <= off
+        den, num = d @ n, off - origin @ n
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = num / den
+        t_in = np.where(den < -1e-12, np.maximum(t_in, t), t_in)
+        t_out = np.where(den > 1e-12, np.minimum(t_out, t), t_out)
+        ok &= (np.abs(den) > 1e-12) | (num >= 0)
+    return np.where(ok & (t_in <= t_out) & (t_in > 0), t_in, np.inf)
+
+
+def scan(solids, base=BASE, q=Q0, floor=False, which=False, lean_deg=0.0, noise=0.0, seed=0):
+    """World points of one LiDAR scan: the nearest solid (or the floor) along each ray, 0.05-10 m. lean_deg
+    leans every side face back; noise adds Gaussian range noise (m, seeded)."""
     origin = lidar_points_world(np.zeros((1, 3)), base, q)[0]
     az, el = np.meshgrid(AZ, EL)
     d = np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)], axis=-1).reshape(-1, 3)
     d = d @ quat_to_matrix(q).T
-    hits = np.array([_hit(origin, d, s) for s in solids] or np.full((1, len(d)), np.inf))
+    hit = (lambda s: _hit_leaning(origin, d, s, lean_deg)) if lean_deg else (lambda s: _hit(origin, d, s))
+    hits = np.array([hit(s) for s in solids] or np.full((1, len(d)), np.inf))
     if floor:
         with np.errstate(divide="ignore"):
             hits = np.vstack([hits, np.where(d[:, 2] < 0, -origin[2] / d[:, 2], np.inf)])
     t, k = hits.min(axis=0), hits.argmin(axis=0)
+    if noise:
+        t = t + np.random.default_rng(seed).normal(0.0, noise, len(t))
     ok = (t >= 0.05) & (t <= 10.0)
     pts = origin + d[ok] * t[ok, None]
     return (pts, k[ok]) if which else pts
@@ -416,6 +441,18 @@ def test_footprint_from_one_view():
     clean = g.footprint(pts, cxy, (0.5, 0.5))
     assert g.footprint(np.vstack([pts, [[2.0, 1.5]]]), cxy, (0.5, 0.5)) == clean
     assert g.footprint(np.vstack([pts, [[3.6, 0.0]]]), cxy, (0.5, 0.5)) == clean
+    # ... also with a large prior (the sofa, diagonal 2.01 m): a return that cannot lie on one sofa with the
+    # rest (beyond the diagonal), or that no chain of returns links to the sofa's, is trimmed; the depth stays L
+    sofa = solid(2.9, 0.0, 1.8, 0.9, height=0.85)
+    pts = g.cut(scan([sofa]))[:, :2]
+    clean = g.footprint(pts, cxy, (1.8, 0.9))
+    assert clean.filled and covers(clean, sofa) and clean.size[0] == pytest.approx(1.9, abs=0.01)
+    for stray in ([[2.45, 1.9]], [[4.5, 0.0]], [[2.45, 1.2]], [[2.0, 0.95]], _row(2.2, 1.1, 1.3, 5)[:, :2]):
+        assert g.footprint(np.vstack([pts, stray]), cxy, (1.8, 0.9)) == clean, stray
+    # the trade-off (pinned): a return linked to the object's own returns is kept, so a stray just beyond the
+    # end of a face widens the footprint (it still covers)
+    wider = g.footprint(np.vstack([pts, [[2.0, 0.6]]]), cxy, (1.8, 0.9))
+    assert wider.y + wider.size[1] / 2 >= 0.6 and covers(wider, sofa) and wider.filled
 
     # sides clamped to [SIZE_MIN, MAX_SIZE]; nothing to measure -> None
     fp = g.footprint(np.array([[2.0, 0.0]]), cxy, (0.05, 0.05))
@@ -432,24 +469,37 @@ SIDE_BASE, Q_SIDE = (2.15, -2.0, 0.35), yaw_q(90.0)       # 2 m to the right of 
 @pytest.mark.parametrize("side", [0.3, 0.35, 0.4])
 def test_a_depth_seen_to_its_far_end_is_kept_below_the_prior(side):
     """A box smaller than its vocabulary prior keeps its observed depth when the far end along the depth axis is
-    well sampled (a seen face lies there, the face ending there is seen at <= 60° incidence, or its last returns
-    are as dense as that): spec §11.6 "2 方向から見た箱は見えた奥行きになる", design-detector.md §7.4."""
+    seen: a seen face lies there, or the face ending there is seen at <= 60° incidence, by the newest camera or,
+    for the tracker's union of hits, by one of the single views passed as `views` (spec §11.6 "2 方向から見た箱は
+    見えた奥行きになる", design-detector.md §7.4). Also with leaning faces and range noise."""
     prior = (0.5, 0.5)
     box = solid(2.0 + side / 2, 0.0, side, side, height=0.45)
-    front = g.cut(scan([box]))[:, :2]
-    right = g.cut(scan([box], base=(box[0], SIDE_BASE[1], SIDE_BASE[2]), q=Q_SIDE))[:, :2]
-    cams = (cam_xy(), cam_xy((box[0], SIDE_BASE[1], SIDE_BASE[2]), Q_SIDE))
-    # the front and the right side fused (the tracker's union), with either view as the newest
-    for newest in cams:
-        fp = g.footprint(np.vstack([front, right]), newest, prior)
-        assert not fp.filled and fp.observed == (fp.x, fp.y, *fp.size)
-        assert covers(fp, box)
-        assert max(fp.size) <= side + 0.16 < 0.5 + 2 * g.EDGE_PAD           # the observed depth, not the prior's
-        assert (fp.x, fp.y) == pytest.approx((box[0], box[1]), abs=0.05)
-    # each face alone shows no depth: the prior fills it
-    for pts, cam in zip((front, right), cams):
-        fp = g.footprint(pts, cam, prior)
-        assert fp.filled and covers(fp, box)
+    side_base = (box[0], SIDE_BASE[1], SIDE_BASE[2])
+    cams = (cam_xy(), cam_xy(side_base, Q_SIDE))
+    for lean, noise in ((0.0, 0.0), (0.5, 0.0), (0.0, 0.002)):
+        front = g.cut(scan([box], lean_deg=lean, noise=noise, seed=1))[:, :2]
+        right = g.cut(scan([box], base=side_base, q=Q_SIDE, lean_deg=lean, noise=noise, seed=2))[:, :2]
+        views = [(front, cams[0]), (right, cams[1])]
+        # the front and the right side fused (the tracker's union), with either view as the newest
+        for newest in cams:
+            fp = g.footprint(np.vstack([front, right]), newest, prior, views=views)
+            assert not fp.filled and fp.observed == (fp.x, fp.y, *fp.size), (lean, noise)
+            assert covers(fp, box)
+            assert max(fp.size) <= side + 0.16 < 0.5 + 2 * g.EDGE_PAD       # the observed depth, not the prior's
+            assert (fp.x, fp.y) == pytest.approx((box[0], box[1]), abs=0.05)
+            # a view with no returns, or a lone stray return 1 m out, adds nothing
+            stray = (np.array([[box[0] + 1.0, box[1]]]), newest)
+            assert g.footprint(np.vstack([front, right]), newest, prior,
+                               views=views + [(np.zeros((0, 2)), newest), stray]) == fp
+            # without the single views the union is judged as one view from the newest camera, which grazes the
+            # far face: the prior fills the depth (the larger side, still covering)
+            fp = g.footprint(np.vstack([front, right]), newest, prior)
+            assert fp.filled and covers(fp, box)
+        # each face alone shows no depth: the prior fills it, with or without its own view passed
+        for pts, cam in zip((front, right), cams):
+            fp = g.footprint(pts, cam, prior)
+            assert fp.filled and covers(fp, box)
+            assert g.footprint(pts, cam, prior, views=[(pts, cam)]) == fp
     # one corner view at 45°: both faces seen to their ends at 45° incidence
     diamond = solid(2.5, 0.0, side, side, yaw_deg=45.0, height=0.45)
     fp = g.footprint(g.cut(scan([diamond]))[:, :2], cam_xy(), prior)
@@ -459,11 +509,23 @@ def test_a_depth_seen_to_its_far_end_is_kept_below_the_prior(side):
 
 def test_a_grazing_far_end_keeps_the_prior():
     """A face seen at a grazing angle is sampled only part-way, so its last return says little about its end:
-    the depth stays the prior's (filled), for a prior equal to the true size and for a larger one."""
+    the depth stays the prior's (filled), for a prior equal to the true size and for a larger one; also when the
+    faces are not perfectly vertical or the ranges are noisy, so that the rings of one column spread in XY
+    (their spread says nothing about how far the face goes), and for the tracker's union of still hits."""
     for prior in ((1.8, 0.9), (2.2, 1.1)):
-        s, fp = _cover_case(1.8, 0.9, 0.85, 15, 1.0, 0, prior=prior)    # the sofa turned 15°, 1 m away
+        for lean, noise in ((0.0, 0.0), (0.5, 0.0), (2.0, 0.0), (0.0, 0.002), (0.0, 0.01)):
+            # the sofa turned 15°, 1 m away
+            s, fp = _cover_case(1.8, 0.9, 0.85, 15, 1.0, 0, prior=prior, lean_deg=lean, noise=noise)
+            assert fp.filled and covers(fp, s), (prior, lean, noise, fp)
+            if not lean:                     # the vertical side face was not seen to its end (a 2° lean shows more)
+                assert fp.observed[2] < 1.8 * math.cos(math.radians(15))
+    # the Go2 standing still: six hits of the same view, each with its own range noise, fused, with or without
+    # the single views (none of them sees the far end at <= 60°)
+    s = _cover_solid(1.8, 0.9, 0.85, 15, 1.0, 0)
+    hits = [g.cut(scan([s], noise=0.002, seed=k))[:, :2] for k in range(6)]
+    for views in (None, [(h, cam_xy()) for h in hits]):
+        fp = g.footprint(np.vstack(hits), cam_xy(), (1.8, 0.9), views=views)
         assert fp.filled and covers(fp, s)
-        assert fp.observed[2] < 1.8 * math.cos(math.radians(15))          # the side face was not seen to its end
     # a one-face view keeps the prior too: with a 1.5 x prior the 0.45 m short face of this bench looks thin
     # (< 0.6 S), so the depth axis runs along it; its end is seen face-on, but the grazed long face is the
     # lateral extent, which nothing completes
@@ -497,13 +559,17 @@ def _cover_cases():
                     yield L, S, h, yaw, rng, bearing
 
 
-def _cover_case(L, S, h, yaw, rng, bearing, prior=None):
+def _cover_solid(L, S, h, yaw, rng, bearing):
     rel = math.radians(yaw - bearing)
     centre = rng + L / 2 * abs(math.cos(rel)) + S / 2 * abs(math.sin(rel))   # near side `rng` from the LiDAR
     lidar_xy = np.array(LIDAR_IN_BODY[:2]) + BASE[:2]
     b = math.radians(bearing)
-    s = solid(*(lidar_xy + centre * np.array([math.cos(b), math.sin(b)])), L, S, yaw_deg=yaw, height=h)
-    pts = g.cut(scan([s]))
+    return solid(*(lidar_xy + centre * np.array([math.cos(b), math.sin(b)])), L, S, yaw_deg=yaw, height=h)
+
+
+def _cover_case(L, S, h, yaw, rng, bearing, prior=None, lean_deg=0.0, noise=0.0, seed=0):
+    s = _cover_solid(L, S, h, yaw, rng, bearing)
+    pts = g.cut(scan([s], lean_deg=lean_deg, noise=noise, seed=seed))
     return s, g.footprint(pts[:, :2], cam_xy(), (L, S) if prior is None else prior)
 
 
@@ -527,6 +593,19 @@ def test_published_footprint_covers_the_object():
     assert n == len(COVER_SIZES) * 7 * 5 * 2 == 630
     assert failed == []
     assert 0 < excused["near-square short face"] <= 8      # the documented limit is real (5 of 630 today)
+
+
+@pytest.mark.parametrize("lean, noise", [(0.5, 0.0), (0.0, 0.002)], ids=["lean-0.5deg", "noise-2mm"])
+def test_published_footprint_covers_leaning_or_noisy_faces(lean, noise):
+    """O12 without perfectly vertical faces (the Fuel meshes lean and curve): every side face leaning back 0.5°,
+    or 2 mm of range noise, so the rings of one column no longer share their XY. The same 630 views, and no
+    failure beyond the listed rule."""
+    failed = []
+    for i, case in enumerate(_cover_cases()):
+        s, fp = _cover_case(*case, lean_deg=lean, noise=noise, seed=i)
+        if not covers(fp, s) and not any(rule(*case) for rule in COVER_EXCEPTIONS.values()):
+            failed.append(case)
+    assert failed == []
 
 
 def test_footprint_covers_an_object_smaller_than_its_prior():
