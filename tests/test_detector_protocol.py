@@ -20,6 +20,7 @@ from detector.protocol import (
     vocabulary_prompts,
 )
 from detector.scripted import ScriptedDetector
+from voice_ltl.objects import Obj
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE_SHAPE = (480, 640, 3)
@@ -41,9 +42,23 @@ def make_scripted():
     return ScriptedDetector(script)
 
 
+def make_oracle():
+    """The oracle with a truth in view, one partly outside the image and one behind the camera, at a pose."""
+    from detector.camera import CameraModel
+    from detector.core import View
+    from detector.oracle import OracleDetector
+
+    det = OracleDetector()
+    det.set_truth([Obj("chair_1", "chair", 2.5, -0.5, (0.45, 0.45)), Obj("sofa_1", "sofa", 4.0, 1.0, (0.9, 1.8)),
+                   Obj("table_1", "table", 1.0, 1.4, (1.2, 0.75)), Obj("box_1", "box", -2.0, 0.0, (0.5, 0.5))])
+    det.prepare(View((0.0, 0.0, 0.35), (1.0, 0.0, 0.0, 0.0), CameraModel.from_hfov(), 0.0))
+    return det
+
+
 IMPLEMENTATIONS = [
     pytest.param(make_scripted, id="scripted"),
-    # Task 2.7: OracleDetector; Task 2.11: YoloeDetector (marked `detector`)
+    pytest.param(make_oracle, id="oracle"),
+    # Task 2.11: YoloeDetector (marked `detector`)
 ]
 
 
