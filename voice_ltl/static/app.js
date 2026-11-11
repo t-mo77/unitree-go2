@@ -12,6 +12,9 @@ const VIEW_HALF = 1.6;       // [m] the top view shows at least this far to each
 const VIEW_PAD = 0.4;        // [m] the margin around what the top view frames
 const HIDDEN_ALPHA = 0.45;   // an object that is not seen now is drawn faint
 const MIN_LATTICE_PX = 4;    // [px] the top view's GRID lines are left out when closer than this
+const NAME_SPARE_PX = 16;    // [px] a name on the top view is clipped to max(its rectangle's width + this,
+const NAME_MIN_PX = 48;      //      this) with 「…」 (spec §9.10); the aria label and the line keep it whole
+const SEEN_MAX = 8;          // the 見えている物 line names at most this many, then 「、ほか N 個」
 
 const POSTURE_JA = { LYING: "伏せ", STANDING: "立ち", SITTING: "おすわり", UNKNOWN: "不明" };
 const SENSE_JA = { CLEAR: "なし", BLOCKED: "あり", SENSOR_LOST: "途切れ" };
@@ -707,15 +710,46 @@ function render(s) {
   }
 
   renderGo2(s);
-  setText("objects-seen", objectsLine(s.objects ?? []));
+  setText("objects-seen", objectsLine(s.objects ?? [], s.pose ?? null));
   if (changed("map", [s.pose, s.world ?? null, s.objects ?? [], s.grid ?? null, s.plan_cells ?? []])) drawMap(s);
 }
 
-// The line under the top view: the objects seen now (snapshot "objects", visible ones), each
-// with where it is from the Go2 (its "where", null without a position).
-function objectsLine(objects) {
-  const seen = objects.filter((o) => o.visible).map((o) => (o.where ? `${o.name}（${o.where}）` : o.name));
-  return `見えている物：${seen.length ? seen.join("、") : "なし"}`;
+// The line under the top view: the objects seen now (snapshot "objects", visible ones, R20),
+// nearest to the Go2 (pose) first, in the snapshot's order without a pose or between equals;
+// at most SEEN_MAX, each with where it is from the Go2 (its "where", null without a position),
+// then 「、ほか N 個」 for the other seen ones.
+function objectsLine(objects, pose = null) {
+  let seen = objects.filter((o) => o.visible);
+  if (pose) {
+    const away = (o) => Math.hypot(o.x - pose[0], o.y - pose[1]);
+    seen = seen.map((o) => [away(o), o]).sort((a, b) => a[0] - b[0]).map(([, o]) => o);
+  }
+  const names = seen.slice(0, SEEN_MAX).map((o) => (o.where ? `${objectName(o)}（${o.where}）` : objectName(o)));
+  if (seen.length > SEEN_MAX) names.push(`ほか ${seen.length - SEEN_MAX} 個`);
+  return `見えている物：${names.length ? names.join("、") : "なし"}`;
+}
+
+// The name of an object row: the server's (the vocabulary's ja), else its label with spaces.
+function objectName(o) {
+  return o.name || o.label.replaceAll("_", " ");
+}
+
+// The colour tokens of an object on the top view, chosen here only: a box has the button
+// boxes' colours (a box the detector sees and a button box look alike, D9), any other kind
+// the object pair.
+function objectStyle(o) {
+  return o.label === "box" ? { fill: "--box-fill", line: "--box-line" } : { fill: "--obj-fill", line: "--obj-line" };
+}
+
+// text as drawn in ctx's font in at most maxWidth px: the whole text if it fits, else its
+// longest prefix that fits with 「…」 after it. A measureText without a width counts as 0 px.
+function clipText(ctx, text, maxWidth) {
+  const width = (t) => ctx.measureText(t)?.width ?? 0;
+  if (width(text) <= maxWidth) return text;
+  const chars = Array.from(text);
+  let n = chars.length - 1;
+  while (n > 0 && width(chars.slice(0, n).join("") + "…") > maxWidth) n -= 1;
+  return chars.slice(0, n).join("") + "…";
 }
 
 // ---------------- top view ----------------
@@ -860,9 +894,10 @@ function drawMap(s) {
   }
 
   // The objects: size [along x, along y] in odom; one not seen now is faint, its line dashed.
+  // The name (11 px) under each is clipped to its rectangle's width (clipText).
   for (const o of objects) {
     const [ex, ey] = o.size;
-    const box = o.label === "box";
+    const look = objectStyle(o);
     ctx.save();
     if (!o.visible) {
       ctx.globalAlpha = HIDDEN_ALPHA;
@@ -870,14 +905,15 @@ function drawMap(s) {
     }
     ctx.beginPath();
     roundRect(ctx, sx(o.x - ex / 2), sy(o.y + ey / 2), ex * scale, ey * scale, 6);
-    ctx.fillStyle = color(box ? "--box-fill" : "--obj-fill");
-    ctx.strokeStyle = color(box ? "--box-line" : "--obj-line");
+    ctx.fillStyle = color(look.fill);
+    ctx.strokeStyle = color(look.line);
     ctx.lineWidth = 1.5;
     ctx.fill(); ctx.stroke();
     ctx.restore();
     ctx.fillStyle = color("--muted");
     ctx.textAlign = "center";
-    ctx.fillText(o.name, sx(o.x), sy(o.y - ey / 2) + 15);
+    const name = clipText(ctx, objectName(o), Math.max(ex * scale + NAME_SPARE_PX, NAME_MIN_PX));
+    ctx.fillText(name, sx(o.x), sy(o.y - ey / 2) + 15);
     ctx.textAlign = "start";
   }
 
@@ -950,7 +986,7 @@ function drawMap(s) {
   }
   // 「箱 1 個、椅子 1 個」: the simulator's boxes count as 箱; with no objects, 「箱 N 個」 as before.
   const counts = new Map([["箱", boxes.length]]);
-  for (const o of objects) counts.set(o.name, (counts.get(o.name) ?? 0) + 1);
+  for (const name of objects.map(objectName)) counts.set(name, (counts.get(name) ?? 0) + 1);
   const things = [...counts].filter(([, k]) => k > 0 || !objects.length).map(([name, k]) => `${name} ${k} 個`);
   canvas.setAttribute("aria-label", `上から見た図：${things.join("、")}`
     + (planCells.length ? `。計画の道 ${planCells.length} 手` : "")

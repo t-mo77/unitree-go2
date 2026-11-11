@@ -37,7 +37,7 @@
   --map-grid: #ECECEF;
   --map-cell: #D9D9DE;       /* the lines of the plan's 0.5 m cells */
   --map-blocked: #E3E3E8;    /* cells a plan never enters: between --map-grid and --map-cell, so they keep their lines */
-  --obj-fill: #DCE6D5;       /* an object that is not a box (a chair) */
+  --obj-fill: #DCE6D5;       /* an object that is not a box (a chair, a plant, …) */
   --obj-line: #8DA37E;
   --robot: #1D1D1F;
   --box-fill: #E8DCCB;
