@@ -266,6 +266,13 @@ def test_seed_clusters():
     assert len(g.clusters(shuffled)) == 1
     assert g.clusters(np.zeros((0, 2))) == []
     assert len(g.clusters(two, eps=0.45)) == 1
+    # non-finite rows are left out, and the indices still refer to the caller's rows
+    holed = np.vstack([[[np.nan, 0.0, 0.4]], _row(1.0, 0.0, 0.4, 5), [[np.inf, 0.1, 0.4]], _row(3.0, 0.0, 0.5, 6)])
+    groups = g.clusters(holed)
+    assert [gr.tolist() for gr in groups] == [[1, 2, 3, 4, 5], [7, 8, 9, 10, 11, 12]]
+    assert g.pick_cluster(holed, groups, (0.0, 0.0)).tolist() == holed[1:6].tolist()
+    assert [gr.tolist() for gr in g.clusters(holed[:, :2])] == [gr.tolist() for gr in groups]
+    assert g.clusters(np.array([[np.nan, 0.0]])) == []
 
 
 def _row(x, y0, y1, n, z=0.4):
@@ -419,6 +426,51 @@ def test_footprint_from_one_view():
     assert g.footprint(np.array([[np.nan, 1.0]]), cxy, (0.5, 0.5)) is None
 
 
+SIDE_BASE, Q_SIDE = (2.15, -2.0, 0.35), yaw_q(90.0)       # 2 m to the right of the box below, facing +y
+
+
+@pytest.mark.parametrize("side", [0.3, 0.35, 0.4])
+def test_a_depth_seen_to_its_far_end_is_kept_below_the_prior(side):
+    """A box smaller than its vocabulary prior keeps its observed depth when the far end along the depth axis is
+    well sampled (a seen face lies there, the face ending there is seen at <= 60° incidence, or its last returns
+    are as dense as that): spec §11.6 "2 方向から見た箱は見えた奥行きになる", design-detector.md §7.4."""
+    prior = (0.5, 0.5)
+    box = solid(2.0 + side / 2, 0.0, side, side, height=0.45)
+    front = g.cut(scan([box]))[:, :2]
+    right = g.cut(scan([box], base=(box[0], SIDE_BASE[1], SIDE_BASE[2]), q=Q_SIDE))[:, :2]
+    cams = (cam_xy(), cam_xy((box[0], SIDE_BASE[1], SIDE_BASE[2]), Q_SIDE))
+    # the front and the right side fused (the tracker's union), with either view as the newest
+    for newest in cams:
+        fp = g.footprint(np.vstack([front, right]), newest, prior)
+        assert not fp.filled and fp.observed == (fp.x, fp.y, *fp.size)
+        assert covers(fp, box)
+        assert max(fp.size) <= side + 0.16 < 0.5 + 2 * g.EDGE_PAD           # the observed depth, not the prior's
+        assert (fp.x, fp.y) == pytest.approx((box[0], box[1]), abs=0.05)
+    # each face alone shows no depth: the prior fills it
+    for pts, cam in zip((front, right), cams):
+        fp = g.footprint(pts, cam, prior)
+        assert fp.filled and covers(fp, box)
+    # one corner view at 45°: both faces seen to their ends at 45° incidence
+    diamond = solid(2.5, 0.0, side, side, yaw_deg=45.0, height=0.45)
+    fp = g.footprint(g.cut(scan([diamond]))[:, :2], cam_xy(), prior)
+    assert not fp.filled and covers(fp, diamond)
+    assert max(fp.size) <= side * math.sqrt(2) + 0.2
+
+
+def test_a_grazing_far_end_keeps_the_prior():
+    """A face seen at a grazing angle is sampled only part-way, so its last return says little about its end:
+    the depth stays the prior's (filled), for a prior equal to the true size and for a larger one."""
+    for prior in ((1.8, 0.9), (2.2, 1.1)):
+        s, fp = _cover_case(1.8, 0.9, 0.85, 15, 1.0, 0, prior=prior)    # the sofa turned 15°, 1 m away
+        assert fp.filled and covers(fp, s)
+        assert fp.observed[2] < 1.8 * math.cos(math.radians(15))          # the side face was not seen to its end
+    # a one-face view keeps the prior too: with a 1.5 x prior the 0.45 m short face of this bench looks thin
+    # (< 0.6 S), so the depth axis runs along it; its end is seen face-on, but the grazed long face is the
+    # lateral extent, which nothing completes
+    s, fp = _cover_case(0.9, 0.45, 1.2, 15, 4.0, 0, prior=(1.35, 0.675))
+    assert fp.filled
+
+
 COVER_SIZES = [(0.3, 0.3, 0.45), (0.5, 0.5, 0.5), (1.0, 1.0, 0.8), (2.0, 2.0, 0.8), (0.9, 0.45, 1.2),
                (1.2, 0.4, 0.45), (1.8, 0.9, 0.85), (2.0, 1.0, 0.5), (0.4, 0.3, 0.7)]
 
@@ -445,14 +497,14 @@ def _cover_cases():
                     yield L, S, h, yaw, rng, bearing
 
 
-def _cover_case(L, S, h, yaw, rng, bearing):
+def _cover_case(L, S, h, yaw, rng, bearing, prior=None):
     rel = math.radians(yaw - bearing)
     centre = rng + L / 2 * abs(math.cos(rel)) + S / 2 * abs(math.sin(rel))   # near side `rng` from the LiDAR
     lidar_xy = np.array(LIDAR_IN_BODY[:2]) + BASE[:2]
     b = math.radians(bearing)
     s = solid(*(lidar_xy + centre * np.array([math.cos(b), math.sin(b)])), L, S, yaw_deg=yaw, height=h)
     pts = g.cut(scan([s]))
-    return s, g.footprint(pts[:, :2], cam_xy(), (L, S))
+    return s, g.footprint(pts[:, :2], cam_xy(), (L, S) if prior is None else prior)
 
 
 def test_published_footprint_covers_the_object():
@@ -475,6 +527,31 @@ def test_published_footprint_covers_the_object():
     assert n == len(COVER_SIZES) * 7 * 5 * 2 == 630
     assert failed == []
     assert 0 < excused["near-square short face"] <= 8      # the documented limit is real (5 of 630 today)
+
+
+def test_footprint_covers_an_object_smaller_than_its_prior():
+    """The observed depth kept below the prior (a far end seen) must still cover: the cover views with a prior
+    1.25 x the true size, and the D9 button box (0.3 m, the box prior 0.5 m). The one listed exception: a
+    filled rectangle wider than MAX_SIZE is clamped around its own centre (the 2 m box with a 2.5 m prior)."""
+    failed, clamped, kept = [], [], 0
+    for case in _cover_cases():
+        L, S = case[:2]
+        s, fp = _cover_case(*case, prior=(1.25 * L, 1.25 * S))
+        kept += not fp.filled
+        if covers(fp, s):
+            continue
+        if fp.filled and max(fp.size) >= g.MAX_SIZE - 1e-9:
+            clamped.append(case)
+        else:
+            failed.append(case)
+    assert failed == []
+    assert 0 < len(clamped) <= 32 and {case[:2] for case in clamped} == {(2.0, 2.0)}    # 28 of 630 today
+    assert kept >= 60                                                                   # 92 of 630 today
+    for yaw in range(0, 91, 15):
+        for rng in (1.0, 3.0, 5.0):
+            s, fp = _cover_case(0.3, 0.3, 0.45, yaw, rng, 0, prior=(0.5, 0.5))
+            assert covers(fp, s)
+            assert fp.filled == (yaw != 45)          # seen to the far end only at 45°; elsewhere a face is grazed
 
 
 # ---- fallback ----

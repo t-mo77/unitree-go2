@@ -25,9 +25,14 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     includes the hidden far corner, and a face seen at an angle is completed along its normal;
   - the MAD trim never drops a point within the prior's diagonal hypot(L, S) of the median (per axis): the
     returns of an elongated object seen at an angle are lopsided, and 3 MAD + 0.1 m cut its far end;
-  - an observed depth (>= 0.6 S) counts only if it also reaches the prior's depth for that view (within the far
-    side's pad); otherwise the prior's depth is used and filled is True. A face seen at a grazing angle is
-    sampled only part-way (the last 1° wedge can hide most of a sofa's side);
+  - an observed depth is kept (filled False) in two cases: in a corner view (the depth axis is the face axis
+    nearer the ray), when the face along the depth axis is seen to its far end (a face lies on the far side,
+    the end is seen at <= 60° incidence, or the returns there are as dense as that, which covers a union of
+    views) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches the prior's
+    depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled is True.
+    A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a sofa's
+    side), so its last return says little about its end. An object smaller than its prior, seen to its far
+    end, keeps its own depth (spec §11.6: a box seen from two sides gets its observed depth);
   - the margin is EDGE_PAD on the near side and on sides along which a face lies, and one point spacing along
     the face (range x 1° / cos(incidence), up to 60°) where a face ends; beyond about 2.9 m the spacing exceeds
     EDGE_PAD.
@@ -68,6 +73,7 @@ GROW_EPS_SPACING = 1.5 * LIDAR_STEP          # 1.5 x the horizontal point spacin
 PAD_SPACINGS = 1.1                           # where a face ends: this many point spacings along the face (a bound)
 PAD_GAIN_MAX = 2.0                           # ... with the incidence counted up to 60°
 FLAT_TOL, FLAT_SPREAD = 0.02, 0.1            # m: points within FLAT_TOL of a side spread FLAT_SPREAD along it = a face
+SAME_POINT = 1e-3                            # m: returns closer than this are one spot (the rings on a vertical face)
 GROW_Z_MARGIN = 0.3                          # m above the vocabulary height
 PLAUSIBLE_GAIN, PLAUSIBLE_MARGIN = 2.0, 0.5  # a side > 2 L + 0.5 m merged with something else
 TRIM_MAD, TRIM_MARGIN = 3.0, 0.1             # drop points beyond 3 MAD + 0.1 m of the median (and beyond the diagonal)
@@ -186,15 +192,19 @@ def _components(xy: np.ndarray, eps: np.ndarray, links: tuple[np.ndarray, np.nda
 
 
 def clusters(points_xy: np.ndarray, eps: float = SEED_EPS) -> list[np.ndarray]:
-    """Single-linkage clusters in XY at eps (N x 2, or N x 3 using x and y): index arrays, each ascending,
-    in the order of their first point."""
-    p = _points(points_xy, 2)
-    if len(p) == 0:
+    """Single-linkage clusters in XY at eps (N x 2, or N x 3 using x and y): index arrays into the input rows,
+    each ascending, in the order of their first point. Rows with a non-finite x or y belong to no cluster."""
+    p = np.asarray(points_xy, dtype=np.float64)
+    if p.size == 0:
         return []
-    label = _components(p, np.full(len(p), float(eps)))
+    p = p.reshape(-1, p.shape[-1])[:, :2]
+    rows = np.flatnonzero(np.isfinite(p).all(axis=1))
+    if len(rows) == 0:
+        return []
+    label = _components(p[rows], np.full(len(rows), float(eps)))
     _, inv = np.unique(label, return_inverse=True)
     order = np.argsort(inv, kind="stable")
-    return np.split(order, np.cumsum(np.bincount(inv))[:-1])
+    return [rows[gr] for gr in np.split(order, np.cumsum(np.bincount(inv))[:-1])]
 
 
 def pick_cluster(points_world: np.ndarray, groups: list[np.ndarray], cam_xy: Sequence[float]) -> np.ndarray | None:
@@ -318,7 +328,8 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     a, b = np.array([math.cos(phi), math.sin(phi)]), np.array([-math.sin(phi), math.cos(phi)])
     seen = DEPTH_SEEN * small
     thin_a, thin_b = float(np.ptp(p @ a)) < seen, float(np.ptp(p @ b)) < seen
-    if thin_a != thin_b:                     # one face seen: the depth runs along its normal
+    corner = thin_a == thin_b
+    if not corner:                           # one face seen: the depth runs along its normal
         depth = a if thin_a else b
     else:                                    # a corner (or a spot): the axis nearer the ray
         depth = a if abs(a @ r_hat) >= abs(b @ r_hat) else b
@@ -331,12 +342,16 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     rays = p - cam
     # the near side is a face or a corner of two faces, both sampled on their plane: EDGE_PAD. The other sides
     # get one point spacing where a face ends there (side_pad)
-    pad_seen = side_pad(u, v, rays, lateral, +1)
+    pad_seen, far_sampled = _side(u, v, rays, lateral, +1)
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
     d_prior = big if w_obs < SHORT_FACE * big else small
-    if d_obs >= seen and d_obs + pad_seen >= d_prior:
+    # the observed depth: in a corner view (the depth axis nearer the ray, so the face along it is the more
+    # grazing one), that face seen to its far end, also for an object smaller than its prior and for a union of
+    # views; or, as for any view, a depth >= 0.6 S that reaches the prior's
+    if ((corner and far_sampled and d_obs >= min(seen, FLAT_SPREAD))
+            or (d_obs >= seen and d_obs + pad_seen >= d_prior)):
         d, pad_far, filled = d_obs, pad_seen, False
-    else:                                    # the far side is hidden (or seen too short): the prior's depth
+    else:                                    # the far side is hidden (or its face grazed): the prior's depth
         d, pad_far, filled = max(d_prior, d_obs), EDGE_PAD, True
     w_half = max(w_obs, SIZE_MIN) / 2.0
     v0, v1 = v_mid - w_half - pad_lo, v_mid + w_half + pad_hi
@@ -351,16 +366,31 @@ def side_pad(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np
     side): its plane was sampled. Where a face ends there, the true end can be up to one point spacing along the
     face beyond the last return: PAD_SPACINGS x range x 1° / cos(incidence), at the extreme point, with the
     face's normal `normal` (the incidence counted up to 60°)."""
+    return _side(along, across, rays, normal, side)[0]
+
+
+def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.ndarray,
+          side: int) -> tuple[float, bool]:
+    """side_pad's margin, and whether the returns reach the true end on that side (sampled): a face lies along
+    the side, or the face ending there is sampled at least as densely as at 60° incidence. The density is the
+    camera's incidence at the extreme point (one view), or the measured gap from the extreme point to its
+    nearest other return, at most PAD_GAIN_MAX point spacings (a union of views: another camera may have seen
+    that end face-on). Beyond 60° the last return can sit far short of the end (a grazing face)."""
     extreme = along.max() if side > 0 else along.min()
     on = np.flatnonzero(np.abs(along - extreme) <= FLAT_TOL)
     if float(np.ptp(across[on])) >= FLAT_SPREAD:
-        return EDGE_PAD
+        return EDGE_PAD, True
     ranges = np.hypot(rays[on, 0], rays[on, 1])
     k = int(np.argmax(ranges))
     if ranges[k] < 1e-9:
-        return EDGE_PAD
-    facing = abs(float(rays[on[k]] @ normal)) / float(ranges[k])
-    return max(EDGE_PAD, PAD_SPACINGS * LIDAR_STEP * float(ranges[k]) / max(facing, 1.0 / PAD_GAIN_MAX))
+        return EDGE_PAD, False
+    r_end = float(ranges[k])
+    facing = abs(float(rays[on[k]] @ normal)) / r_end
+    pad = max(EDGE_PAD, PAD_SPACINGS * LIDAR_STEP * r_end / max(facing, 1.0 / PAD_GAIN_MAX))
+    gap = np.hypot(along - along[on[k]], across - across[on[k]])
+    gap = gap[gap > SAME_POINT]
+    dense = len(gap) > 0 and float(gap.min()) <= PAD_GAIN_MAX * LIDAR_STEP * r_end
+    return pad, bool(facing >= 1.0 / PAD_GAIN_MAX or dense)
 
 
 def plausible(fp: Footprint, prior: tuple[float, float]) -> bool:
