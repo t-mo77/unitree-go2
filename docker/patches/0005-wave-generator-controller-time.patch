@@ -1,0 +1,74 @@
+unitree_guide_controller: 歩き方の周期を controller の時間（Gazebo ではシミュレーションの時間）で数える
+
+legubiao/quadruped_ros2_control 5434c5810d1a7fe223bcfd04550e9d3bfdd4b458 に
+0001〜0004 の後で当てる（docker/Dockerfile.gazebo）。
+
+直すこと：WaveGenerator は、足の運びの位相（どの足を着き、どの足を振り出すか、それがどこまで進んだか）を
+実際の時間（std::chrono::system_clock）で数える。推定（Estimator の dt = 1 / 更新の回数）と物理は
+シミュレーションの時間で進むので、Gazebo が止まると、止まっていた分だけ足の運びが先へ飛ぶ。
+Gazebo では、0.15 秒・0.14 秒続けて止まった（その間シミュレーションは 0.04 秒ずつしか進まない）約 0.3 秒後に
+胴が跳ね上がって転んだ（docs/reference/gazebo_objects_e2e.md 第 5 部、電源での 2 組目の L1）。
+また RTF が 1 より小さいと、周期 0.45 秒はシミュレーションの時間では短くなり、FeetEndCalc が足の置き場所に
+使う着地・振り出しの時間（0.225 秒ずつ）と合わなくなる。
+controller の update() に来る time（gz_ros2_control が渡すシミュレーションの時間）を WaveGenerator に渡し、
+それで数える。周期の始まりは時間 0。
+diff --git a/controllers/unitree_guide_controller/include/unitree_guide_controller/gait/WaveGenerator.h b/controllers/unitree_guide_controller/include/unitree_guide_controller/gait/WaveGenerator.h
+index 562f8b0..fc4a119 100644
+--- a/controllers/unitree_guide_controller/include/unitree_guide_controller/gait/WaveGenerator.h
++++ b/controllers/unitree_guide_controller/include/unitree_guide_controller/gait/WaveGenerator.h
+@@ -23,6 +23,10 @@ public:
+ 
+     void update();
+ 
++    // The gait phase counts this time (seconds; the controller's update time, which is the
++    // simulation time in Gazebo) instead of the wall clock. Call it before update().
++    void setTime(const double t) { now_us_ = static_cast<long long>(t * 1e6); }
++
+     [[nodiscard]] double get_t_stance() const { return period_ * st_ratio_; }
+     [[nodiscard]] double get_t_swing() const { return period_ * (1 - st_ratio_); }
+     [[nodiscard]] double get_t() const { return period_; }
+@@ -51,6 +55,7 @@ private:
+     WaveStatus status_past_;
+ 
+     long start_t_{};
++    long long now_us_{};
+ };
+ 
+ 
+diff --git a/controllers/unitree_guide_controller/src/UnitreeGuideController.cpp b/controllers/unitree_guide_controller/src/UnitreeGuideController.cpp
+index d942831..4c29efe 100644
+--- a/controllers/unitree_guide_controller/src/UnitreeGuideController.cpp
++++ b/controllers/unitree_guide_controller/src/UnitreeGuideController.cpp
+@@ -71,6 +71,10 @@ namespace unitree_guide_controller
+         }
+ 
+         ctrl_component_.robot_model_->update();
++        // Count the gait in the controller's time (the simulation time in Gazebo), the clock the
++        // estimator (dt = 1 / update rate) and the physics run on. On the wall clock the phase ran
++        // on while Gazebo stalled, and the feet jumped ahead of the body.
++        ctrl_component_.wave_generator_->setTime(time.seconds());
+         ctrl_component_.wave_generator_->update();
+         ctrl_component_.estimator_->update();
+ 
+diff --git a/controllers/unitree_guide_controller/src/gait/WaveGenerator.cpp b/controllers/unitree_guide_controller/src/gait/WaveGenerator.cpp
+index 2dfb224..3240762 100644
+--- a/controllers/unitree_guide_controller/src/gait/WaveGenerator.cpp
++++ b/controllers/unitree_guide_controller/src/gait/WaveGenerator.cpp
+@@ -30,7 +30,7 @@ WaveGenerator::WaveGenerator(const double period, const double st_ratio, const V
+             exit(-1);
+         }
+     }
+-    start_t_ = getSystemTime();
++    start_t_ = 0;
+ }
+ 
+ auto WaveGenerator::update() -> void {
+@@ -67,7 +67,7 @@ auto WaveGenerator::update() -> void {
+ void WaveGenerator::calcWave(Vec4 &phase, VecInt4 &contact, const WaveStatus status) {
+     switch (status) {
+         case WaveStatus::WAVE_ALL: {
+-            const double past_t = static_cast<double>(getSystemTime() - start_t_) * 1e-6;
++            const double past_t = static_cast<double>(now_us_ - start_t_) * 1e-6;
+             for (int i(0); i < 4; ++i) {
+                 normal_t_(i) =
+                         fmod(past_t + period_ - period_ * bias_(i), period_) / period_;

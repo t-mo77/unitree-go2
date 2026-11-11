@@ -47,13 +47,16 @@ services:
     build:
       context: ./docker
       dockerfile: Dockerfile.gazebo
-    # patches 0001-0004 (docker/patches). The image before 0003-0004 (0001-0002) is kept on this Mac as
-    # go2-voice-ltl-gazebo:patch-0002 (the same image as the old :dev tag). To go back to it:
+    # patches 0001-0005 (docker/patches). The older images are kept on this Mac only:
+    #   go2-voice-ltl-gazebo:patch-0004 (0001-0004: the gait phase still on the wall clock)
+    #   go2-voice-ltl-gazebo:patch-0002 (0001-0002: the same image as the old :dev tag)
+    # To go back to one:
+    #   GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up ...
     #   GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up ...
     # It works only while that image exists locally; this tree cannot rebuild it. Never run
     # `build` (or `up` with the image missing) with GO2_GAZEBO_IMAGE set: compose would build
-    # 0001-0004 from this tree and put that image under the given tag.
-    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}
+    # 0001-0005 from this tree and put that image under the given tag.
+    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005}
     init: true
     volumes:
       - ./:/work
