@@ -23,10 +23,16 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   "Switched from <a> to <b>" をすべて controller_switched で知らせる（reports_switches=True）。そのときは
   確かめた状態からだけ送る（閉じた制御）：確かめた状態に入った知らせから HOLD_S + SETTLE_S たってから、
   その状態に効く command を 1 通。次はその切り替えの知らせを待ってから。RESEND_S たっても知らせが来なければ、
-  確かめた状態から送り直す（MAX_SENDS 回まで）。知らせがつもりと違えば、知らされた状態から続ける。
+  確かめた状態から送り直す（待つ時間は送り直すたびに倍。送るのは MAX_SENDS 回まで）。知らせがつもりと違えば、
+  知らされた状態から続ける。行きたい状態は StandUp などで決まり、それまで（起動直後）は何も送らない。
+  知らせにはログを出した時刻（Log.stamp）も付く。知らせが遅れて、送り直しが切り替わりの後に届いたときは、
+  その時刻で分かるので、送り直しが効く次の切り替えを待ち、その間は伏せかもしれないとして 4 を送らず、立ちの
+  error_code も返さない。遅れを測ったら、送り直す前にその分も待つ（LAG_FACTOR・LAG_MARGIN_S）。
+  それでも行きたい状態から MAX_REVERSALS 回遠ざかったら、あきらめてノートに書く。
   知らせ無し（テストと偽の道）は今までどおり、送った command から状態を見積もって送る。
-- 知らせ有りのとき、controller が脱力・伏せにいる間は、立ち・歩きの error_code（1002・1013・1015）を返さない。
-  窓口の時間（STAND_S など）がたっても、立つに入った知らせが来るまで前の code のまま（_refresh_code）。
+- 知らせ有りのとき、controller が脱力・伏せにいる（かもしれない）間は、立ち・歩きの error_code（1002・1013・1015）
+  を返さない。窓口の時間（STAND_S など）がたっても、立つに入った知らせが来るまで前の code のまま（_refresh_code）。
+  BalanceStand・StandDown・Sit は、返す code でなく窓口の code で受け付ける（立つ途中なので）。
 - 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
   立っているつもりで転んだら error_code を 1001（伏せ扱い）にし、速度を 0 にする。起き上がらせはしない。
 
@@ -79,9 +85,18 @@ TROT_WAIT_S = 0.5  # 歩くに入ってからこの秒数は、Move の速度を
 # 知らせ有り（橋渡しのノード）のとき
 RESEND_S = 2.8   # 送ってこの秒数たっても切り替わりの知らせが来なければ、確かめた状態から送り直す。
                  # 送るのは見積もりで HOLD_S がたった後なので、普通は次の周期に切り替わる。伏せ・立つの 1.8 秒
-                 # + 1.0 秒：controller の伏せが見積もりより 2.8 秒長くても、知らせがそれだけ遅れても、同じ状態に
-                 # 同じ command をもう一度送るだけ（残っている command を同じ値で上書き）なので害は無い
-MAX_SENDS = 3    # 同じ確かめた状態から送ってもこの回数で切り替わらなければ、あきらめてノートに書く
+                 # + 1.0 秒：controller がまだ切り替わっていなければ（伏せ・立つが見積もりより長い、command が
+                 # 落ちた）、同じ状態に同じ command をもう一度送るだけ（残っている command を同じ値で上書き）。
+                 # 切り替わった後で知らせだけが遅れていると、送り直しは次の状態で効く（2 なら伏せ → 立つ、
+                 # 立つ → 伏せ）。それは知らせのログの時刻（logged_at）が送り直しより前なので分かり、
+                 # その状態から続ける（controller_switched）。遅れを測った後は LAG_MARGIN_S も使う
+LAG_FACTOR = 1.5     # 送り直すのは、送ってから「最後に測った知らせの遅れ × LAG_FACTOR + LAG_MARGIN_S」（実際の
+LAG_MARGIN_S = 1.0   # 時間）たった後。遅れは 1 通ごとにばらつく（重いときほど大きく）ので、遅れに比べた余裕も持つ
+MAX_SENDS = 3    # 切り替わりの知らせが来ないまま、この回数送ったらあきらめてノートに書く
+MAX_REVERSALS = 3    # 行きたい状態から遠ざかる切り替えをこの回数知らされたら、あきらめてノートに書く（行き来を
+                     # 止める。数え直すのは、行きたい状態が変わったときと、そこに STABLE_S 着いていたとき）
+STABLE_S = 5.0       # 行きたい状態にこの秒数（sim）着いていたら、遠ざかった回数を 0 に戻す
+MAX_REPORT_AGE_S = 60.0   # Log.stamp が受けた時刻からこれより離れていたら、この機械の時計ではないとみなす
 MASK_NOTE_S = 1.0  # 立ち・歩きの error_code をこの秒数より長く控えたら、ノートに書く（普通に立つときは 0.1 秒）
 _SWITCH = re.compile(r"Switched from (.+?) to (.+)")   # UnitreeGuideController::update の RCLCPP_INFO
 
@@ -171,6 +186,46 @@ def parse_switch(text: str) -> Optional[Tuple[str, str]]:
     return (m.group(1), m.group(2)) if m else None
 
 
+def log_time(now: float, wall: float, stamp: float) -> Optional[float]:
+    """/rosout の Log.stamp（ログを出した時刻。use_sim_time でも rcutils はこの機械の時計 = time.time() で付ける）を、
+    now の時計（橋渡しのノードは time.monotonic()）の時刻にする。wall は受けたときの time.time()。
+    受けた時刻から MAX_REPORT_AGE_S より離れた stamp（この機械の時計ではない）なら None。"""
+    age = wall - stamp
+    if abs(age) > MAX_REPORT_AGE_S:
+        return None
+    return now - max(0.0, age)
+
+
+def _route_cmd(state: str, goal: Optional[str]) -> Optional[int]:
+    """知らせ有り：controller が state のとき、goal へ向かって送る command。着いている・goal が無いなら None。
+    脱力へは送らない（1 は使わない）。立つからは行き先で 4（歩く）か 2（伏せ）。ほかの状態からは 2：脱力 → 伏せ、
+    伏せ → 立つ、歩く・free stand・swing test・balance test → 立つ。4 は state が立つのときだけ。"""
+    if goal is None or goal == state or goal == PASSIVE:
+        return None
+    return TROT_CMD if state == FIXED_STAND and goal == TROTTING else STAND_CMD
+
+
+def _after(state: str, cmd: int) -> Optional[str]:
+    """state の controller が cmd を受けて移る状態。移らない（歩くに 4、伏せ・脱力に 4）なら None。
+    知らない状態（free stand など）は 2 で立つへ。"""
+    nxt = _NEXT.get((state, cmd))
+    if nxt is None and cmd == STAND_CMD and state not in (PASSIVE, FIXED_DOWN, FIXED_STAND, TROTTING):
+        return FIXED_STAND
+    return nxt
+
+
+def _distance(state: str, goal: str) -> int:
+    """state から goal まで、_route_cmd で送る command の数（着けなければ大きな数）。"""
+    n = 0
+    while state != goal and n < 5:
+        cmd = _route_cmd(state, goal)
+        nxt = None if cmd is None else _after(state, cmd)
+        if nxt is None:
+            break
+        state, n = nxt, n + 1
+    return n if state == goal else 99
+
+
 class BridgeCore:
     """指令を受けて、controller に送る入力と error_code を決める。"""
 
@@ -187,8 +242,9 @@ class BridgeCore:
         # (送ってよいシミュレーションの時刻, 入力, 速度だけか)。step 1 回で 1 通だけ出す。知らせ有りなら速度だけ
         self._queue: List[Tuple[float, ControllerInput, bool]] = []
         # 知らせ無し：送った（送る予定の）command がすべて効いた後の controller の状態。
-        # 知らせ有り：行きたい状態（None なら無い：あきらめた・転んだ）
-        self._ctl: Optional[str] = PASSIVE
+        # 知らせ有り：行きたい状態。None なら無い（起動直後・あきらめた・転んだ）ので、何も送らない。
+        # 起動直後に脱力を行きたい状態にすると、ほかの送り手の切り替えに 2 を送り返し、伏せ ↔ 立つを行き来させる
+        self._ctl: Optional[str] = None if reports_switches else PASSIVE
         self._ctl_since = sim_now     # その状態に入る時刻（sim。知らせ無し）
         self._next_cmd_t = sim_now    # 次の状態を変える command を送ってよい時刻（sim。知らせ無し）
         self._vel = (0.0, 0.0, 0.0)   # 送った（送る予定の）(lx, ly, rx)
@@ -202,8 +258,14 @@ class BridgeCore:
         self._reports = reports_switches
         self._conf = PASSIVE          # 知らせで確かめた状態（起動直後の controller は脱力）
         self._conf_since = -math.inf  # その知らせを受けた時刻（sim）
-        self._sent: Optional[Tuple[int, float, str]] = None   # 知らせを待っている (command, 送った sim, 行くはずの状態)
-        self._tries = 0               # 今の確かめた状態から送った回数
+        # 知らせを待っている (command, 送った sim, 行くはずの状態, 送った now)
+        self._sent: Optional[Tuple[int, float, str, float]] = None
+        self._tries = 0               # 切り替わりの知らせが来ないまま送った回数
+        self._lag = 0.0               # 最後に測った知らせの遅れ（受けた now − ログを出した now）
+        self._last_logged = -math.inf  # 最後に使った知らせのログの時刻（now の時計）
+        self._reversals = 0           # 行きたい状態から遠ざかる切り替えを知らされた回数
+        # 知らせが遅れて切り替わりの後に届いた command で、controller がもう移ったかもしれない状態（知らせ待ち）
+        self._maybe: Optional[str] = None
         self._lying_code = 1001       # 立ち・歩きの error_code を控える間に返す code（立つ前の code）
         self._masked_since: Optional[float] = None   # 控え始めた時刻（sim）
         self._mask_noted = False
@@ -237,11 +299,12 @@ class BridgeCore:
         if api_id == STAND_UP and posture == LYING:
             self._go(FIXED_STAND, sim)
             self._finish(now, STAND_S, 1002)
-        # 窓口の code で見る：controller がまだ伏せで 1001 を返していても、StandUp を終えた（1002）なら立つ途中
+        # BalanceStand・StandDown・Sit は窓口の code で見る：controller がまだ伏せで 1001 を返していても、
+        # StandUp を終えた（1002）・BalanceStand を終えた（1013）なら立つ途中。知らせ無しなら返す code と同じ
         elif api_id == BALANCE_STAND and self._code in (1002, 1013):
             self._go(TROTTING, sim)
             self._finish(now, BALANCE_S, 1013)
-        elif api_id in (STAND_DOWN, SIT) and posture == STANDING:
+        elif api_id in (STAND_DOWN, SIT) and state_from_error_code(self._code) == STANDING:
             self._stop(sim)
             self._go(FIXED_DOWN, sim)
             self._finish(now, STAND_S, 1004 if api_id == STAND_DOWN else 1007)
@@ -280,7 +343,7 @@ class BridgeCore:
         """今送るべき controller への入力。無ければ None。"""
         sim = now if sim_now is None else sim_now
         self._advance(now, sim)
-        out = self._step_reported(sim) if self._reports else self._take_queued(sim)
+        out = self._step_reported(now, sim) if self._reports else self._take_queued(sim)
         self._refresh_code(sim)
         return out
 
@@ -306,17 +369,21 @@ class BridgeCore:
         self._vel_sent = (i.lx, i.ly, i.rx)
         return i
 
-    def _step_reported(self, sim: float) -> Optional[ControllerInput]:
+    def _step_reported(self, now: float, sim: float) -> Optional[ControllerInput]:
         """知らせ有り：確かめた状態から行きたい状態へ、command を 1 通ずつ。送った後は、その切り替えの知らせが
-        来るまで何も送らない（速度も）。状態が行きたい状態（歩く）に着いていれば、待たせた速度を出す。"""
+        来るまで何も送らない（速度も）。状態が行きたい状態（歩く）に着いていれば、待たせた速度を出す。
+        送り直すのは、送って RESEND_S（sim。送り直すたびに倍）と、最後に測った知らせの遅れ × LAG_FACTOR +
+        LAG_MARGIN_S（now）の両方がたってから。伏せかもしれない（_maybe）controller には 4 でなく 2 を送る。"""
         if self._sent is not None:
-            cmd, at, expected = self._sent
-            if sim < at + RESEND_S - _EPS:
+            cmd, at, expected, at_now = self._sent
+            wait = RESEND_S * 2 ** max(0, self._tries - 1)   # 2.8 → 5.6 → 11.2（遅れを知る前の送り直しを減らす）
+            if sim < at + wait - _EPS or now < at_now + LAG_FACTOR * self._lag + LAG_MARGIN_S - _EPS:
                 return None
             self._sent = None
             if self._toward() is not None:
                 if self._tries >= MAX_SENDS:
-                    self._give_up(cmd)
+                    self._give_up(f"controller が {self._conf} から切り替わりません"
+                                  f"（command {cmd} を {MAX_SENDS} 回送りました）")
                     return None
                 self._note(f"controller が {expected} に切り替わったことを {RESEND_S:g} 秒（シミュレーションの"
                            f"時間）たっても /rosout で確かめられないので、{self._conf} から送り直します")
@@ -324,29 +391,32 @@ class BridgeCore:
         if cmd is not None:
             if sim < self._conf_since + HOLD_S.get(self._conf, 0.0) + SETTLE_S - _EPS:
                 return None
-            self._sent = (cmd, sim, _NEXT.get((self._conf, cmd), FIXED_STAND))
+            base = self._conf
+            if cmd == TROT_CMD and self._maybe in _LYING_STATES:
+                # 伏せかもしれない controller に 4 は送らない。2 なら伏せでも立つでも害が無い（たぶん伏せ → 立つ）
+                cmd, base = STAND_CMD, self._maybe
+            self._sent = (cmd, sim, _after(base, cmd), now)
             self._tries += 1
             self._vel_sent = (0.0, 0.0, 0.0)        # 状態を変える入力は速度 0
             return ControllerInput(cmd)
+        if self._ctl is not None and self._conf == self._ctl and sim >= self._conf_since + STABLE_S - _EPS:
+            self._reversals = 0                     # 行きたい状態に落ち着いた：行き来は数え直す
         if self._conf != TROTTING:
             return None
         return self._take_queued(sim)
 
     def _toward(self) -> Optional[int]:
-        """確かめた状態から行きたい状態へ向かう次の command。着いている・行きたい状態が無いなら None。
-        立つからは行き先で 4（歩く）か 2（伏せ）。ほかの状態からは 2：脱力 → 伏せ、伏せ → 立つ、
-        歩く・free stand・swing test・balance test → 立つ。4 は確かめた状態が立つのときだけ。"""
-        goal = self._ctl
-        if goal is None or goal == self._conf:
-            return None
-        return TROT_CMD if self._conf == FIXED_STAND and goal == TROTTING else STAND_CMD
+        """確かめた状態から行きたい状態へ向かう次の command（_route_cmd）。"""
+        return _route_cmd(self._conf, self._ctl)
 
-    def _give_up(self, cmd: int) -> None:
-        """MAX_SENDS 回送っても切り替わらない。送るのをやめ、窓口は確かめた状態に合わせる（脱力・伏せなら
-        立つ前の code、立つなら立ち固め 1002、ほかは 1013）。次の StandUp・BalanceStand でまた送り始める。"""
-        self._note(f"controller が {self._conf} から切り替わりません（command {cmd} を {MAX_SENDS} 回送りました）。"
-                   "Gazebo を起動し直してください")
-        self._ctl, self._done = None, None
+    def _give_up(self, why: str) -> None:
+        """送っても行きたい状態へ進まない。送るのをやめ、窓口は確かめた状態に合わせる（脱力・伏せなら
+        立つ前の code、立つなら立ち固め 1002、歩くなら 1013）。歩くと確かめてあれば行きたい状態を歩くにして、
+        Move の速度は送り続ける（窓口が 1015 なのに何も送らない、にしない）。ほかは行きたい状態を無くし、
+        次の StandUp・BalanceStand・StandDown などでまた初めから送る。"""
+        self._note(f"{why}。Gazebo を起動し直してください")
+        self._ctl = TROTTING if self._conf == TROTTING else None
+        self._done, self._sent, self._tries, self._reversals, self._maybe = None, None, 0, 0, None
         self._forget_motion()
         if self._conf in _LYING_STATES:
             if self._code in STANDING_CODES:
@@ -354,29 +424,54 @@ class BridgeCore:
         else:
             self._code = 1013 if self._conf == TROTTING else 1002
 
-    def controller_switched(self, state: str, sim_now: float, from_state: Optional[str] = None) -> None:
+    def controller_switched(self, state: str, sim_now: float, from_state: Optional[str] = None,
+                            now: Optional[float] = None, logged_at: Optional[float] = None) -> None:
         """controller が state（passive・fixed down・fixed stand・trotting など）に切り替わった（橋渡しのノードが
-        /rosout の "Switched from <from_state> to <state>" で知って呼ぶ）。知らせ有りなら、ここからの
-        command はこの状態から決める。知らせ無しなら、歩くに入った時刻だけを使う。"""
+        /rosout の "Switched from <from_state> to <state>" で知って呼ぶ）。sim_now・now は受けた時刻（now を
+        省くと sim_now）、logged_at は controller がそのログを出した時刻（now の時計。log_time）。
+        知らせ有りなら、ここからの command はこの状態から決める。知らせ無しなら、歩くに入った時刻だけを使う。
+
+        最後に送った command が、このログより後に出ていれば（知らせが遅れて、送り直しが切り替わりの後に
+        届いた）、その command は state で効く：state から送り直さず、その切り替えを待つ。"""
         if not self._reports:
             if state == TROTTING:
                 self._trot_entered = sim_now
             return
-        if state == self._conf:
-            return
-        was = self._conf
-        if self._sent is None:
-            self._note(f"controller が {from_state or was} から {state} に切り替わりました"
-                       "（橋渡しが待っていた切り替えではありません）")
-        elif state != self._sent[2]:
-            self._note(f"controller は {state} に切り替わりました（{self._sent[2]} のはずでした）。"
-                       f"{state} から続けます")
+        now = sim_now if now is None else now
+        if logged_at is not None:
+            logged_at = min(logged_at, now)
+            if logged_at <= self._last_logged + _EPS:
+                return    # 前に使った知らせより前のログ（同じ知らせが二度・順が入れ替わった）。logged_at は受けた
+                          # 時刻を超えないので、この機械の時計が飛んでも、落とすのはそのとき届く途中の知らせだけ
+            self._last_logged, self._lag = logged_at, now - logged_at
+        if state == self._conf and from_state in (None, state):
+            return                                     # もう知っている（trot_entered と重なったときなど）
+        was, goal, sent = self._conf, self._ctl, self._sent
+        prev = was if from_state is None else from_state
         self._conf, self._conf_since = state, sim_now
-        self._sent, self._tries = None, 0
+        self._sent, self._tries, self._maybe = None, 0, None
+        if sent is not None and logged_at is not None and logged_at < sent[3] - _EPS:
+            nxt = _after(state, sent[0])               # 送った command は state に届いた
+            if nxt is not None:
+                self._sent, self._tries, self._maybe = (sent[0], sent[1], nxt, sent[3]), 1, nxt
+            self._note(f"command {sent[0]} は、controller が {state} に切り替わった後に届きました（/rosout の知らせが"
+                       f" {self._lag:.1f} 秒遅れています）。"
+                       + (f"{nxt} に切り替わるのを待ちます" if nxt else f"{state} から続けます"))
+        elif sent is None:
+            self._note(f"controller が {prev} から {state} に切り替わりました"
+                       "（橋渡しが待っていた切り替えではありません）")
+        elif state != sent[2]:
+            self._note(f"controller は {state} に切り替わりました（{sent[2]} のはずでした）。"
+                       f"{state} から続けます")
+        if goal is not None and _distance(state, goal) > _distance(prev, goal):
+            self._reversals += 1
         if state == TROTTING:
             self._ramping, self._ramp_t = True, None   # 歩くに入ったら、速度は 0 から上げる
         elif was == TROTTING:
             self._forget_motion()                      # 橋渡しが伏せさせたのでなくても、歩くのは終わった
+        if goal is not None and self._reversals >= MAX_REVERSALS:
+            self._give_up(f"controller が {goal} へ進まず、{MAX_REVERSALS} 回戻りました（今は {state}。"
+                          "/rosout の知らせが遅れているか、ほかにも /control_input に送っています）")
         self._refresh_code(sim_now)
 
     def trot_entered(self, sim_now: float) -> None:
@@ -460,7 +555,8 @@ class BridgeCore:
         （2026-11-11：窓口だけ 1013 になり、アプリは「立って」が終わったと思った）。MASK_NOTE_S より長く
         控えたらノートに書く。"""
         code = self._code
-        if self._reports and code in STANDING_CODES and self._conf in _LYING_STATES:
+        lying = self._lying() if self._reports else None
+        if code in STANDING_CODES and lying is not None:
             down = self._done[1] if self._done is not None and self._done[1] not in STANDING_CODES else None
             self.error_code = self._lying_code if down is None else down
             if self._masked_since is None:
@@ -468,12 +564,22 @@ class BridgeCore:
             elif (down is None and not self._mask_noted
                   and sim >= self._masked_since + MASK_NOTE_S - _EPS):
                 self._mask_noted = True
-                self._note(f"controller が {self._conf} のままなので、error_code は {self.error_code} に"
+                self._note(f"{lying}ので、error_code は {self.error_code} に"
                            f"しておきます（{code} にするのは、立ったことを /rosout で確かめてから）")
             return
         self._masked_since, self._mask_noted = None, False
         self._lying_code = 1001 if code in STANDING_CODES else code
         self.error_code = code
+
+    def _lying(self) -> Optional[str]:
+        """知らせ有りで、controller が脱力・伏せにいる（かもしれない）なら、そのわけ（ノートの文）。ほかは None。
+        確かめた状態が脱力・伏せのときと、知らせが遅れて切り替わりの後に届いた command で伏せへ移ったかもしれない
+        とき（_maybe。次の知らせまで）。"""
+        if self._conf in _LYING_STATES:
+            return f"controller が {self._conf} のままな"
+        if self._maybe in _LYING_STATES:
+            return f"controller は {self._maybe} へ移っているかもしれない"
+        return None
 
     # ---- 中身 ----
     def _note(self, text: str) -> None:
@@ -514,8 +620,8 @@ class BridgeCore:
             if goal != self._conf or self._sent is not None:
                 self._drop_queued_velocity()
                 self._vel = (0.0, 0.0, 0.0)
-            if self._ctl is None:      # あきらめた後：また初めから数える（途中の BalanceStand では数え直さない）
-                self._tries = 0
+            if goal != self._ctl:      # 行き来は行きたい状態ごとに数える。_tries は数え直さない（あきらめると 0）
+                self._reversals = 0
             self._ctl = goal
             return
         self._drop_queued_velocity()

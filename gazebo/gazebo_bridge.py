@@ -61,7 +61,7 @@ from go2_nl_control.actions import MOVE
 from gazebo.bridge_core import (OBJECT_SPAWN_Z, BoxWorld, BridgeCore, ControllerInput,
                                 ObjectMemory, StillGate, api_name, box_sdf, compose,
                                 drop_box_points, drop_ground_and_self_points, footprint_size,
-                                lidar_points_world, object_label, object_sdf, parse_switch)
+                                lidar_points_world, log_time, object_label, object_sdf, parse_switch)
 from sim.sim_core import BOX_HEIGHT
 from voice_ltl.objects import DEFAULT_LAYOUT, OBJECTS_HZ, OBJECTS_TOPIC
 
@@ -93,7 +93,7 @@ Pose = Tuple[float, float, float, float, float, float, float, float, float, floa
 
 
 def _stamp(stamp) -> float:
-    """header.stamp → 秒（シミュレーションの時間）。"""
+    """builtin_interfaces/Time → 秒（header.stamp はシミュレーションの時間、/rosout の Log.stamp は time.time()）。"""
     return stamp.sec + stamp.nanosec * 1e-9
 
 
@@ -167,14 +167,19 @@ class GazeboBridge(Node):
 
     def _on_log(self, msg: Log) -> None:
         """controller の状態の切り替えを、1 行も落とさず橋渡しの中身に知らせる。時刻は受けたときの sim
-        （切り替えより少し後なので、次の command を送るのは見積もりより遅い側になる）。"""
+        （切り替えより少し後なので、次の command を送るのは見積もりより遅い側になる）と、ログを出した時刻
+        （Log.stamp。use_sim_time でもこの機械の時計なので、time.time() との差で now の時計に直す）。
+        橋渡しの中身は後者で、知らせが遅れたときに、送り直した command がどの状態に届いたかを知る。"""
         if msg.name == self.get_logger().name:   # 自分のログ（ノートなど）は見ない
             return
         switch = parse_switch(msg.msg)
         if switch is None:
             return
-        self.get_logger().info(f"controller の切り替え: {switch[0]} → {switch[1]}")
-        self.core.controller_switched(switch[1], self._now()[1], from_state=switch[0])
+        now, sim = self._now()
+        logged = log_time(now, time.time(), _stamp(msg.stamp))
+        late = "" if logged is None or now - logged < 0.5 else f"（{now - logged:.1f} 秒遅れて届きました）"
+        self.get_logger().info(f"controller の切り替え: {switch[0]} → {switch[1]}{late}")
+        self.core.controller_switched(switch[1], sim, from_state=switch[0], now=now, logged_at=logged)
         self._log_notes()
 
     def _send(self, i: ControllerInput) -> None:

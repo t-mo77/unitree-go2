@@ -9,10 +9,12 @@ from go2_nl_control.actions import (BALANCE_STAND, HELLO, LYING, MOVE, RISE_SIT,
                                     STAND_DOWN, STAND_UP, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
 from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, FIXED_DOWN, FIXED_STAND, GROUND_Z,
-                                LIDAR_IN_BODY, MAX_SENDS, PASSIVE, RELEASE_ACC, RESEND_S, STAND_CMD,
+                                LAG_FACTOR, LAG_MARGIN_S, LIDAR_IN_BODY, MAX_REPORT_AGE_S,
+                                MAX_REVERSALS, MAX_SENDS, PASSIVE, RELEASE_ACC, RESEND_S, STAND_CMD,
                                 STANDING_CODES, TROT_CMD, TROT_WAIT_S, TROTTING, UPRIGHT_Z, V_X_MAX,
                                 V_Y_MAX, W_Z_MAX, BoxWorld, BridgeCore, ControllerInput,
-                                drop_ground_and_self_points, drop_self_points, move_input, parse_switch)
+                                drop_ground_and_self_points, drop_self_points, log_time, move_input,
+                                parse_switch)
 from sim.sim_core import FOOTPRINT
 from voice_ltl.grid_executor import GRID_EXEC_CONFIG
 
@@ -89,8 +91,9 @@ def test_move_waits_for_trot_entry_in_sim_time_and_stop_cancels_it():
 def test_move_waits_for_reported_trot_entry():
     """橋渡しのノードが controller の切り替え（/rosout）を知らせるとき：Move の速度は、歩くに入った知らせを
     受けてから TROT_WAIT_S 秒（sim）たって 0 から上げる。知らせが来なければ速度は入れない（見積もりで入れると、
-    伏せたままの controller に速度を送ることになる。2026-11-11 の件）。4 を送り直し、MAX_SENDS 回でも来なければ
-    あきらめてノートに書き、窓口は立ち固め（1002）にする（アプリは BalanceStand からやり直す）。
+    伏せたままの controller に速度を送ることになる。2026-11-11 の件）。4 を送り直し（待つ時間は送り直すたびに倍）、
+    MAX_SENDS 回でも来なければあきらめてノートに書き、窓口は立ち固め（1002）にする（アプリは BalanceStand から
+    やり直す）。
     前の「歩く」の知らせを次の「歩く」に使わないことは test_sit_and_rise_follow_the_reports。"""
     walk = '{"x":0.3,"y":0,"z":0}'
     late = Rig(FakeController(report_delay=0.3))              # 知らせはどれも 0.3 秒遅れて届く
@@ -102,12 +105,13 @@ def test_move_waits_for_reported_trot_entry():
     assert [ly for _, ly in sent] == pytest.approx([0.075 * k for k in range(1, 10)])
 
     lost = Rig(FakeController(lose_report=lambda k: k == 2))  # 「歩くに入った」の知らせだけ落ちる
-    lost.run(13.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 13.0, walk))
+    lost.run(25.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 25.0, walk))
     assert lost.ctl.state == TROTTING
     assert all((i.lx, i.ly, i.rx) == (0.0, 0.0, 0.0) for _, i, _ in lost.sent)   # 速度は 1 通も送らない
-    assert RESEND_S == 2.8 and MAX_SENDS == 3                 # 4 を 4.1 に送り、2.8 秒ごとに 2 回送り直す
+    assert RESEND_S == 2.8 and MAX_SENDS == 3                 # 4 を 4.1 に送り、2.8 秒後と、その 5.6 秒後に送り直す
     assert lost.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD), (6.9, TROT_CMD),
-                               (9.7, TROT_CMD)]
+                               (12.5, TROT_CMD)]
+    assert lost.code_at(23.65) == 1015 and lost.code_at(23.7) == 1002      # あきらめるのは、その 11.2 秒後
     assert sum("送り直します" in n for n in lost.b.notes) == MAX_SENDS - 1
     assert any("/rosout" in n for n in lost.b.notes)
     assert any("Gazebo を起動し直して" in n for n in lost.b.notes) and lost.b.error_code == 1002
@@ -448,18 +452,24 @@ class FakeController:
     - 伏せ・立つは、入って hold 秒（既定 1.8 = percent 1.5 × 1.2 秒）たつまで次へ行かない。その後も、
       伏せは 1・2 のほか（4 も）無視する。
     - 切り替える周期に "Switched from a to b" を出し（report_delay 秒後に橋渡しへ届く）、次の周期に enter する。
+      report_delay は秒数か、k 個目（0 から）の知らせの遅れを返す関数。知らせは出した順に届く（/rosout と同じ。
+      前の知らせが遅れると、後の知らせもそれより先には届かない）。
+    - 知らせには、ログを出した実際の時刻（Log.stamp）も付ける（advance の wall から周期ごとに割り振る）。
     - lose_input(n)：n 通目（0 から）の入力が届かない。lose_report(k)：k 個目の切り替えの知らせが届かない。"""
 
     def __init__(self, hold=None, report_delay=0.0, lose_input=lambda n: False,
                  lose_report=lambda k: False, state=PASSIVE, command=0, entered=0.0):
         self.hold = {FIXED_DOWN: 1.8, FIXED_STAND: 1.8, **(hold or {})}
-        self.report_delay, self.lose_input, self.lose_report = report_delay, lose_input, lose_report
+        self.report_delay = report_delay
+        self.delay = report_delay if callable(report_delay) else (lambda k: report_delay)
+        self.lose_input, self.lose_report = lose_input, lose_report
         self.state, self.command, self.entered = state, command, entered
         self.t = 0.0
+        self._at = (0.0, 0.0)   # 前の advance の (sim, 実際の時刻)
         self.switches = []      # (t, a, b)
         self.inputs = []        # 送られた入力（届かなかったものも）(t, ControllerInput)
         self._next = None
-        self._reports = []      # (橋渡しに届く t, a, b)
+        self._reports = []      # (橋渡しに届く t, a, b, ログを出した実際の時刻)
 
     def receive(self, i, t):
         n = len(self.inputs)
@@ -467,7 +477,10 @@ class FakeController:
         if not self.lose_input(n):
             self.command = i.command
 
-    def advance(self, t):
+    def advance(self, t, wall=None):
+        """sim の t まで進める。wall：そのときの実際の時刻（省くと t）。"""
+        wall = t if wall is None else wall
+        (s0, w0), self._at = self._at, (t, wall)
         while self.t + CYCLE <= t + 1e-9:
             self.t = round(self.t + CYCLE, 6)
             if self._next is not None:                       # exit → enter（command は 0 に戻る）
@@ -478,12 +491,16 @@ class FakeController:
             nxt = _FSM[self.state].get(self.command, self.state) if held else self.state
             if nxt != self.state:                            # ログを出すのは enter の 1 周期前
                 self._next = nxt
-                if not self.lose_report(len(self.switches)):
-                    self._reports.append((self.t + self.report_delay, self.state, nxt))
+                k = len(self.switches)
+                if not self.lose_report(k):
+                    logged = w0 + (self.t - s0) * (wall - w0) / (t - s0) if t > s0 else wall
+                    due = max([self.t + self.delay(k)] + [r[0] for r in self._reports])
+                    self._reports.append((due, self.state, nxt, logged))
                 self.switches.append((self.t, self.state, nxt))
 
     def reports(self, t):
-        due = [(a, b) for at, a, b in self._reports if at <= t + 1e-9]
+        """sim の t までに橋渡しに届く知らせ (a, b, ログを出した実際の時刻)。"""
+        due = [(a, b, logged) for at, a, b, logged in self._reports if at <= t + 1e-9]
         self._reports = [r for r in self._reports if r[0] > t + 1e-9]
         return due
 
@@ -495,11 +512,11 @@ class FakeController:
 class Rig:
     """BridgeCore と FakeController を、橋渡しのノードと同じく 20 Hz（実際の時間）で回す。
     clock：実際の時間 → シミュレーションの時間。reports：controller の切り替えを橋渡しに知らせる
-    （ノードは /rosout で知る）。"""
+    （ノードは /rosout で知る）。stamps：知らせにログを出した時刻（Log.stamp）を付ける（ノードは付ける）。"""
 
-    def __init__(self, ctl=None, reports=True, clock=lambda t: t):
+    def __init__(self, ctl=None, reports=True, clock=lambda t: t, stamps=True):
         self.ctl = ctl or FakeController()
-        self.clock, self.reports = clock, reports
+        self.clock, self.reports, self.stamps = clock, reports, stamps
         self.b = (BridgeCore(0.0, clock(0.0), reports_switches=True) if reports
                   else BridgeCore(0.0, clock(0.0)))
         self.t = 0.0
@@ -511,10 +528,11 @@ class Rig:
         api = {round(t, 3): a for t, a in api}
         while self.t <= until + 1e-9:
             t, s = self.t, self.clock(self.t)
-            self.ctl.advance(s)
-            for a, b in self.ctl.reports(s):
+            self.ctl.advance(s, t)
+            for a, b, logged in self.ctl.reports(s):
                 if self.reports:
-                    self.b.controller_switched(b, s, from_state=a)
+                    self.b.controller_switched(b, s, from_state=a, now=t,
+                                               logged_at=logged if self.stamps else None)
             if t in api:
                 self.b.handle(api[t], "", t, s)
             if move is not None and move[0] - 1e-9 <= t <= move[1] + 1e-9 and round(t * 20) % 2 == 0:
@@ -702,19 +720,21 @@ def test_a_lost_report_is_found_from_the_next_one():
 
 
 def test_the_bridge_gives_up_and_the_next_stand_up_starts_again():
-    """controller に command が届かない（3 通続けて落ちる）。MAX_SENDS 回送ったらあきらめ、ノートに書いて送るのを
-    やめる。窓口は確かめた状態のまま（脱力なので 1001）で、BalanceStand の 1013 も出さない。
-    次の StandUp で、また初めから送る。"""
+    """controller に command が届かない（3 通続けて落ちる）。送り直すたびに待つ時間を倍にし（2.8・5.6・11.2 秒）、
+    MAX_SENDS 回送ったらあきらめ、ノートに書いて送るのをやめる。窓口は確かめた状態のまま（脱力なので 1001）で、
+    BalanceStand の 1013 も出さない。次の StandUp で、また初めから送る。"""
     assert MAX_SENDS == 3
     rig = Rig(FakeController(lose_input=lambda n: n < 3))
-    rig.run(9.9, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
-    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (5.6, STAND_CMD)]
+    rig.run(19.55, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert not any("切り替わりません" in n for n in rig.b.notes)
+    rig.run(20.9)
+    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (8.4, STAND_CMD)]
     assert sum("送り直します" in n for n in rig.b.notes) == 2
     assert any("passive から切り替わりません" in n and "Gazebo を起動し直して" in n for n in rig.b.notes)
     assert {c for _, c, _ in rig.trace} == {1001} and rig.ctl.state == PASSIVE
-    rig.run(13.0, api=[(10.0, STAND_UP)])
-    assert rig.commands()[3:] == [(10.0, STAND_CMD), (12.05, STAND_CMD)]
-    assert rig.ctl.state == FIXED_STAND and rig.code_at(12.1) == 1002
+    rig.run(24.0, api=[(21.0, STAND_UP)])
+    assert rig.commands()[3:] == [(21.0, STAND_CMD), (23.05, STAND_CMD)]
+    assert rig.ctl.state == FIXED_STAND and rig.code_at(23.1) == 1002
     assert_honest(rig)
 
 
@@ -789,6 +809,196 @@ def test_an_unknown_controller_state_is_left_through_fixed_stand():
     assert b.step(2.0, 2.0) is None and b.error_code == 1002
 
 
+def test_an_idle_bridge_only_follows_switches_it_did_not_ask_for():
+    """知らせ有りの橋渡しは、StandUp などが来るまで行きたい状態を持たず、何も送らない。ほかの送り手
+    （keyboard_input、手で打った ros2 topic pub）や、2 が残ったままの controller（StandDown の途中で橋渡しだけ
+    起動し直した）の切り替えは、確かめた状態にするだけ。2 は伏せ ↔ 立つを行き来させるので、ここで送り返すと
+    止まらない（レビュー：起動直後の行きたい状態が脱力で、2.05 秒ごとに 2 を送り続けた）。"""
+    rig = Rig(FakeController(state=FIXED_STAND, command=STAND_CMD, entered=-0.5)).run(20.0)
+    assert [(a, b) for _, a, b in rig.ctl.switches] == [(FIXED_STAND, FIXED_DOWN)]
+    assert rig.sent == [] and rig.b.error_code == 1001 and rig.b._conf == FIXED_DOWN
+    assert any("橋渡しが待っていた切り替えではありません" in n for n in rig.b.notes)
+
+    rig = Rig().run(1.0)
+    rig.ctl.receive(ControllerInput(STAND_CMD), 1.0)          # ほかの送り手が脱力の controller に 2 を 1 通
+    rig.run(20.0)
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN] and rig.sent == []
+    rig.run(24.0, api=[(21.0, STAND_UP)])                     # 次の StandUp は伏せから：2 を 1 通で立つ
+    assert rig.commands() == [(21.0, STAND_CMD)]
+    assert rig.ctl.state == FIXED_STAND and rig.code_at(23.0) == 1002
+    assert_honest(rig)
+
+
+LATE = [   # 知らせの遅れ（sim）。RESEND_S（2.8）以上だと、送り直しは知らせの来ていない切り替えの後に届く
+    pytest.param(0.5, id="d0.5"), pytest.param(2.8, id="d2.8"), pytest.param(3.0, id="d3"),
+    pytest.param(4.0, id="d4"), pytest.param(6.0, id="d6"),
+]
+
+
+@pytest.mark.parametrize("delay", LATE)
+@pytest.mark.parametrize("clock", [pytest.param(lambda t: t, id="rtf1"), pytest.param(lambda t: t / 2, id="rtf0.5")])
+def test_reports_later_than_the_resend_do_not_toggle_the_controller(delay, clock):
+    """/rosout の知らせがどれも RESEND_S（sim）より遅れて届く（Mac が重く、ノードに届くのが遅い）。
+    遅れを知らない最初の送り直しの 2 は、知らせの来ていない「脱力 → 伏せ」の後に届き、伏せで効く（→ 立つ）。
+    橋渡しは知らせのログの時刻（Log.stamp）で、送り直しが伏せに届いたと知り、伏せから 2 を送らずに「伏せ → 立つ」
+    を待つ。遅れを測った後は、送り直す前に遅れ × LAG_FACTOR + LAG_MARGIN_S（実際の時間）待つ。伏せ ↔ 立つを行き来させず、
+    伏せの controller に 4 を送らず、伏せの間に立ちの error_code を返さない（レビュー：2.8 秒以上遅れると
+    行き来が止まらなかった）。"""
+    rig = Rig(FakeController(report_delay=delay), clock=clock)
+    rig.run(70.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 60.0, '{"x":0.3,"y":0,"z":0}'))
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert rig.ctl.state == TROTTING and rig.b._conf == TROTTING and rig.b.error_code == 1013
+    assert no_trot_while_lying(rig)
+    walking = [state for _, i, state in rig.sent if i.ly != 0.0]
+    assert walking and set(walking) == {TROTTING}             # 速度は歩くと知らされた後にだけ
+    assert_honest(rig)
+    assert not any("切り替わりません" in n or "戻りました" in n for n in rig.b.notes)
+    if delay >= RESEND_S:
+        assert any("届きました" in n and "遅れています" in n for n in rig.b.notes)
+
+
+def test_a_report_three_seconds_late_waits_for_the_resent_command():
+    """遅れ 3.0 秒（sim）の流れ。0.0 の 2 で脱力 → 伏せ（0.005）。知らせの来ないまま 2.8 に送り直した 2 は伏せで
+    効き、伏せ → 立つ（2.805）。3.05 に「脱力 → 伏せ」（ログは 0.005、送り直しの前）が届き、送り直しは伏せに
+    届いたと分かるので、伏せからは送らない。立つの知らせ（5.85）から 2.0 秒後に 4。4 の送り直しは、
+    遅れ 3.0 × LAG_FACTOR + LAG_MARGIN_S を待つので、歩くの知らせ（10.9）より前には出ない。"""
+    assert (LAG_FACTOR, LAG_MARGIN_S) == (1.5, 1.0)
+    rig = Rig(FakeController(report_delay=3.0)).run(16.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (7.85, TROT_CMD)]
+    assert [round(t, 3) for t, _, _ in rig.ctl.switches] == [0.005, 2.805, 7.855]
+    assert [rig.code_at(t) for t in (5.8, 5.85, 10.85, 10.9)] == [1001, 1013, 1013, 1013]
+    assert sum("送り直します" in n for n in rig.b.notes) == 1
+
+
+def test_reports_later_than_two_resends_cost_one_extra_down_and_up():
+    """知らせの遅れ 10 秒（sim）は、2 回目の送り直し（送り直すたびに待つ時間を倍にして、最初から 8.4 秒）より遅い。
+    最初の知らせが届く前に送り直した 2 が 2 通とも効き、controller は伏せ → 立つ → 伏せと進む。知らせのログの時刻で
+    それを順に知るので、行き来は 1 回で止まり、伏せの controller に 4 を送らず、伏せかもしれない間（立つと知らされて
+    も、送った 2 で伏せへ移っているかもしれない間）は立ちの error_code を返さない。"""
+    rig = Rig(FakeController(report_delay=10.0)).run(50.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.commands()[:3] == [(0.0, STAND_CMD), (2.8, STAND_CMD), (8.4, STAND_CMD)]
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert rig.ctl.state == TROTTING and no_trot_while_lying(rig)
+    assert_honest(rig)
+    assert rig.trace[300][:3] == (15.0, 1001, FIXED_DOWN)     # 立つと知らされているが、伏せへ移った後
+
+
+def test_no_trot_command_while_a_late_command_may_have_laid_it_down():
+    """知らせの遅れが 3 秒から 8 秒へ跳んだ（測った遅れの LAG_FACTOR 倍 + LAG_MARGIN_S より大きい）。伏せからの 2 は
+    知らせの来ていない「伏せ → 立つ」の後に届き、立つで効いて伏せへ戻す（4.855）。「伏せ → 立つ」の知らせ（5.1）で
+    それを知るが、「立つ → 伏せ」の知らせ（12.9）は送り直しの期限（10.45）より遅い。確かめた状態は立つでも、
+    controller は伏せかもしれないので、4 でなく 2 を送る（伏せなら立つへ、立つなら伏せへ。どちらも害が無い）。
+    その間は立ちの error_code も返さない。"""
+    delays = [0.0, 3.0, 8.0] + [0.0] * 10
+    rig = Rig(FakeController(report_delay=lambda k: delays[k]))
+    rig.run(18.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.85, STAND_CMD), (10.45, STAND_CMD),
+                              (14.9, TROT_CMD)]
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert rig.ctl.state == TROTTING and no_trot_while_lying(rig)
+    assert_honest(rig)
+    assert rig.code_at(8.0) == 1001                           # 確かめた状態は立つ、controller は伏せ
+
+
+def test_a_stall_of_the_reports_is_followed():
+    """知らせが一度だけ 4 秒止まり（その間の知らせは後から順に届く）、その後は遅れずに届く。"""
+    rig = Rig(FakeController(report_delay=lambda k: 4.0 if k == 0 else 0.0))
+    rig.run(12.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (6.05, TROT_CMD)]
+    assert no_trot_while_lying(rig)
+    assert_honest(rig)
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_jittery_late_reports_settle(seed):
+    """知らせの遅れが 1 通ごとに 2.0〜4.0 秒（sim）でばらつく（順には届く）。歩くに着くか、行き来を MAX_REVERSALS 回
+    数えてあきらめるかで終わり、伏せの controller に 4 を送らない。"""
+    rnd = __import__("random").Random(seed)
+    delays = [rnd.uniform(2.0, 4.0) for _ in range(40)]
+    rtf = rnd.choice([1.0, 0.5])
+    rig = Rig(FakeController(report_delay=lambda k: delays[k]), clock=lambda t: t * rtf)
+    rig.run(80.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    gave_up = any("Gazebo を起動し直して" in n for n in rig.b.notes)
+    assert rig.ctl.state == TROTTING or gave_up
+    assert len(rig.ctl.switches) <= 3 + 2 * MAX_REVERSALS
+    assert no_trot_while_lying(rig)
+    assert rig.sent[-1][0] < 70.0                              # 終わった後は何も送らない
+
+
+def test_without_stamps_a_loop_of_late_reports_gives_up():
+    """知らせのログの時刻が使えない（Log.stamp がこの機械の時計でない）と、RESEND_S より遅い知らせでは送り直しの
+    2 がどこに届いたか分からず、伏せ ↔ 立つを行き来しうる。行きたい状態から遠ざかる切り替えを MAX_REVERSALS 回
+    知らされたら、あきらめてノートに書き、それ以上送らない（行き来はいつか止まる）。"""
+    assert MAX_REVERSALS == 3
+    rig = Rig(FakeController(report_delay=3.0), stamps=False)
+    rig.run(80.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert any("戻りました" in n and "Gazebo を起動し直して" in n for n in rig.b.notes)
+    back = [(a, b) for _, a, b in rig.ctl.switches if (a, b) == (FIXED_STAND, FIXED_DOWN)]
+    assert len(back) == MAX_REVERSALS
+    assert rig.sent[-1][0] < 30.0 and rig.b._ctl is None
+    assert rig.b.error_code == 1001                           # 伏せと確かめてあきらめた：窓口は伏せ
+
+
+def test_after_giving_up_on_leaving_trotting_moves_still_walk():
+    """StandDown の 2 が 3 通とも controller に届かず、あきらめた。controller は歩くのままと確かめてあるので、
+    行きたい状態を歩くに戻し、窓口は 1013。後の Move の速度は送る（レビュー：窓口は 1015 なのに何も送らず、
+    2026-11-11 と同じく移動が終わらなかった）。"""
+    rig = Rig(FakeController(lose_input=lambda n: 3 <= n <= 5))
+    rig.run(36.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (8.0, STAND_DOWN)],
+            move=(30.0, 35.0, '{"x":0.3,"y":0,"z":0}'))
+    assert rig.commands()[3:6] == [(8.0, DOWN_CMD), (10.8, DOWN_CMD), (16.4, DOWN_CMD)]   # 3 通とも落ちる
+    assert any("trotting から切り替わりません" in n for n in rig.b.notes)
+    assert rig.ctl.state == TROTTING and rig.b._ctl == TROTTING
+    # StandDown の窓口の 2 秒で 1004 になるが、あきらめたら（27.6）歩くと確かめた状態に合わせて 1013
+    assert [rig.code_at(t) for t in (27.55, 27.6, 29.0, 32.0)] == [1004, 1013, 1013, 1015]
+    assert [t for t, i, _ in rig.sent if t > 8.0 and i.ly != 0.0][:1] == [30.0]
+    assert all(state == TROTTING for t, i, state in rig.sent if i.ly != 0.0)
+
+
+@pytest.mark.parametrize("api_id,code", [(STAND_DOWN, 1004), (SIT, 1007)])
+def test_stand_down_or_sit_while_the_standing_code_is_held_back(api_id, code):
+    """Gazebo が実時間の半分の速さで、controller の伏せも 2.4 秒かかる。BalanceStand の 0.5 秒後（3.5）に窓口は
+    1013 だが、controller はまだ伏せなので返す code は 1001。StandDown・Sit は BalanceStand と同じく窓口の
+    code で受け付ける（知らせ無しなら 1013 で受け付けるのと同じ）。controller は伏せにいるので何も送らず、伏せのまま。
+    返す code はすぐ下りる先の code（伏せは本当）。窓口が 1002（StandUp の直後）なら、知らせ無しと同じく断る。"""
+    api = [(0.0, STAND_UP), (3.0, BALANCE_STAND), (4.0, api_id)]
+    rig = Rig(FakeController(hold={FIXED_DOWN: 2.4}), clock=lambda t: t / 2).run(12.0, api=api)
+    assert not any("受け付けません" in n for n in rig.b.notes)
+    assert rig.commands() == [(0.0, STAND_CMD)]               # 伏せからの 2（4.05 の予定）も送らない
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN] and rig.ctl.state == FIXED_DOWN
+    assert rig.code_at(3.95) == 1001 and rig.code_at(4.0) == code and rig.b.error_code == code
+    assert_honest(rig)
+
+    early = Rig(FakeController(hold={FIXED_DOWN: 2.4}), clock=lambda t: t / 2)
+    early.run(4.0, api=[(0.0, STAND_UP), (2.5, api_id)])     # 窓口は 1002（UNKNOWN）：断る
+    assert any("受け付けません（error_code 1001）" in n for n in early.b.notes)
+
+
+def test_a_report_older_than_the_last_one_is_ignored():
+    """同じ知らせが二度届いた・順が入れ替わった知らせ（ログの時刻が、前に使った知らせより前）は使わない。
+    使うと、歩いている controller を伏せと思い、2 を送ってしまう。/rosout は同じ送り手の知らせを順に届けるので、
+    普通は起きない。"""
+    rig = Rig().run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.ctl.state == TROTTING and rig.b._conf == TROTTING
+    n = len(rig.sent)
+    rig.b.controller_switched(FIXED_DOWN, 6.0, from_state=PASSIVE, now=6.0, logged_at=0.005)  # 最初の知らせがもう一度
+    rig.b.controller_switched(FIXED_STAND, 6.0, from_state=TROTTING, now=6.0,                # 歩くの知らせより前のログ
+                              logged_at=rig.ctl.entered_at(TROTTING) - 0.01)
+    rig.run(9.0)
+    assert rig.b._conf == TROTTING and len(rig.sent) == n and rig.b.error_code == 1013 and rig.b.notes == []
+
+
+def test_log_time_puts_the_log_stamp_on_the_bridge_clock():
+    """/rosout の Log.stamp は、use_sim_time でもログを出した実際の時刻（time.time() の時計。Jazzy の rcutils で
+    確かめた）。橋渡しのノードはそれを now の時計（time.monotonic()）に直して controller_switched に渡す。
+    この機械の時計に見えない stamp（MAX_REPORT_AGE_S より古い・未来）は使わない。"""
+    assert log_time(100.0, 1_700_000_010.0, 1_700_000_007.5) == pytest.approx(97.5)
+    assert log_time(100.0, 1_700_000_010.0, 1_700_000_010.002) == 100.0    # 少し未来は「今」
+    assert log_time(100.0, 1_700_000_010.0, 749.567) is None              # シミュレーションの時間の stamp
+    assert log_time(100.0, 1_700_000_010.0, 1_700_000_010.0 + MAX_REPORT_AGE_S + 1.0) is None
+
+
 def test_controller_switch_lines():
     """controller のログ（UnitreeGuideController::update の "Switched from %s to %s"）。橋渡しのノードは /rosout の
     行をすべて parse_switch で読み、切り替えなら controller_switched に渡す（ノードは rclpy と Jazzy の型が要るので、
@@ -802,3 +1012,4 @@ def test_controller_switch_lines():
         assert parse_switch(text) is None
     node = (XACRO.parent / "gazebo_bridge.py").read_text(encoding="utf-8")
     assert "parse_switch(msg.msg)" in node and "controller_switched(" in node
+    assert "log_time(now, time.time(), _stamp(msg.stamp))" in node and "logged_at=" in node
