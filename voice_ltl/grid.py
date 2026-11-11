@@ -2,7 +2,10 @@
 
 マス目は anchor（合成を始めるときの Go2 の位置と向き）に合わせる。anchor がマス (0, 0) の中心で、
 向き 0 が anchor の yaw。マス (i, j) の中心は (x0, y0) + R(yaw0)·(0.5 i, 0.5 j)、向き h は yaw0 + h·90°。
-距離・角度はすべてマス目の座標（local）で測るので、anchor を回しても動かしても同じマスになる。
+塞ぐマスと手前のキーは odom で、物の足跡（size、odom の x・y に沿った四角）から測る（open-objects spec §10）。
+足跡は odom に沿っているので、anchor を回すとマス目から見た足跡も回る。手前の帯 A と周回の輪は中心からの
+距離だけで決まるので（今と同じ）、どの向きでも同じマスになる。
+形（長方形・塞ぐマス・手前のキー・輪）は grid_shape が BFS なしで作り、grid_world がその上で状態を広げる。
 状態は (マス, 向き, 姿勢, 前の物, 後ろの物, 周回の進み)。前後の物のビットは立っているときだけ持つ（R1）。
 物が見えている（ビットが立っている）間は座らない・伏せない。座って立ち直すとビットが消えるので、
 そうすれば物が消えると計画しないため。
@@ -18,7 +21,8 @@ from go2_nl_control.actions import ACTIONS, STANDING
 
 from voice_ltl.automata import World
 from voice_ltl.objects import (
-    MAX_OBJECT_DISTANCE, MSG_TOO_SPREAD, Obj, Pose, msg_not_found, msg_too_far, split_prop, wrap_rad,
+    MAX_OBJECT_DISTANCE, MSG_TOO_SPREAD, Obj, Pose, core_distance, edge_distance, msg_lap_too_big, msg_not_found,
+    msg_too_big_here, msg_too_far, near_prop, spine_point, split_prop, wrap_rad,
 )
 from voice_ltl.world import (
     ACTION_NAMES, ACTION_PROP, POSTURE_PROP, STEP_DISTANCE, UNCONTROLLABLE, UNSAFE_LABELS, PlantState,
@@ -27,16 +31,25 @@ from voice_ltl.world import (
 
 CELL = STEP_DISTANCE                     # 0.5 [m]
 MAX_CELLS = 256                          # the rectangle's area [cells] (R8)
-BLOCK_MARGIN = 0.45                      # blocked: d <= r + 0.45 (R5)
-NEAR_MIN_MARGIN = 0.75                   # near: r + 0.75 <= d <= min(r + 1.5, 1.3), heading within 40° (R4)
+BLOCK_MARGIN = 0.45                      # blocked: edge_distance(cell centre, o) <= 0.45 (R5, spec §10.3)
+# Near band A (R4, unchanged): r + 0.75 <= d_c <= min(r + 1.5, 1.3), the centre within 40° of the heading.
+NEAR_MIN_MARGIN = 0.75
 NEAR_MAX_MARGIN = 1.5
 # Ruling N1 (Gazebo, 2026-11-06): 1.4 -> 1.3. The executor ends up to ~0.15 m off a cell centre;
 # a goal cell 1.395 m from the chair ended 1.539 m away, over the design §2's 1.5 m.
 NEAR_MAX_DISTANCE = 1.3
 NEAR_MAX_ANGLE_DEG = 40.0
+# Near band B (spec §10.4), measured from the footprint: d_e >= 0.65, d_k <= core_limit(o), for a small object
+# also d_c >= 1.05, and the nearest spine point within 40° of the heading.
+NEAR_MIN_EDGE = 0.65                     # with a 0.15 m stop error the body stays >= 0.50 m (stop_distance) away
+NEAR_SMALL_SIDE = 0.6                    # small: both sides <= 0.6 m (the Gazebo box 0.529, the chair <= 0.5)
+NEAR_SMALL_MIN_CENTRE = 1.05             # small only: keeps the default 8 cells (1.118 m), drops the axis ones (1.0)
+NEAR_SMALL_MAX_CORE = 1.075              # small: = 1.3 - 0.225, so a 0.45 m chair's plan ends <= 1.3 m away (N1)
+NEAR_MAX_CORE = 1.25                     # large: a band 0.6 m deep beside a long side (deeper than one cell)
 RING_MIN_MARGIN = 0.75                   # lap ring: r + 0.75 <= d <= r + 1.75 (R6)
 RING_MAX_MARGIN = 1.75
 LAP_DONE = 5                             # progress at which around_<id> holds (P4)
+LAP_TOO_BIG_RADIUS = 1.75                # a lap target with r >= 1.75 is refused by size alone (spec §10.6)
 SAFETY_PROPS = ("obstacle_front", "obstacle_back", "moved_forward", "moved_backward")
 HEADINGS = ((1, 0), (0, 1), (-1, 0), (0, -1))     # h = 0..3 in the grid frame, counter-clockwise
 EPS = 1e-9                               # [m] on every distance test, so that two builds never differ on a boundary
@@ -115,7 +128,17 @@ class Grid:
 
 
 class GridError(Exception):
-    """マス目を作れない（物が見つからない・遠すぎる・離れすぎている）。str(exc) が利用者への文言。"""
+    """マス目を作れない（物が見つからない・遠すぎる・大きすぎる・離れすぎている）。str(exc) が利用者への文言。"""
+
+
+@dataclass(frozen=True)
+class GridShape:
+    """grid_world の形だけ（BFS の前）：長方形と塞ぐマス、手前のキー、輪。"""
+    grid: Grid
+    near: dict[str, frozenset[tuple[tuple[int, int], int]]]  # near prop -> {(cell, heading)}
+    ring: dict[str, dict[tuple[int, int], int]]               # lap prop -> {cell: sector}
+    lap_props: tuple[str, ...]                                 # sorted around_*/around_cw_* atoms
+    start_covered: bool                                        # an object covers the start cell
 
 
 @dataclass
@@ -229,11 +252,23 @@ def next_lap(progress: int, a: int | None, b: int | None, cw: bool = False) -> i
     return 0
 
 
-def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
-               objects: Sequence[Obj], atoms: frozenset[str]) -> GridWorld:
-    """式の物の命題に合わせたマス目と、その上の PLANT（到達できる状態だけ）。
+def is_small(o: Obj) -> bool:
+    """小さい物：2 辺とも NEAR_SMALL_SIDE 以下（spec §10.2）。"""
+    return max(o.size) <= NEAR_SMALL_SIDE + EPS
 
-    物が見つからない・6 m より遠い・長方形が MAX_CELLS を超えるときは GridError。
+
+def core_limit(o: Obj) -> float:
+    """帯 B の芯までの距離 d_k の上限。"""
+    return NEAR_SMALL_MAX_CORE if is_small(o) else NEAR_MAX_CORE
+
+
+def grid_shape(anchor: Pose, objects: Sequence[Obj], atoms: frozenset[str], margin: int = 1) -> GridShape:
+    """式の物の命題に合わせたマス目の形：長方形・塞ぐマス・手前のキー・輪（BFS なし）。
+
+    GridError をこの順で出す：Scene にない id（見つかりません）、6 m より遠い（遠すぎます）、
+    r >= 1.75 の周回の目標（大きすぎて…。長方形を作る前に大きさだけで決める）、長方形が MAX_CELLS を超え、
+    指示に出る物がちょうど 1 つ（大きいので、ここからは…）、それ以外で超える（離れすぎていて…）。
+    長方形は指示に出る物ごとの半分の長さに Go2 のマスと margin マスの余白を足したもの（R8、spec §10.5）。
     同じ id の行が複数あれば、その物は最初の行（objects.parse_rows と同じ）。どの行もマスをふさぐ（R7）。
     """
     atoms = frozenset(atoms)
@@ -249,53 +284,61 @@ def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
     for obj_id in sorted(uses):
         if obj_id not in by_id:
             raise GridError(msg_not_found(obj_id.rsplit("_", 1)[0]))
-    x0, y0 = anchor[0], anchor[1]
+    x0, y0, yaw0 = anchor
     for obj_id in sorted(uses):
         o = by_id[obj_id]
         if math.hypot(o.x - x0, o.y - y0) > MAX_OBJECT_DISTANCE + EPS:
             raise GridError(msg_too_far(o.label))
+    for obj_id in sorted(uses):
+        o = by_id[obj_id]
+        if uses[obj_id] - {"near"} and o.radius >= LAP_TOO_BIG_RADIUS - EPS:
+            raise GridError(msg_lap_too_big(o.label))
 
     probe = Grid(anchor, (0, 0), (0, 0), frozenset())
-    local = [(o, probe.local(o.x, o.y)) for o in objects]   # every row blocks cells (R7)
     where = {obj_id: probe.local(o.x, o.y) for obj_id, o in by_id.items()}   # the same row as by_id
     i_lo = i_hi = j_lo = j_hi = 0                        # the robot's cell
     for obj_id, kinds in uses.items():
-        r = by_id[obj_id].radius
-        band = max(min(r + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE) if k == "near" else r + RING_MAX_MARGIN
-                   for k in kinds)
+        hx, hy = _half_extents(by_id[obj_id], kinds, yaw0)
         gx, gy = where[obj_id]
-        i_lo, i_hi = min(i_lo, _ceil_cells(gx - band)), max(i_hi, _floor_cells(gx + band))
-        j_lo, j_hi = min(j_lo, _ceil_cells(gy - band)), max(j_hi, _floor_cells(gy + band))
-    i_range, j_range = (i_lo - 1, i_hi + 1), (j_lo - 1, j_hi + 1)
+        i_lo, i_hi = min(i_lo, _ceil_cells(gx - hx)), max(i_hi, _floor_cells(gx + hx))
+        j_lo, j_hi = min(j_lo, _ceil_cells(gy - hy)), max(j_hi, _floor_cells(gy + hy))
+    i_range, j_range = (i_lo - margin, i_hi + margin), (j_lo - margin, j_hi + margin)
     if (i_range[1] - i_range[0] + 1) * (j_range[1] - j_range[0] + 1) > MAX_CELLS:
+        if len(uses) == 1:
+            raise GridError(msg_too_big_here(by_id[next(iter(uses))].label))
         raise GridError(MSG_TOO_SPREAD)
 
     cells = [(i, j) for i in range(i_range[0], i_range[1] + 1) for j in range(j_range[0], j_range[1] + 1)]
-    covered = {c for c in cells if any(_dist(g, c) <= o.radius + BLOCK_MARGIN + EPS for o, g in local)}
+    centre = {c: probe.center(c) for c in cells}         # odom
+    covered = {c for c in cells if any(edge_distance(*centre[c], o) <= BLOCK_MARGIN + EPS for o in objects)}
     blocked = frozenset(covered - {_START})               # R7: the start cell is never blocked
     free = [c for c in cells if c not in covered]
     grid = Grid(anchor, i_range, j_range, blocked)
 
     near: dict[str, frozenset[tuple[tuple[int, int], int]]] = {}
     ring: dict[str, dict[tuple[int, int], int]] = {}
+    yaws = tuple(grid.heading_yaw(h) for h in range(4))
     for obj_id, kinds in sorted(uses.items()):
         o, g = by_id[obj_id], where[obj_id]
-        r = o.radius
         if "near" in kinds:
-            near[f"near_{obj_id}"] = frozenset(
-                (c, h) for c in free
-                if _in_band(_dist(g, c), r + NEAR_MIN_MARGIN, min(r + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE))
-                for h in range(4) if abs(wrap_rad(_bearing(c, g) - h * math.pi / 2)) <= _NEAR_ANGLE)
+            near[near_prop(obj_id)] = _near_keys(o, free, centre, yaws)
         laps = [f"{kind}_{obj_id}" for kind in ("around", "around_cw") if kind in kinds]
-        if laps:
+        if laps:                                          # R6, unchanged: grid coordinates, from the centre
+            r = o.radius
             sectors = {c: sector(g, (CELL * c[0], CELL * c[1])) for c in free
                        if _in_band(_dist(g, c), r + RING_MIN_MARGIN, r + RING_MAX_MARGIN)}
             ring.update((p, sectors) for p in laps)
-    lap_props = tuple(sorted(ring))
+    return GridShape(grid, near, ring, tuple(sorted(ring)), _START in covered)
 
-    gw = GridWorld(grid, objects, atoms, lap_props, near, ring, _START in covered)
+
+def grid_world(posture: str, front: bool, back: bool, anchor: Pose,
+               objects: Sequence[Obj], atoms: frozenset[str], margin: int = 1) -> GridWorld:
+    """grid_shape の形と、その上の PLANT（到達できる状態だけ）。GridError は grid_shape のとおり。"""
+    objects, atoms = tuple(objects), frozenset(atoms)
+    shape = grid_shape(anchor, objects, atoms, margin)
+    gw = GridWorld(shape.grid, objects, atoms, shape.lap_props, shape.near, shape.ring, shape.start_covered)
     on_feet = posture == STANDING
-    initial = GridState(_START, 0, posture, front and on_feet, back and on_feet, (0,) * len(lap_props))
+    initial = GridState(_START, 0, posture, front and on_feet, back and on_feet, (0,) * len(shape.lap_props))
     gw.world = _explore(gw, initial)
     return gw
 
@@ -343,13 +386,50 @@ def _explore(gw: GridWorld, initial: GridState) -> World:
     )
 
 
+def _half_extents(o: Obj, kinds: set[str], yaw0: float) -> tuple[float, float]:
+    """長方形の、マス目の x・y の向きの半分の長さ（spec §10.5）。手前は max(min(r + 1.5, 1.3), 芯の箱)、
+    芯の箱は e·|cos ψ| + m + 芯の上限と e·|sin ψ| + m + 芯の上限（ψ = 背骨の向き − anchor の yaw）。周回は r + 1.75。"""
+    hx = hy = 0.0
+    if "near" in kinds:
+        a, b = o.size[0] / 2, o.size[1] / 2
+        m, e, core = min(a, b), abs(a - b), core_limit(o)
+        psi = (0.0 if a >= b else math.pi / 2) - yaw0
+        band = min(o.radius + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE)
+        hx = max(band, e * abs(math.cos(psi)) + m + core)
+        hy = max(band, e * abs(math.sin(psi)) + m + core)
+    if kinds - {"near"}:
+        hx, hy = max(hx, o.radius + RING_MAX_MARGIN), max(hy, o.radius + RING_MAX_MARGIN)
+    return hx, hy
+
+
+def _near_keys(o: Obj, free: Sequence[tuple[int, int]], centre: dict[tuple[int, int], tuple[float, float]],
+               yaws: tuple[float, ...]) -> frozenset[tuple[tuple[int, int], int]]:
+    """手前のキー（spec §10.4）：空いたマス c と向き h で、帯 A か帯 B。すべて odom で測る。"""
+    r = o.radius
+    a_lo, a_hi = r + NEAR_MIN_MARGIN, min(r + NEAR_MAX_MARGIN, NEAR_MAX_DISTANCE)
+    small, core = is_small(o), core_limit(o)
+    # no key is farther from the centre than this (band B: d_c <= e + m + d_k); a looser bound only costs time
+    reach = max(a_hi, abs(o.size[0] - o.size[1]) / 2 + min(o.size) / 2 + core) + 1e-6
+    keys = set()
+    for c in free:
+        x, y = centre[c]
+        d_c = math.hypot(x - o.x, y - o.y)
+        if d_c > reach:
+            continue
+        bearings = []
+        if _in_band(d_c, a_lo, a_hi):                                         # band A: face the centre
+            bearings.append(math.atan2(o.y - y, o.x - x))
+        if (edge_distance(x, y, o) >= NEAR_MIN_EDGE - EPS and core_distance(x, y, o) <= core + EPS
+                and (not small or d_c >= NEAR_SMALL_MIN_CENTRE - EPS)):        # band B: face the nearest spine point
+            sx, sy = spine_point(x, y, o)
+            bearings.append(math.atan2(sy - y, sx - x))
+        keys.update((c, h) for h, yaw in enumerate(yaws)
+                    if any(abs(wrap_rad(bearing - yaw)) <= _NEAR_ANGLE for bearing in bearings))
+    return frozenset(keys)
+
+
 def _dist(g: tuple[float, float], cell: tuple[int, int]) -> float:
     return math.hypot(g[0] - CELL * cell[0], g[1] - CELL * cell[1])
-
-
-def _bearing(cell: tuple[int, int], g: tuple[float, float]) -> float:
-    """マスの中心から物の中心への向き（マス目の座標）。"""
-    return math.atan2(g[1] - CELL * cell[1], g[0] - CELL * cell[0])
 
 
 def _in_band(d: float, lo: float, hi: float) -> bool:
