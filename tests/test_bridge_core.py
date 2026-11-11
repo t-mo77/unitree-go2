@@ -977,6 +977,13 @@ def test_stand_down_or_sit_while_the_standing_code_is_held_back(api_id, code):
 
 
 DOWN_UP = [(0.0, STAND_UP), (3.0, BALANCE_STAND), (10.5, STAND_DOWN), (12.65, STAND_UP), (14.65, BALANCE_STAND)]
+_RESEND_NOTE = re.compile(r"controller が (.+?) に切り替わったことを .+?確かめられないので、(.+?) から command \d を送り直します")
+
+
+def resend_notes_name_two_states(rig: Rig) -> bool:
+    """送り直しのノートの「<a> に切り替わったことを…確かめられないので、<b> から command … を送り直します」で、a と b が
+    同じ状態でない（同じなら、その状態から送ることを別の書き方にする）。"""
+    return all(m.group(1) != m.group(2) for m in map(_RESEND_NOTE.search, rig.b.notes) if m)
 
 
 @pytest.mark.parametrize("ctl,api,commands,end", [
@@ -999,18 +1006,66 @@ def test_a_new_goal_before_the_down_report_does_not_trot_a_lying_controller(ctl,
     状態（立つ）から 4 を送っていた：controller は伏せなので 4 が残り、2026-11-11 と同じく伏せのまま、窓口は 1002 のまま
     あきらめていた。期限が来たら、送った 2 で伏せへ移ったかもしれないとして、4 でなく 2 を送る（StandUp だけでも 2 を送る）。
     知らせを待つ間も、伏せへの command の知らせを待つ間も、立ちの error_code を返さない。その後も知らせが来なければ、
-    あきらめて、伏せかもしれないので伏せの code のまま。"""
+    あきらめて、伏せかもしれないので伏せの code のまま。
+    ノート（最終レビュー）：15.35 の送り直しは、確かめられない切り替えの行き先（伏せ）と送る状態が同じなので、伏せを
+    二度書かない。あきらめのノートは、確かめた状態（立つ）でなく、最後に送ったときのつもりの状態（伏せ）を書く。"""
     rig = Rig(ctl()).run(60.0, api=api)
     assert not stuck(rig) and no_trot_while_lying(rig)
     assert_honest(rig)
     assert [(t, c) for t, c in rig.commands() if t > 10.0] == commands
-    assert any("fixed down から command 2 を送り直します" in n for n in rig.b.notes)
+    assert any("fixed down に切り替わったことを 2.8 秒" in n and "切り替わったかもしれないとして command 2 を送り直します" in n
+               for n in rig.b.notes)
+    assert resend_notes_name_two_states(rig)
     gave_up = any("Gazebo を起動し直して" in n for n in rig.b.notes)
     if end is None:
         assert gave_up and rig.b.error_code not in STANDING_CODES and rig.ctl.state == FIXED_DOWN
+        assert any("controller が fixed down から切り替わりません（command 2 を 3 回送りました）" in n for n in rig.b.notes)
     else:
         assert not gave_up and rig.ctl.state == end
         assert rig.b.error_code == {TROTTING: 1013, FIXED_STAND: 1002}[end]
+
+
+TROT_DOWN_UP = [(0.0, STAND_UP), (3.0, BALANCE_STAND), (10.5, STAND_DOWN), (12.55, STAND_UP), (14.55, BALANCE_STAND)]
+TWO_LOST = (3, 4)   # 落ちる知らせ：歩く → 立つ（3 個目）と、立つ → 伏せ（4 個目）
+STARTS = [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD)]
+
+
+@pytest.mark.parametrize("ctl,api,move,commands", [
+    pytest.param(lambda: FakeController(lose_report=lambda k: k in TWO_LOST), TROT_DOWN_UP, (20.0, 22.0),
+                 STARTS + [(10.5, DOWN_CMD), (13.3, DOWN_CMD), (18.9, STAND_CMD), (20.95, TROT_CMD), (23.0, TROT_CMD)],
+                 id="lost-lost-move"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k in TWO_LOST), TROT_DOWN_UP, None,
+                 STARTS + [(10.5, DOWN_CMD), (13.3, DOWN_CMD), (18.9, STAND_CMD), (20.95, TROT_CMD)],
+                 id="lost-lost"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k in TWO_LOST),
+                 [(0.0, STAND_UP), (3.0, BALANCE_STAND), (10.5, STAND_DOWN), (14.0, STAND_UP), (16.0, BALANCE_STAND)],
+                 None, STARTS + [(10.5, DOWN_CMD), (13.3, DOWN_CMD), (18.9, STAND_CMD), (20.95, TROT_CMD)],
+                 id="lost-lost-stand-up-after-the-timer"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k == 3, report_delay=lambda k: 8.0 if k == 4 else 0.0),
+                 TROT_DOWN_UP, (19.0, 21.0),
+                 STARTS + [(10.5, DOWN_CMD), (13.3, DOWN_CMD), (18.9, STAND_CMD), (23.35, TROT_CMD)],
+                 id="lost-late8-move"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k in (0, 1)), [(0.0, STAND_UP), (3.0, BALANCE_STAND)],
+                 None, [(0.0, STAND_CMD), (2.8, STAND_CMD), (8.4, STAND_CMD), (10.45, STAND_CMD), (12.5, TROT_CMD)],
+                 id="lost-lost-from-passive"),
+])
+def test_a_resend_that_lays_it_down_unseen_is_not_taken_for_standing(ctl, api, move, commands):
+    """歩いているところで StandDown。1 通目の 2（歩く → 立つ）の知らせが落ち、その間に StandUp が来た（行きたい状態は立つ）。
+    送り直しの期限（13.3）で、橋渡しは立つに移ったかもしれないと覚えて（_maybe）、確かめた状態（歩く）から 2 を送り直す。
+    controller はもう立つにいるので、この 2 で伏せへ移り、その知らせも落ちた・8 秒遅れた（最終レビュー）。橋渡しは立つと
+    思ったまま、BalanceStand の後は歩くに着いたつもりで 1002・1013 を返し続け、Move の 4 を伏せの controller に送っていた
+    （2026-11-11 と同じ：伏せで 4 が残り、1013 のまま）。送り直した 2 が _maybe（立つ）に届いたときの行き先（伏せ）も伏せかも
+    しれないとして数え、立ちの error_code を返さず、次の期限（18.9）では、そこから 4 でなく 2 を送る。
+    lost-lost-from-passive：脱力からの StandUp で、最初の 2 つの知らせが落ちる（伏せ ↔ 立つを 1 回余分に行き来して歩く）。"""
+    walk = '{"x":0.3,"y":0,"z":0}'
+    rig = Rig(ctl()).run(80.0, api=api, move=None if move is None else (*move, walk))
+    assert not stuck(rig) and no_trot_while_lying(rig)
+    assert_honest(rig)
+    assert rig.commands() == commands
+    assert all(state == TROTTING for _, i, state in rig.sent if i.ly != 0.0)
+    assert not any("Gazebo を起動し直して" in n for n in rig.b.notes)
+    assert resend_notes_name_two_states(rig)
+    assert rig.ctl.state == TROTTING and rig.b._conf == TROTTING and rig.b.error_code == 1013
 
 
 # ---- でたらめな指令の列と、落ちる・遅れる知らせ（性質） ----
@@ -1050,11 +1105,13 @@ def random_run(seed: int) -> Rig:
 def test_random_commands_with_lost_and_late_reports(seed):
     """どんな指令の列でも、知らせが落ちても遅れても：
     - 静かになった後、controller が伏せで 4 が残っている（2026-11-11）ことはない。4 を脱力・伏せの controller に送らない。
-    - controller が脱力・伏せにいるのに立ちの error_code を返すのは、BLIND_S（sim）の間だけ（返し続けない）。"""
+    - controller が脱力・伏せにいるのに立ちの error_code を返すのは、BLIND_S（sim）の間だけ（返し続けない）。
+    - 送り直しのノートは、確かめられない切り替えの行き先と送る状態に同じ状態を書かない。"""
     rig = random_run(seed)
     assert not stuck(rig)
     assert no_trot_while_lying(rig)
     assert_honest(rig, window=BLIND_S)
+    assert resend_notes_name_two_states(rig)
 
 
 def test_a_report_older_than_the_last_one_is_ignored():

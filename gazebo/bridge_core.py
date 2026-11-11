@@ -28,7 +28,8 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   知らせにはログを出した時刻（Log.stamp）も付く。知らせが遅れて、送り直しが切り替わりの後に届いたときは、
   その時刻で分かるので、送り直しが効く次の切り替えを待ち、その間は伏せかもしれないとして 4 を送らず、立ちの
   error_code も返さない。知らせの来ないまま送り直すときも、送った command の行き先（伏せかもしれない）を覚えておき、
-  その間に行きたい状態が変わっても、確かめた状態から 4 を送らない（2 を送る）。
+  その間に行きたい状態が変わっても、確かめた状態から 4 を送らない（2 を送る）。移ったかもしれない状態に届いたときの
+  行き先が伏せなら、そちらも伏せかもしれないとして数える（歩くから 2 を送り直すと、もう立つにいる controller は伏せる）。
   遅れを測ったら、送り直す前にその分も待つ（LAG_FACTOR・LAG_MARGIN_S）。
   それでも行きたい状態から MAX_REVERSALS 回遠ざかったら、あきらめてノートに書く。
   知らせ無し（テストと偽の道）は今までどおり、送った command から状態を見積もって送る。
@@ -260,14 +261,14 @@ class BridgeCore:
         self._reports = reports_switches
         self._conf = PASSIVE          # 知らせで確かめた状態（起動直後の controller は脱力）
         self._conf_since = -math.inf  # その知らせを受けた時刻（sim）
-        # 知らせを待っている (command, 送った sim, 行くはずの状態, 送った now)
-        self._sent: Optional[Tuple[int, float, str, float]] = None
+        # 知らせを待っている (command, 送った sim, 行くはずの状態, 送った now, 受けるはずの状態)
+        self._sent: Optional[Tuple[int, float, str, float, str]] = None
         self._tries = 0               # 切り替わりの知らせが来ないまま送った回数
         self._lag = 0.0               # 最後に測った知らせの遅れ（受けた now − ログを出した now）
         self._last_logged = -math.inf  # 最後に使った知らせのログの時刻（now の時計）
         self._reversals = 0           # 行きたい状態から遠ざかる切り替えを知らされた回数
         # controller がもう移ったかもしれない状態（次の知らせまで）：知らせが遅れて切り替わりの後に届いた command の
-        # 行き先と、知らせの来ないまま送り直しの期限が来た command の行き先
+        # 行き先と、知らせの来ないまま送り直しの期限が来た command の行き先（前の _maybe に届いて伏せへ移るなら、その伏せ）
         self._maybe: Optional[str] = None
         self._lying_code = 1001       # 立ち・歩きの error_code を控える間に返す code（立つ前の code）
         self._masked_since: Optional[float] = None   # 控え始めた時刻（sim）
@@ -376,31 +377,37 @@ class BridgeCore:
         """知らせ有り：確かめた状態から行きたい状態へ、command を 1 通ずつ。送った後は、その切り替えの知らせが
         来るまで何も送らない（速度も）。状態が行きたい状態（歩く）に着いていれば、待たせた速度を出す。
         送り直すのは、送って RESEND_S（sim。送り直すたびに倍）と、最後に測った知らせの遅れ × LAG_FACTOR +
-        LAG_MARGIN_S（now）の両方がたってから。期限が来たら、送った command の行き先を _maybe にする。
+        LAG_MARGIN_S（now）の両方がたってから。期限が来たら、送った command の行き先を _maybe にする（前の _maybe に
+        届いて伏せへ移るなら、その伏せ）。
         伏せかもしれない（_maybe）controller には 4 でなく 2 を送る（_next_send）。"""
         if self._sent is not None:
-            cmd, at, expected, at_now = self._sent
+            cmd, at, expected, at_now, sent_from = self._sent
             wait = RESEND_S * 2 ** max(0, self._tries - 1)   # 2.8 → 5.6 → 11.2（遅れを知る前の送り直しを減らす）
             if sim < at + wait - _EPS or now < at_now + LAG_FACTOR * self._lag + LAG_MARGIN_S - _EPS:
                 return None
             self._sent = None
-            if expected != self._conf:
-                # 知らせが落ちた・遅れているだけなら、送った command で controller はもう expected にいる。確かめた状態
-                # のままとは限らないので、次の知らせまで覚えておく（伏せなら 4 を送らず、立ちの error_code も返さない）
+            # 知らせが落ちた・遅れているだけなら、送った command で controller はもう expected にいる。確かめた状態
+            # のままとは限らないので、次の知らせまで覚えておく（伏せなら 4 を送らず、立ちの error_code も返さない）。
+            # controller が前から _maybe にいたなら、command はそこで効く：それで伏せへ移るなら、そちらを覚える
+            via = None if self._maybe is None else _after(self._maybe, cmd)
+            if via in _LYING_STATES:
+                self._maybe = via
+            elif expected != self._conf:
                 self._maybe = expected
             again, base = self._next_send()
             if again is not None:
                 if self._tries >= MAX_SENDS:
-                    self._give_up(f"controller が {self._conf} から切り替わりません"
+                    self._give_up(f"controller が {sent_from} から切り替わりません"
                                   f"（command {cmd} を {MAX_SENDS} 回送りました）")
                     return None
+                where = "切り替わったかもしれないとして" if base == expected else f"{base} から"
                 self._note(f"controller が {expected} に切り替わったことを {wait:g} 秒（シミュレーションの"
-                           f"時間）たっても /rosout で確かめられないので、{base} から command {again} を送り直します")
+                           f"時間）たっても /rosout で確かめられないので、{where} command {again} を送り直します")
         cmd, base = self._next_send()
         if cmd is not None:
             if sim < self._conf_since + HOLD_S.get(self._conf, 0.0) + SETTLE_S - _EPS:
                 return None
-            self._sent = (cmd, sim, _after(base, cmd), now)
+            self._sent = (cmd, sim, _after(base, cmd), now, base)
             self._tries += 1
             self._vel_sent = (0.0, 0.0, 0.0)        # 状態を変える入力は速度 0
             return ControllerInput(cmd)
@@ -469,7 +476,7 @@ class BridgeCore:
         if sent is not None and logged_at is not None and logged_at < sent[3] - _EPS:
             nxt = _after(state, sent[0])               # 送った command は state に届いた
             if nxt is not None:
-                self._sent, self._tries, self._maybe = (sent[0], sent[1], nxt, sent[3]), 1, nxt
+                self._sent, self._tries, self._maybe = (sent[0], sent[1], nxt, sent[3], state), 1, nxt
             self._note(f"command {sent[0]} は、controller が {state} に切り替わった後に届きました（/rosout の知らせが"
                        f" {self._lag:.1f} 秒遅れています）。"
                        + (f"{nxt} に切り替わるのを待ちます" if nxt else f"{state} から続けます"))
@@ -590,13 +597,17 @@ class BridgeCore:
     def _lying(self) -> Optional[str]:
         """知らせ有りで、controller が脱力・伏せにいる（かもしれない）なら、そのわけ（ノートの文）。ほかは None。
         確かめた状態が脱力・伏せのときと、伏せへ移ったかもしれないとき（_maybe。次の知らせまで）と、伏せへの command
-        の知らせを待つ間（StandDown の途中に StandUp が来て、窓口が先に 1002 になっても）。"""
+        の知らせを待つ間（StandDown の途中に StandUp が来て、窓口が先に 1002 になっても。_maybe にいる controller に
+        届けば伏せへ移る command も：立つかもしれない controller に、歩くから 2 を送り直した）。"""
         if self._conf in _LYING_STATES:
             return f"controller が {self._conf} のままな"
         if self._maybe in _LYING_STATES:
             return f"controller は {self._maybe} へ移っているかもしれない"
         if self._sent is not None and self._sent[2] in _LYING_STATES:
             return f"controller は {self._sent[2]} へ移っているかもしれない"
+        via = None if self._sent is None or self._maybe is None else _after(self._maybe, self._sent[0])
+        if via in _LYING_STATES:
+            return f"controller は {via} へ移っているかもしれない"
         return None
 
     # ---- 中身 ----
