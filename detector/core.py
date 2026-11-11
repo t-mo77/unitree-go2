@@ -182,6 +182,7 @@ class DetectorCore:
         self._lock = threading.RLock()
         self._camera = CameraModel.from_hfov()
         self._loaded = False
+        self._loaded_wall: float | None = None
         self._seen = {"odom": False, "cloud": False, "image": False}
         self._last_odom_wall: float | None = None
         self._last_image_wall: float | None = None
@@ -222,8 +223,11 @@ class DetectorCore:
 
     def mark_loaded(self) -> None:
         """The detector is ready (vocabulary set, model and embeddings loaded). The status leaves loading once the
-        first odometry, scan and image have arrived too."""
+        first odometry, scan and image have arrived too, or CAMERA_TIMEOUT_S (wall) after this call at the latest:
+        a sensor still missing then reads no_odometry, no_camera or no_cloud."""
         with self._lock:
+            if not self._loaded:
+                self._loaded_wall = self._wall()
             self._loaded = True
 
     def reset(self, reason: str) -> None:
@@ -426,8 +430,12 @@ class DetectorCore:
             reason = self._reason(now)
             if reason == "no_camera" and (self._camera_warned is None or now - self._camera_warned >= CAMERA_WARN_S):
                 self._camera_warned = now
-                _LOG.warning("no camera image for %.0f s: tracks kept, vacancy runs on the scans",
-                             now - self._last_image_wall)
+                if self._last_image_wall is None:
+                    _LOG.warning("no camera image since the detector loaded %.0f s ago (is front_camera_bridge "
+                                 "running?): tracks kept, vacancy runs on the scans", now - self._loaded_wall)
+                else:
+                    _LOG.warning("no camera image for %.0f s: tracks kept, vacancy runs on the scans",
+                                 now - self._last_image_wall)
             stats = self.tracker.stats()
             lat = sorted(self._latencies)
             p50 = statistics.median(lat) if lat else None
@@ -506,15 +514,17 @@ class DetectorCore:
         return True
 
     def _reason(self, now: float) -> str:
-        if not (self._loaded and all(self._seen.values())):
+        if not self._loaded:
             return "loading"
+        if not all(self._seen.values()) and now - self._loaded_wall <= CAMERA_TIMEOUT_S + _EPS:
+            return "loading"                                 # the first odometry, scan or image is on its way
         if not self._odom_fresh(now):
-            return "no_odometry"
+            return "no_odometry"                             # stale, or never came
         if self._last_image_wall is None or now - self._last_image_wall > CAMERA_TIMEOUT_S + _EPS:
             return "no_camera"
         if self._bad_camera:
             return "bad_camera"
-        if self._no_cloud:
+        if self._no_cloud or not self._seen["cloud"]:
             return "no_cloud"
         if self._error or (self._paused_until is not None and now < self._paused_until - _EPS):
             return "detector_error"
@@ -553,7 +563,8 @@ class DetectorCore:
         return float(h) if h else VACANCY_MIN_HEIGHT
 
     def _vacancy(self) -> None:
-        """Run the vacancy test on the pending still scan once odometry has reached its stamp."""
+        """Run the vacancy test on the pending still scan once odometry has reached its stamp; drop it when the
+        Go2 moved since, or when its stamp has left the pose buffer (an odometry gap), so the next scan can go."""
         pending = self._pending_vacancy
         if pending is None:
             return
@@ -563,7 +574,10 @@ class DetectorCore:
             return
         pose = self._poses.at(t)
         if pose is None:
-            return                                               # wait for odometry
+            latest = self._poses.latest()
+            if latest is not None and latest >= t - 1e-9:
+                self._pending_vacancy = None                     # its poses are gone: it can never be placed
+            return                                               # otherwise wait for odometry
         self._pending_vacancy = None
         self._last_vacancy_wall = self._wall()
         targets = self.tracker.vacancy_targets()

@@ -250,6 +250,33 @@ def test_start_up_gives_empty_lists_with_loading_then_ok_after_the_first_sensors
     assert (core.health()["ok"], core.health()["reason"]) == (True, "ok")
 
 
+def test_a_camera_missing_from_the_start_says_no_camera_after_10_s(caplog):
+    rig = Rig()                                           # loaded; odometry and scans, the camera never comes
+    with caplog.at_level(logging.WARNING, logger="detector.core"):
+        rig.feed(10.0, 10.0 + CAMERA_TIMEOUT_S - 0.1, images=False)
+        assert rig.health()["reason"] == "loading"       # the first image may still be on its way
+        rig.feed(rig.t, 10.0 + CAMERA_TIMEOUT_S + 0.5, images=False)
+        h = rig.health()
+        assert (h["ok"], h["reason"], h["frame_age_s"]) == (False, "no_camera", None)
+        rig.health()
+    warnings = [r.getMessage() for r in caplog.records if "no camera" in r.getMessage()]
+    assert len(warnings) == 1 and "front_camera_bridge" in warnings[0]                 # once a minute
+
+
+@pytest.mark.parametrize("missing, reason", [
+    pytest.param({"odom": False}, "no_odometry", id="odometry"),
+    pytest.param({"clouds": False, "trot": True}, "no_cloud", id="lidar"),   # stepping: no image left unpaired
+])
+def test_a_sensor_missing_from_the_start_ends_loading_after_10_s(missing, reason):
+    rig = Rig()
+    rig.feed(10.0, 10.0 + CAMERA_TIMEOUT_S - 0.1, **missing)
+    assert rig.health()["reason"] == "loading"
+    rig.feed(rig.t, 10.0 + CAMERA_TIMEOUT_S + 0.5, **missing)
+    h = rig.health()
+    assert (h["ok"], h["reason"], h["still"]) == (False, reason, False)
+    assert rig.detector.calls == 0
+
+
 def test_health_has_every_spec_key_plus_filled_shapeless_and_notes():
     rig = confirmed_chair_core()
     h = rig.health()
@@ -321,6 +348,19 @@ def test_a_job_waits_for_odometry_to_reach_both_stamps():
     core.on_odom(10.5, BASE, Q0, ZERO, ZERO)
     job = core.next_job()
     assert job is not None and (job.image_t, job.cloud_t) == (10.5, 10.5)
+
+    rig = Rig()                                           # odometry at the image stamp, short of the scan's
+    core = rig.core
+    rig.feed(10.0, 10.5, clouds=False, images=False, worker=False)
+    core.on_image(10.5, IMAGE)
+    core.on_cloud(10.52, rig.cloud())
+    dropped = core.health()["frames_dropped"]
+    assert core.next_job() is None
+    rig.clocks.advance(PAIR_WAIT_S / 2)
+    assert core.next_job() is None and core.health()["frames_dropped"] == dropped    # it waits, not drops
+    core.on_odom(10.52, BASE, Q0, ZERO, ZERO)
+    job = core.next_job()
+    assert job is not None and (job.image_t, job.cloud_t) == (10.5, 10.52)
 
     rig = Rig()                                           # odometry later than PAIR_WAIT_S: the image is dropped
     core = rig.core
@@ -524,6 +564,32 @@ def test_vacancy_runs_at_most_twice_a_second(monkeypatch):
     rig.feed(121.0, 124.0)
     assert 5 <= len(stamps) <= 7 and all(key == "chair_1" and not vacant for key, vacant, _t in stamps)
     assert all(b - a >= 1.0 / VACANCY_MAX_HZ - 1e-6 for (_k, _v, a), (_k2, _v2, b) in zip(stamps, stamps[1:]))
+
+
+def test_a_vacancy_scan_ahead_of_the_odometry_waits_for_it(monkeypatch):
+    rig = confirmed_chair_core()
+    rig.feed(121.0, 122.0, images=False)
+    stamps = []
+    mark = rig.core.tracker.mark_vacant
+    monkeypatch.setattr(rig.core.tracker, "mark_vacant",
+                        lambda key, vacant, t: (stamps.append(t), mark(key, vacant, t)))
+    rig.clocks.advance(1.0 / VACANCY_MAX_HZ)
+    rig.core.on_cloud(122.05, rig.cloud())                # ahead of the odometry (122.0)
+    rig.core.on_odom(122.04, BASE, Q0, ZERO, ZERO)
+    assert stamps == []
+    rig.core.on_odom(122.06, BASE, Q0, ZERO, ZERO)
+    assert stamps == [122.05]
+
+
+def test_a_pending_vacancy_scan_whose_poses_are_gone_is_dropped():
+    rig = confirmed_chair_core()
+    rig.feed(121.0, 122.0, images=False)
+    rig.clocks.advance(1.0 / VACANCY_MAX_HZ)              # the vacancy rate limit lets the next scan in
+    rig.core.on_cloud(122.05, rig.cloud())                # a still scan ahead of the odometry (122.0): pending
+    rig.clocks.advance(3.0)                               # an odometry gap of 3 s: 122.05 leaves the pose buffer
+    rig.scene = (WALL,)                                   # the chair is taken away; the Go2 still stands
+    rig.feed(125.06, 130.0, images=False)
+    assert rig.ids() == [] and rig.health()["ids_retired"] == 1
 
 
 def test_no_scan_in_the_still_interval_drops_the_image_and_says_no_cloud():
