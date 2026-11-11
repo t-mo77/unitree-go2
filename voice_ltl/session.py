@@ -107,6 +107,9 @@ MSG_POSTURE_UNKNOWN = "Go2 の姿勢がわかりません。リモコンで伏�
 MSG_POSTURE_CHANGED = "姿勢が変わったので止めました"
 MSG_OTHER_SENDERS = "ほかのプログラムが Go2 に指令を送っています。そちらを終了してから指示してください"
 MSG_NO_PATH = MSG_UNSATISFIABLE + NO_PATH_REASON   # R15: an object the plan can never reach
+# O15 (spec §10.5): when MSG_NO_PATH is the reason, the grid is built once more with this margin [cells]
+DETOUR_MARGIN = 3
+SYNTH_BUDGET_S = 20.0   # M6: one synthesis budget [s], shared by the first synthesis and the O15 rebuild
 LOG_LINES = 200
 
 POSTURE_WAIT_S = 3.0   # R27: how long an unknown posture may take to settle before a plan
@@ -588,27 +591,56 @@ class Session:
                     pose: tuple[float, float, float] | None) -> _Outcome | None:
         """The supervisor of tr.formula from `initial`. A formula without object propositions
         runs on go2_world as before; one with them on the grid anchored at `pose` (the Go2 now,
-        R2), with the objects of the Scene frozen for the instruction."""
+        R2), with the objects of the Scene frozen for the instruction. O15: when no path reaches an object
+        (MSG_NO_PATH), the grid is built once more with a DETOUR_MARGIN-cell margin (_detour)."""
         props = formula_object_props(tr.formula)
         gw = None
+        grid_args = ()
+        workdir = self.workdir / f"{gen:04d}"
         try:
             if not props:
                 world = go2_world(initial)
             elif pose is None:
                 return _Outcome(tr, error=MSG_NO_POSE)
             else:
-                gw = grid_world(initial.posture, initial.front, initial.back, pose,
-                                tr.scene.objects if tr.scene else (), formula_atoms(tr.formula))
+                grid_args = (initial.posture, initial.front, initial.back, pose,
+                             tr.scene.objects if tr.scene else (), formula_atoms(tr.formula))
+                gw = grid_world(*grid_args)
                 world = gw.world
             # R13: the formula goes in as it is; the world's forbidden events keep it safe.
-            syn = synthesize(tr.formula, world, self.workdir / f"{gen:04d}")
+            deadline = time.monotonic() + SYNTH_BUDGET_S
+            syn = synthesize(tr.formula, world, workdir, SYNTH_BUDGET_S)
         except (GridError, SpecError) as exc:
             return _Outcome(tr, error=str(exc), grid=gw)
         if self._stale(gen):  # a newer instruction or a stop came during synthesis: no drawing
             return None
         if syn.empty:
-            return _Outcome(tr, syn, initial, self._empty_message(props, gw), grid=gw)
+            message = self._empty_message(props, gw)
+            if message == MSG_NO_PATH:
+                detour = self._detour(tr.formula, grid_args, workdir, deadline)
+                if self._stale(gen):
+                    return None
+                if detour is not None:
+                    return _Outcome(tr, detour[1], initial, grid=detour[0])
+            return _Outcome(tr, syn, initial, message, grid=gw)
         return _Outcome(tr, syn, initial, grid=gw)
+
+    @staticmethod
+    def _detour(formula: str, grid_args: tuple, workdir: Path,
+                deadline: float) -> tuple[GridWorld, Synthesis] | None:
+        """O15 (spec §10.5): the grid of grid_args once more with a DETOUR_MARGIN-cell margin, and its supervisor in
+        the time left until `deadline` (M6: one budget for both). None when that grid cannot be built (over
+        MAX_CELLS), no time is left, synthesis fails or the supervisor is empty again: the caller then keeps
+        MSG_NO_PATH and the 1-cell grid."""
+        try:
+            gw = grid_world(*grid_args, margin=DETOUR_MARGIN)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            syn = synthesize(formula, gw.world, workdir, left)
+        except (GridError, SpecError):
+            return None
+        return None if syn.empty else (gw, syn)
 
     @staticmethod
     def _empty_message(props: frozenset[str], gw: GridWorld | None) -> str:
