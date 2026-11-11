@@ -18,8 +18,9 @@ from starlette.testclient import WebSocketDenialResponse
 import voice_ltl.server as server
 from sim.sim_core import SimGo2
 from voice_ltl.llm import MSG_LOGIN, FakeLLM
-from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON,
-                               msg_ambiguous, msg_not_found, msg_too_far, snapshot_rows)
+from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, MSG_TOO_SPREAD, NO_PATH_REASON, Obj,
+                               msg_ambiguous, msg_lap_too_big, msg_not_found, msg_not_listed, msg_too_big_here,
+                               msg_too_far, snapshot_rows)
 from voice_ltl.server import control_loop, create_app
 from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
                                MSG_POSTURE_CHANGED, MSG_POSTURE_UNKNOWN,
@@ -458,6 +459,10 @@ NOTICE_KINDS = [
     ("error", MSG_UNSATISFIABLE + NO_PATH_REASON, "unsat"),                               # R15
     ("error", msg_not_found("box"), "error"), ("error", msg_too_far("chair"), "error"),
     ("error", msg_ambiguous("box", 2), "error"),
+    # every vocabulary kind (spec §9.9): the new and the changed messages are errors too
+    ("error", msg_not_listed("box"), "error"), ("error", msg_not_found("potted_plant"), "error"),
+    ("error", msg_not_found("table", "机"), "error"), ("error", msg_ambiguous("box", 2, ("左前", "右前")), "error"),
+    ("error", msg_lap_too_big("sofa"), "error"), ("error", msg_too_big_here("bed"), "error"),
     ("idle", "", None),
     ("executing", "", None),
 ]
@@ -731,14 +736,17 @@ GRID = {"cell": 0.5, "origin": [0, 0], "yaw": 0, "i": [-1, 10], "j": [-2, 8],
 PLAN_CELLS = [[1, 0, 0], [2, 0, 0], [3, 0, 0]]
 
 # A 480 x 320 canvas whose 2D context records each call, with the style it was made in, in
-# `ops`; save/restore keep the style as a canvas does. A colour is its token's name.
+# `ops`; save/restore keep the style as a canvas does. A colour is its token's name. measureText
+# is `measure` (not recorded): 11 px a character; a test may set it to give no width.
 CANVAS = r"""
 const ops = [], saved = [];
 const pen = { fillStyle: "", strokeStyle: "", lineWidth: 1, globalAlpha: 1, dash: [] };
 const style = () => ({ fill: pen.fillStyle, stroke: pen.strokeStyle, width: pen.lineWidth,
                        alpha: pen.globalAlpha, dash: pen.dash });
+let measure = (text) => ({ width: 11 * [...text].length });   // 11 px a character, as the 11 px font
 const rec = new Proxy(pen, {
   get: (t, k) => k in t ? t[k]
+    : k === "measureText" ? (text) => measure(text)
     : k === "setLineDash" ? (d) => { t.dash = d; }
     : k === "save" ? () => { saved.push({ ...t }); }
     : k === "restore" ? () => { Object.assign(t, saved.pop()); }
@@ -757,6 +765,137 @@ def test_page_lists_only_visible_objects(tmp_path):
     r = run_page("render(snap); [objectsLine(objs), objectsLine([]), byId['objects-seen'].textContent]",
                  objs=[BOX, CHAIR], snap=snap)
     assert r == ["見えている物：箱（左前 2.9 m）", "見えている物：なし", "見えている物：箱（左前 2.9 m）"]
+
+
+# The trial scene KINDS (spec §9.1, §9.10): the default layout, a plant on the left and a bin on the right.
+PLANT = Obj("potted_plant_1", "potted_plant", 0.0, 3.0, (0.4, 0.4))
+BIN = Obj("trash_can_1", "trash_can", 0.0, -3.0, (0.3, 0.3))
+SEEN_KINDS = "見えている物：箱（左前 2.9 m）、椅子（右前 2.9 m）、観葉植物（左 3.0 m）、ゴミ箱（右 3.0 m）"
+
+
+@needs_node
+def test_objects_line_sorts_by_distance_and_caps_at_8(tmp_path):
+    box, chair = DEFAULT_LAYOUT
+    shuffled = [PLANT, box, BIN, chair]                       # not in distance order; ties keep this order
+    kinds, kinds_no_pose = snapshot_rows(shuffled, (0.0, 0.0, 0.0)), snapshot_rows(shuffled, None)
+    # ten seen rows 1 .. 10 m ahead, farthest first, and two not seen now that are nearer than all
+    labels = ["box", "chair", "potted_plant", "trash_can", "stool", "fan", "lamp", "bucket", "ball", "guitar"]
+    ten = [Obj(f"{label}_1", label, float(k), 0.0, (0.3, 0.3)) for k, label in enumerate(labels, 1)]
+    hidden = [Obj("bag_1", "bag", 0.5, 0.0, (0.4, 0.2), visible=False),
+              Obj("bag_2", "bag", 0.2, 0.0, (0.4, 0.2), visible=False)]
+    many = snapshot_rows(ten[::-1] + hidden, (0.0, 0.0, 0.0))
+    snap = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=kinds)
+    r = run_page("render(snap); const p = [0, 0, 0];"
+                 " [byId['objects-seen'].textContent, objectsLine(kinds, p), objectsLine(kinds),"
+                 "  objectsLine(kindsNoPose, null), objectsLine(many, p), objectsLine(many.slice(1), p),"
+                 "  objectsLine(many.slice(2), p), objectsLine(many.slice(10), p)]",
+                 snap=snap, kinds=kinds, kindsNoPose=kinds_no_pose, many=many)
+    first8 = "、".join(f"{name}（前 {k}.0 m）" for k, name in enumerate(
+        ["箱", "椅子", "観葉植物", "ゴミ箱", "スツール", "扇風機", "ランプ", "バケツ"], 1))
+    assert r[0] == SEEN_KINDS                   # the page passes the snapshot's pose
+    assert r[1] == SEEN_KINDS
+    assert r[2] == "見えている物：観葉植物（左 3.0 m）、箱（左前 2.9 m）、ゴミ箱（右 3.0 m）、椅子（右前 2.9 m）"
+    assert r[3] == "見えている物：観葉植物、箱、ゴミ箱、椅子"   # no pose: the snapshot's order, no where
+    assert r[4] == f"見えている物：{first8}、ほか 2 個"
+    assert r[5] == f"見えている物：{first8}、ほか 1 個"
+    assert r[6] == f"見えている物：{first8}"
+    assert r[7] == "見えている物：なし"              # only the two not seen now
+
+
+WATER = Obj("water_dispenser_1", "water_dispenser", 2.0, 0.0, (0.35, 0.35))
+
+
+@needs_node
+def test_map_clips_long_names(tmp_path):
+    """A name on the top view is clipped to max(its rectangle + 16, 48) px with 「…」 (spec §9.10);
+    the aria label and the line keep the whole name."""
+    alone = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=snapshot_rows([WATER], (0.0, 0.0, 0.0)))
+    both = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0],
+                         objects=snapshot_rows([WATER, DEFAULT_LAYOUT[1]], (0.0, 0.0, 0.0)))
+    r = run_page(CANVAS + """
+      const draw = (s) => { ops.length = 0; delete shown.map; render(s); const v = mapView(s, 480, 320);
+        return { texts: ops.filter(([k]) => k === "fillText").map((o) => o[1]).slice(0, s.objects.length),
+                 limits: s.objects.map((o) => Math.max(o.size[0] * v.scale + 16, 48)),
+                 label: byId.map["aria-label"], line: byId["objects-seen"].textContent }; };
+      const px11 = { measureText: (t) => ({ width: 11 * [...t].length }) };
+      [draw(alone), draw(both),
+       [clipText(px11, "ウォーターサーバー", 99), clipText(px11, "ウォーターサーバー", 98), clipText(px11, "箱", 48),
+        clipText({ measureText: () => undefined }, "ウォーターサーバー", 10)]];
+    """, alone=alone, both=both)
+    full = "ウォーターサーバー"
+    a, b, clips = r
+    assert a["texts"] == ["ウォーター…"] and a["limits"][0] == pytest.approx(0.35 * 150 + 16)
+    for text, limit in zip(a["texts"] + b["texts"][:1], a["limits"] + b["limits"][:1]):
+        assert text.endswith("…") and full.startswith(text[:-1])
+        assert 11 * len(text) <= limit < 11 * (len(text) + 1)        # the longest prefix that fits
+    assert b["texts"][0] != a["texts"][0] and b["texts"][1] == "椅子"   # a smaller view, a shorter name
+    assert a["label"] == "上から見た図：ウォーターサーバー 1 個"
+    assert b["label"] == "上から見た図：ウォーターサーバー 1 個、椅子 1 個"
+    assert a["line"] == "見えている物：ウォーターサーバー（前 2.0 m）"
+    assert clips == [full, "ウォーターサー…", "箱", full]
+
+
+@needs_node
+def test_map_new_kinds_use_obj_colours(tmp_path):
+    box = DEFAULT_LAYOUT[0]
+    snaps = [page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=snapshot_rows([o], (0.0, 0.0, 0.0)))
+             for o in (PLANT, box, BIN)]
+    r = run_page(CANVAS + """
+      const last = (o) => o[o.length - 1];
+      const paint = (s) => { ops.length = 0; drawMap(s);
+        return [ops.filter(([k]) => k === "fill").map((o) => last(o).fill),
+                ops.filter(([k]) => k === "stroke").map((o) => last(o).stroke)]; };
+      [snaps.map(paint), ["box", "potted_plant", "trash_can", "no_such_kind"].map((label) => objectStyle({ label }))];
+    """, snaps=snaps)
+    (plant, boxed, bin_), styles = r
+    for fills, strokes in (plant, bin_):          # ゴミ箱 holds 箱 but is not a box
+        assert "--obj-fill" in fills and "--obj-line" in strokes
+        assert "--box-fill" not in fills and "--box-line" not in strokes
+    assert "--box-fill" in boxed[0] and "--box-line" in boxed[1]
+    assert "--obj-fill" not in boxed[0] and "--obj-line" not in boxed[1]
+    obj = {"fill": "--obj-fill", "line": "--obj-line"}
+    assert styles == [{"fill": "--box-fill", "line": "--box-line"}, obj, obj, obj]
+
+
+@needs_node
+def test_page_name_falls_back_to_the_label(tmp_path):
+    row = {k: v for k, v in snapshot_rows([PLANT], (0.0, 0.0, 0.0))[0].items() if k != "name"}
+    snap = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=[row])
+    r = run_page(CANVAS + """
+      measure = () => undefined;              // a canvas that gives no width: nothing is clipped
+      render(snap);
+      [ops.filter(([k]) => k === "fillText").map((o) => o[1])[0], byId.map["aria-label"],
+       byId["objects-seen"].textContent, objectName(row), objectName({ ...row, name: "" }),
+       objectName({ ...row, name: "観葉植物" })];
+    """, snap=snap, row=row)
+    assert r == ["potted plant", "上から見た図：potted plant 1 個", "見えている物：potted plant（左 3.0 m）",
+                 "potted plant", "potted plant", "観葉植物"]
+
+
+@needs_node
+def test_page_never_shows_source_or_confidence(tmp_path):
+    """O23: a detector's row carries confidence and measured, its message a source; the page
+    draws and writes exactly what it does for the same rows without them."""
+    box = DEFAULT_LAYOUT[0]
+    plain = snapshot_rows([PLANT, box], (0.0, 0.0, 0.0))
+    detected = snapshot_rows([dataclasses.replace(PLANT, confidence=0.87, measured=False),
+                              dataclasses.replace(box, confidence=0.42, measured=True)], (0.0, 0.0, 0.0))
+    assert detected[0]["confidence"] == 0.87 and detected[0]["measured"] is False   # the rows carry them
+    a = page_snapshot(tmp_path, pose=[0.0, 0.0, 0.0], objects=plain)
+    b = {**a, "objects": detected, "source": "detector"}
+    r = run_page(CANVAS + """
+      const fresh = { ...pen, dash: [] };       // each draw starts from the same pen
+      const seen = (s) => { ops.length = 0; Object.assign(pen, fresh); delete shown.map; render(s);
+        return { ops: JSON.stringify(ops), texts: ops.filter(([k]) => k === "fillText").map((o) => o[1]),
+                 label: byId.map["aria-label"], line: byId["objects-seen"].textContent,
+                 lines: [objectsLine(s.objects, s.pose), objectsLine(s.objects)] }; };
+      [seen(a), seen(b)];
+    """, a=a, b=b)
+    assert r[0] == r[1]
+    shown_text = json.dumps(r[1], ensure_ascii=False)
+    for word in ("0.87", "0.42", "detector", "measured", "confidence", "true", "false"):
+        assert word not in json.dumps([r[1]["texts"], r[1]["label"], r[1]["line"], r[1]["lines"]]), word
+    assert "観葉植物" in shown_text and r[1]["line"] == "見えている物：箱（左前 2.9 m）、観葉植物（左 3.0 m）"
 
 
 @needs_node
