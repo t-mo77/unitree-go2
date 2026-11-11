@@ -14,7 +14,7 @@
 -->
 <robot name="go2" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- robot.xacro より先に決めた値が使われる -->
-  <xacro:arg name="GAZEBO" default="true"/>
+  <xacro:arg name="GAZEBO" default="true"/><xacro:arg name="camera" default="false"/>
   <xacro:include filename="$(find go2_description)/xacro/robot.xacro"/>
 
   <joint name="utlidar_joint" type="fixed">
@@ -83,7 +83,33 @@
       <visualize>false</visualize>
       <topic>gazebo/logical_camera</topic>
     </sensor>
-  </gazebo>
+  </gazebo><xacro:if value="$(arg camera)">
+
+  <!-- 描くカメラ front_camera。OBJECTS_SOURCE=detector の launch だけが camera:=true にする（gazebo/launch_config.py）。
+       絵は front_camera_bridge が /gazebo/front_camera/image と camera_info に渡し、検出器（detector/）が使う。
+       logical camera と同じ link なので、位置と向きも同じ（新しい joint は作らない）。
+       数は D7 の判断（spec §11.4）：640×480・R8G8B8・水平 120 度（縦は約 105 度）・2 Hz（シミュレーションの時間）・
+       周期で出す（トリガーなし）・0.1〜10 m（LiDAR の届く距離）・ノイズなし。detector/camera.py の CAMERA_* と同じ
+       （tests/test_gazebo_camera.py が合わせる）。frame front_camera は x 前・y 左・z 上（ROS の光学の向きではない）。
+       gz_frame_id は SDF にない要素なので起動のときに警告が出るが、効く（LiDAR と同じ）。
+       camera 引数（GAZEBO と同じ行）とこの xacro:if は、前後に空白もコメントも足さずに置き、コメントはこの中にだけ
+       書く。xacro は外した要素の前後の空白を出力に残し、コメントも（xacro の要素のすぐ前のものを除いて）残すので、
+       こうすると camera が false のときの出力（ロボットの記述）が 0f6e06a とバイト単位で同じになる（spec §2 の 7）。 -->
+  <gazebo reference="logical_camera">
+    <sensor name="front_camera" type="camera">
+      <camera>
+        <horizontal_fov>2.094</horizontal_fov>
+        <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+        <clip><near>0.1</near><far>10</far></clip>
+        <camera_info_topic>gazebo/front_camera/camera_info</camera_info_topic>
+      </camera>
+      <always_on>true</always_on>
+      <update_rate>2</update_rate>
+      <visualize>false</visualize>
+      <topic>gazebo/front_camera/image</topic>
+      <gz_frame_id>front_camera</gz_frame_id>
+    </sensor>
+  </gazebo></xacro:if>
 
   <gazebo>
     <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
