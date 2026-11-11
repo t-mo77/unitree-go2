@@ -325,6 +325,6 @@ def test_an_object_arriving_while_waiting_is_taken(fake_ros, clock, capsys):
 
 
 def test_an_unknown_object_proposition_is_still_checked(fake_ros, capsys):
-    assert main(["F near_table_1"]) == 1                 # not an object proposition: not in the vocabulary
+    assert main(["F near_person_1"]) == 1                # not an object proposition: not in the vocabulary
     assert "式が文法か単語帳に合いません" in capsys.readouterr().out
     assert fake_ros.made == []

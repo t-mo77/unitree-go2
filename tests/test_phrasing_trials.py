@@ -111,7 +111,7 @@ def test_every_reference_formula_passes_the_check_and_has_a_plan(tmp_path):
 def test_run_groups_counts_per_group(tmp_path):
     groups = {"near": [("椅子まで歩いて", SCENE, "F near_chair_1", None),
                        ("いすまで行って", SCENE, "F near_chair_1", None)],
-              "refusals": [("机まで行って", SCENE, None, "単語帳にない")]}
+              "refusals": [("机まで行って", SCENE, None, "見つかりません")]}   # 机 is the vocabulary's desk
     llm = FakeLLM([{"formula": "F near_chair_1", "unsupported": []},
                    {"formula": "F near_box_1", "unsupported": []},
                    {"formula": None, "unsupported": ["机"]}])
