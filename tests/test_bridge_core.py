@@ -8,10 +8,11 @@ import pytest
 from go2_nl_control.actions import (BALANCE_STAND, HELLO, LYING, MOVE, RISE_SIT, SIT, SITTING,
                                     STAND_DOWN, STAND_UP, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
-from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, GROUND_Z, LIDAR_IN_BODY, RELEASE_ACC,
-                                STAND_CMD, TROT_CMD, TROT_REPORT_LATE_S, TROT_WAIT_S, UPRIGHT_Z,
-                                V_X_MAX, V_Y_MAX, W_Z_MAX, BoxWorld, BridgeCore,
-                                drop_ground_and_self_points, drop_self_points, move_input)
+from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, FIXED_DOWN, FIXED_STAND, GROUND_Z,
+                                LIDAR_IN_BODY, PASSIVE, RELEASE_ACC, STAND_CMD, TROT_CMD,
+                                TROT_REPORT_LATE_S, TROT_WAIT_S, TROTTING, UPRIGHT_Z, V_X_MAX, V_Y_MAX,
+                                W_Z_MAX, BoxWorld, BridgeCore, drop_ground_and_self_points,
+                                drop_self_points, move_input)
 from sim.sim_core import FOOTPRINT
 from voice_ltl.grid_executor import GRID_EXEC_CONFIG
 
@@ -441,3 +442,141 @@ def test_boxes_follow_heading_and_collision():
     assert w.world(1.0, 2.0) == {"boxes": [[1.0, 3.2, 0.3]], "collided": False}
     assert w.world(1.0, 3.2 - 0.15 - FOOTPRINT + 0.01)["collided"] is True
     assert w.clear() == [name] and w.world(1.0, 3.0) == {"boxes": [], "collided": False}
+
+
+# ---- controller の状態の切り替え（2026-11-11：「立って」が終わったのに伏せたまま） ----
+CYCLE = 0.005                                   # controller の 1 周期（シミュレーションの時間）
+_FSM = {PASSIVE: {2: FIXED_DOWN},               # 各状態の checkChange（unitree_guide controller）
+        FIXED_DOWN: {1: PASSIVE, 2: FIXED_STAND},
+        FIXED_STAND: {1: PASSIVE, 2: FIXED_DOWN, 4: TROTTING},
+        TROTTING: {1: PASSIVE, 2: FIXED_STAND}}
+
+
+class FakeController:
+    """unitree_guide controller の状態の切り替えだけの真似（UnitreeGuideController::update と各状態の checkChange）。
+
+    - /control_input の command は次の通が来るまで残り、状態に入る（enter）と 0 に戻る。
+    - 伏せ・立つは、入って hold 秒（既定 1.8 = percent 1.5 × 1.2 秒）たつまで次へ行かない。その後も、
+      伏せは 1・2 のほか（4 も）無視する。
+    - 切り替える周期に "Switched from a to b" を出し（report_delay 秒後に橋渡しへ届く）、次の周期に enter する。
+    - lose_input(n)：n 通目（0 から）の入力が届かない。lose_report(k)：k 個目の切り替えの知らせが届かない。"""
+
+    def __init__(self, hold=None, report_delay=0.0, lose_input=lambda n: False,
+                 lose_report=lambda k: False, state=PASSIVE, command=0, entered=0.0):
+        self.hold = {FIXED_DOWN: 1.8, FIXED_STAND: 1.8, **(hold or {})}
+        self.report_delay, self.lose_input, self.lose_report = report_delay, lose_input, lose_report
+        self.state, self.command, self.entered = state, command, entered
+        self.t = 0.0
+        self.switches = []      # (t, a, b)
+        self.inputs = []        # 送られた入力（届かなかったものも）(t, ControllerInput)
+        self._next = None
+        self._reports = []      # (橋渡しに届く t, a, b)
+
+    def receive(self, i, t):
+        n = len(self.inputs)
+        self.inputs.append((t, i))
+        if not self.lose_input(n):
+            self.command = i.command
+
+    def advance(self, t):
+        while self.t + CYCLE <= t + 1e-9:
+            self.t = round(self.t + CYCLE, 6)
+            if self._next is not None:                       # exit → enter（command は 0 に戻る）
+                self.state, self._next = self._next, None
+                self.entered, self.command = self.t, 0
+                continue
+            held = self.t - self.entered >= self.hold.get(self.state, 0.0) - 1e-9
+            nxt = _FSM[self.state].get(self.command, self.state) if held else self.state
+            if nxt != self.state:                            # ログを出すのは enter の 1 周期前
+                self._next = nxt
+                if not self.lose_report(len(self.switches)):
+                    self._reports.append((self.t + self.report_delay, self.state, nxt))
+                self.switches.append((self.t, self.state, nxt))
+
+    def reports(self, t):
+        due = [(a, b) for at, a, b in self._reports if at <= t + 1e-9]
+        self._reports = [r for r in self._reports if r[0] > t + 1e-9]
+        return due
+
+    def entered_at(self, state):
+        """最後に state へ切り替わった時刻（ログを出した周期、sim）。"""
+        return max(t for t, _, b in self.switches if b == state)
+
+
+class Rig:
+    """BridgeCore と FakeController を、橋渡しのノードと同じく 20 Hz（実際の時間）で回す。
+    clock：実際の時間 → シミュレーションの時間。reports：controller の切り替えを橋渡しに知らせる
+    （ノードは /rosout で知る）。"""
+
+    def __init__(self, ctl=None, reports=True, clock=lambda t: t):
+        self.ctl = ctl or FakeController()
+        self.clock, self.reports = clock, reports
+        self.b = (BridgeCore(0.0, clock(0.0), reports_switches=True) if reports
+                  else BridgeCore(0.0, clock(0.0)))
+        self.t = 0.0
+        self.sent = []          # 橋渡しが送った (t, 入力, そのときの controller の本当の状態)
+        self.trace = []         # 毎周期の (t, error_code, controller の本当の状態)
+
+    def run(self, until, api=(), move=None):
+        """api：[(実際の時刻, api_id)]。move：(始め, 終わり, parameter)。Move はアプリと同じく 10 Hz で送り直す。"""
+        api = {round(t, 3): a for t, a in api}
+        while self.t <= until + 1e-9:
+            t, s = self.t, self.clock(self.t)
+            self.ctl.advance(s)
+            for a, b in self.ctl.reports(s):
+                if self.reports:
+                    self.b.controller_switched(b, s, from_state=a)
+            if t in api:
+                self.b.handle(api[t], "", t, s)
+            if move is not None and move[0] - 1e-9 <= t <= move[1] + 1e-9 and round(t * 20) % 2 == 0:
+                self.b.handle(MOVE, move[2], t, s)
+            i = self.b.step(t, s)
+            if i is not None:
+                self.sent.append((t, i, self.ctl.state))
+                self.ctl.receive(i, s)
+            self.trace.append((t, self.b.error_code, self.ctl.state))
+            self.t = round(t + 0.05, 3)
+        return self
+
+    def commands(self):
+        """速度 0 の入力（状態を変える command と、止める入力）の (t, command)。"""
+        return [(t, i.command) for t, i, _ in self.sent if (i.lx, i.ly, i.rx) == (0.0, 0.0, 0.0)]
+
+    def first_velocity(self):
+        """速度を入れた最初の入力の時刻（実際の時間）。"""
+        return next(t for t, i, _ in self.sent if (i.lx, i.ly, i.rx) != (0.0, 0.0, 0.0))
+
+    def code_at(self, t):
+        return next(c for at, c, _ in self.trace if abs(at - t) < 1e-9)
+
+
+def stuck(rig: Rig) -> bool:
+    """2026-11-11 の Gazebo：controller は伏せ（fixed down）で、残っている command が 4（伏せは無視し続ける）。"""
+    return rig.ctl.state == FIXED_DOWN and rig.ctl.command == TROT_CMD
+
+
+SLOW = [   # (clock, BalanceStand の時刻)。どちらも controller の伏せが 2.4 秒（見積もりは 1.8 秒）かかる
+    pytest.param(lambda t: t, 2.1, id="rtf1"),
+    pytest.param(lambda t: t / 2, 3.0, id="rtf0.5-app"),   # アプリと同じく StandUp の 3 秒後（実際の時間）
+]
+
+
+def test_fake_controller_agrees_with_the_estimate():
+    """FakeController は、見積もり（伏せ 1.8 秒 + 立つ 1.8 秒）どおりの controller なら 3.6 秒で歩くに入る。"""
+    rig = Rig(reports=False).run(5.0, api=[(0.0, STAND_UP), (2.1, BALANCE_STAND)])
+    assert rig.commands() == [(0.0, STAND_CMD), (0.2, STAND_CMD), (2.1, TROT_CMD)]
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert rig.ctl.entered_at(TROTTING) == pytest.approx(3.6, abs=0.02)
+
+
+@pytest.mark.parametrize("clock,balance_at", SLOW)
+def test_open_loop_sequencing_leaves_a_slow_controller_lying(clock, balance_at):
+    """知らせ無し（テストと偽の道）は今までどおり見積もりで送る：2・2 の後、伏せの 1.8 秒 + 0.2 秒で 4。
+    controller の伏せが 2.4 秒かかると、4 が残っていた 2 を上書きし、controller は伏せのまま 4 を無視し続ける
+    （2026-11-11 の件）。窓口は立って歩けるつもり（1013）のまま。"""
+    rig = Rig(FakeController(hold={FIXED_DOWN: 2.4}), reports=False, clock=clock)
+    rig.run(12.0, api=[(0.0, STAND_UP), (balance_at, BALANCE_STAND)])
+    assert [(clock(t), c) for t, c in rig.commands()] == pytest.approx(
+        [(0.0, STAND_CMD), (0.2, STAND_CMD), (max(clock(balance_at), 2.0), TROT_CMD)])
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN]
+    assert stuck(rig) and rig.b.error_code == 1013
