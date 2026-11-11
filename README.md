@@ -2,6 +2,25 @@
 
 声で話しかけると、Claude（または Codex）が指示を LTL の式に翻訳し、オートマトンと監督制御が「安全に実行できる動作の列」を計算して、Unitree Go2（今はシミュレーション）を動かします。設計は [docs/design.md](docs/design.md) を見てください。
 
+## 目次
+
+- [1. これは何か](#1-これは何か)
+- [2. 準備（Mac）](#2-準備mac)
+- [3. 使い方](#3-使い方)（[Gazebo で動かす](#gazebo-で動かす)）
+- [4. 話せること](#4-話せること)
+- [5. 単語帳と状態遷移図の足し方](#5-単語帳と状態遷移図の足し方)
+- [6. 実機の Go2 を有線でつなぐ](#6-実機の-go2-を有線でつなぐ)
+  - [6.1 用意するもの](#61-用意するもの)
+  - [6.2 今ある Linux の PC で確かめること](#62-今ある-linux-の-pc-で確かめること)
+  - [6.3 PC の有線の設定](#63-pc-の有線の設定)
+  - [6.4 アプリを PC で用意する](#64-アプリを-pc-で用意する)
+  - [6.5 DDS の設定（コンテナが決めます）](#65-dds-の設定コンテナが決めます)
+  - [6.6 動かす前の確かめ（この順に）](#66-動かす前の確かめこの順に)
+  - [6.7 安全の注意](#67-安全の注意)
+  - [6.8 困ったとき](#68-困ったとき)
+- [7. テスト](#7-テスト)
+- [8. わかっていないこと](#8-わかっていないこと)
+
 ## 1. これは何か
 
 Cay 先生の講義「自然言語の指示を、安全が保証されたロボットの行動に変える」の考え方を、Go2 で動く形にしたものです（設計書 §1）。
@@ -9,7 +28,7 @@ Cay 先生の講義「自然言語の指示を、安全が保証されたロボ�
 - LLM に任せるのは「言葉 → 形式仕様（LTL）」の翻訳だけです。
 - 正しさと安全は、オートマトンと監督制御の計算で守ります。式が変わっても、プログラムは書き換えません。
 - 先に用意するのは「Go2 の状態遷移図」と「ロジックの単語帳・文法」の 2 つです。この範囲内なら任意の指示ができます。
-- 最終的には、このフォルダごと Go2 と有線でつないだ Linux PC に移して、実機を動かします（§6）。
+- 最終的には、このフォルダごと Go2 と有線でつないだ Linux PC に移して、実機を動かします（§6。Mac からは実機につながりません）。
 
 ```
  声 ─▶ 書き起こし ─▶ LLM が LTL に翻訳 ─▶ check()（文法と単語帳）
@@ -268,30 +287,161 @@ Gazebo のログには、ふりのとき「（Gazebo では伏せで代用）」
 - 前進・後退のほかに体が動く動作（例：`actions.py` の横歩き `left`・`right`）は、その向きの障害物を見張りません。LiDAR の判定は前方と後方だけです。
 - 式が変わるだけで、meet → trim → 監督器（supcon）→ 計画は自動で計算されます。足したらテスト（§7）を流してください。
 
-## 6. Linux PC へ移す（設計書 §10）
+## 6. 実機の Go2 を有線でつなぐ
 
-移す先は画面つきの Ubuntu PC（22.04 想定）です。その PC のブラウザとマイクで操作します（`http://localhost:8810` で開くので、`localhost` のままマイクの許可が使えます）。
+実機の Go2 と、もう Linux が入っている PC を LAN ケーブルでつなぎ、このアプリで動かす手順です（設計書 §10）。その PC のブラウザとマイクで操作します（`http://localhost:8810` で開くので、`localhost` のままマイクの許可が使えます）。
 
-1. **フォルダをコピー**します（`env.txt` も自分でコピー、または作り直します）。
-2. **有線の設定：** PC の有線ポートを `192.168.123.x` に固定します。ただし Go2 本体が使う `192.168.123.161` は使いません（例：`192.168.123.99/24`）。
-3. **有線と Wi-Fi の両方を使う：** Go2 とは有線、LLM を呼ぶインターネットは Wi-Fi など別の経路にします。有線側にデフォルトゲートウェイを付けないでください。
-4. **つながったか確かめる：**
+**この手順は、まだ実機で通していません。** コマンドと設定は、このリポジトリのコードと Unitree の公式の資料（各所にリンク）で確かめたものです。実機で確かめていないことには「（実機で未確認）」と書きます。
+
+> **Mac からは実機につながりません。** Go2 とは DDS（CycloneDDS）で話し、DDS は相手を UDP のマルチキャストで見つけます。Mac の Docker Desktop はコンテナを Linux の VM の中で動かします。`network_mode: host` にしても TCP・UDP の層でつなぐだけで、コンテナは Mac の差し口に直接は届きません（Docker の [Host network driver](https://docs.docker.com/engine/network/drivers/host/#docker-desktop) の Limitations）。そのため Go2 のマルチキャストがコンテナに届かず、Go2 が見つかりません。Unitree も Mac・Windows での開発には対応していません（[Quick Start](https://support.unitree.com/home/en/developer/Quick_start)）。Mac では偽の Go2 と Gazebo を使い、実機は Linux の PC で動かします。
+
+### 6.1 用意するもの
+
+| もの | 内容 |
+|---|---|
+| Go2 | **Go2 EDU**。公式の機種表では、二次開発ができるのは EDU だけで、Ethernet（RJ45）の差し口も EDU にしかありません（AIR・PRO には無い。[About Go2](https://support.unitree.com/home/en/developer/about_Go2)）。 |
+| Go2 のソフトの版 | Unitree のアプリで確かめて、書き留めます。V1.1.6 で運動の窓口が改められました（[Motion Services Interface V2.0](https://support.unitree.com/home/en/developer/Motion_Services_Interface_V2.0)。V1.1.6 より前は [High-Level Motion Service](https://support.unitree.com/home/en/developer/sports_services)）。V2.0 の文書にも、このアプリが使う動作（Damp・StandUp・StandDown・BalanceStand・StopMove・Move・Sit・RiseSit・Hello・Stretch・Content・Heart・Scrape・Dance1）と、姿勢の `error_code` の表が載っています。`api_id` の番号は V2.0 の文書には無く、公式 `unitree_sdk2_python` の `sport_api.py` と同じ番号を使っています。どの版で動くかは実機で未確認です。 |
+| PC | 画面つきの、もう Linux が入っている PC（x86_64 か arm64）。アプリはコンテナの中の Ubuntu 22.04 + ROS 2 Humble で動くので、PC の Linux が 22.04 でなくても、PC に ROS 2 が入っていなくても動きます（PC に ROS 2 があるときの注意は §6.2 の 2）。要るのは Docker Engine（§6.2）・ブラウザ・マイク・インターネット（LLM を呼ぶため。Wi-Fi など、有線とは別の経路）と、有線の差し口です。 |
+| LAN ケーブル | 1 本。PC に有線の差し口が無ければ USB の有線 LAN アダプター（名前は `enx…` のようになります。公式 Quick Start の例もこれです）。 |
+| Unitree のリモコン | 必ず手に持ちます（§6.7）。 |
+
+### 6.2 今ある Linux の PC で確かめること
+
+PC にもう入っているものを使います。入れ直したり、消したりはしません。
+
+1. **Docker Engine：**
 
    ```bash
-   ping 192.168.123.161
+   docker version
+   docker compose version
+   docker context show
    ```
-5. **`env.txt` の `GO2_IFACE`** に、有線の差し口の名前（`ip a` で確認。例：`enp3s0`）を書きます。
 
-最初に歩かせる前に、手順 6〜8 で実機の値を確かめます。どれもサーバーを起動する前に、同じイメージのコンテナを 1 回だけ起動して実行します。Go2 には何も送りません。
+   - `docker context show` が `default` なら Docker Engine です。`desktop-linux` なら Docker Desktop で、Linux 版も VM の中でコンテナを動かすので、`network_mode: host` でも PC の差し口が見えません（[Docker の説明](https://docs.docker.com/desktop/setup/install/linux/)）。`docker context use default` で Docker Engine に切り替えます（Docker Engine が入っていなければ、次の手順で入れます）。
+   - Docker が無ければ、公式の [Install Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/)（ほかの distro は同じ場所の各ページ）で入れます。`sudo` なしで使うには [Linux post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/) に従います。
+2. **PC の ROS 2（入っていれば）：** コンテナは PC の `~/.bashrc` の `source /opt/ros/...`・`ROS_DOMAIN_ID`・`CYCLONEDDS_URI` を読みません（`compose.robot.yaml` が渡すのは `env.txt` と `SIM=0` だけ）。ただし `network_mode: host` なので、PC で動いている ROS 2 のノード（Unitree の例の `sport_mode_ctrl` など）は、同じ DDS の相手として見えます。`/api/sport/request` に送るプログラムが PC で動いていると、サーバーは起動を断ります。動かす前に止めておきます。
+3. **有線の設定がもうあるか：** 前に Unitree の手順で Go2 とつないだことがある PC なら、§6.3 の設定がもうあるかもしれません。§6.3 の手順 4 で確かめて、合っていれば作り直しません。
 
-6. **実機とつながったか確かめる：**
+### 6.3 PC の有線の設定
+
+Go2 の中の計算機は `192.168.123.161` です。PC の有線の差し口を、同じ `192.168.123.0/24` の別の番号に固定します（[Quick Start](https://support.unitree.com/home/en/developer/Quick_start)・[unitree_ros2](https://github.com/unitreerobotics/unitree_ros2)）。
+
+1. Go2 の電源を入れ、LAN ケーブルで Go2 EDU の RJ45 と PC をつなぎます。
+2. 差し口の名前を確かめます。ケーブルを挿すと `UP` になる差し口です（例：`enp3s0`）。
 
    ```bash
-   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate
+   ip -br link
+   ```
+3. その差し口を固定の番号にします。GUI なら「設定 → ネットワーク → 有線 → ⚙ → IPv4」で、方式を「手動」、アドレス `192.168.123.99`、ネットマスク `255.255.255.0`、ゲートウェイは空にして「適用」します（公式 unitree_ros2 の手順と同じ値）。コマンドなら（NetworkManager の場合）：
+
+   ```bash
+   sudo nmcli connection add type ethernet ifname enp3s0 con-name go2 ipv4.method manual ipv4.addresses 192.168.123.99/24 ipv4.never-default yes ipv6.method disabled
+   sudo nmcli connection up go2
    ```
 
-   位置と姿勢の値が流れてくれば、実機とつながっています。Ctrl+C で終わります。
-7. **姿勢の値（`error_code`）を確かめる（必須）：** このプログラムは `/sportmodestate` の `error_code` で Go2 の姿勢を知ります。対応は `nl_control/go2_nl_control/actions.py` の `_ERROR_CODE_TO_STATE` で、公式の表から作ったものです（実機では未確認）。リモコンで Go2 を「立つ → 座る → 立つ → 伏せる」の順にして、そのたびに値を見ます。
+   - `.161` は Go2 本体なので使いません。公式の例は `.99`（unitree_ros2）と `.222`（unitree_sdk2 の Quick Start）です。
+   - 有線にゲートウェイを付けません（`ipv4.never-default yes`）。インターネットへの道を Wi-Fi に残すためです。有線にゲートウェイがあると、Claude を呼ぶ通信が Go2 のほうへ向かいます。
+   - 公式は、設定の後に PC を再起動してから試すよう勧めています。
+4. つながったか確かめます。
+
+   ```bash
+   ping -c 3 192.168.123.161     # 返事が来る
+   ip -br addr show enp3s0       # 192.168.123.99/24 が出る
+   ip route get 1.1.1.1          # dev がインターネット側（Wi-Fi など）の差し口で、有線ではない
+   ```
+
+### 6.4 アプリを PC で用意する
+
+このリポジトリが用意しているのは、Docker を `network_mode: host` で動かすやり方（設計書 §10 のやり方 A）だけです。ROS 2 を PC に直接入れて動かすやり方 B は、作業フォルダが `/work`（`voice_ltl/server.py` の `WORKDIR`）、`PYTHONPATH` が `/work:/work/nl_control`（`docker/Dockerfile`）であることを前提にしているので、そのままでは動きません（試していません）。
+
+1. このフォルダを PC にコピーします（`git clone https://github.com/t-mo77/unitree-go2.git` でも構いません）。`env.txt` は git に入っていないので、§2 の手順 2・3 で作り直すか、自分でコピーします。
+2. `env.txt` の `GO2_IFACE=` に、§6.3 の差し口の名前（例：`enp3s0`）を書きます。
+   - `ROS_DOMAIN_ID` は書きません。Go2 は 0 番です（unitree_sdk2 の例も `ChannelFactory::Instance()->Init(0, …)`）。
+   - `CYCLONEDDS_URI` と `RMW_IMPLEMENTATION` も書きません。コンテナが決めます（§6.5）。
+   - ページのポートを変えるときは `GO2_UI_PORT=<ポート>` も書きます（`compose.robot.yaml` では `.env` やシェルの変数は使いません）。
+3. イメージを作ります。初回は時間がかかります。
+
+   ```bash
+   docker compose -f compose.robot.yaml build
+   ```
+
+   Dockerfile は arm64 と x86_64 の両方を考えて書いてありますが、このリポジトリの記録にあるのは arm64 の Mac でのビルドだけです（x86_64 は未確認。設計書 §10）。
+4. LLM：Claude は `env.txt` のトークンで動きます。Codex を使うなら、PC でもう一度ログインします（ログインは PC の Docker のボリュームに残るので、Mac のものは引き継がれません）。
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app codex login --device-auth
+   ```
+
+   Whisper のモデルは、最初に使うときにインターネットから落とします（Docker のボリューム `hf-cache` に残ります）。
+
+### 6.5 DDS の設定（コンテナが決めます）
+
+`compose.robot.yaml` で起動したコンテナは、どのコマンドの前にも `~/unitree_ros2/setup.sh`（中身は `docker/unitree_setup.sh`）を読み、次のようにします。
+
+| 値 | 中身 |
+|---|---|
+| `RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` |
+| `CYCLONEDDS_URI` | `<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="<GO2_IFACE>" priority="default" multicast="default"/></Interfaces></General></Domain></CycloneDDS>`（`GO2_IFACE` が空なら作らない） |
+| `ROS_DOMAIN_ID` | 決めない（0 番。Go2 と同じ） |
+
+XML は公式 unitree_ros2 の `setup.sh` と同じで、差し口の名前だけを `GO2_IFACE` から入れます。Go2 の CycloneDDS は 0.10.2 です（公式）。コンテナは Humble の `ros-humble-rmw-cyclonedds-cpp` をそのまま使います（公式の手順でも、Humble では CycloneDDS のビルドを飛ばせます）。
+
+シミュレーションから実機へ切り替えるときに変わるのは、使う compose のファイルだけです。コードは同じです。
+
+| | シミュレーション | 実機 |
+|---|---|---|
+| 起動 | `docker compose --profile fake up`・`SIM_KIND=gazebo docker compose --profile gazebo up -d` | `docker compose -f compose.robot.yaml up` |
+| `SIM` | `1` | `0`（ページの右上は「実機」） |
+| ネットワーク | Docker の bridge。ページはホストの 127.0.0.1:`GO2_UI_PORT` に公開 | `network_mode: host`。サーバーが 127.0.0.1:`GO2_UI_PORT` で待ち受け |
+| 偽の Go2・Gazebo | 起動する | 起動しない |
+| 箱のボタン | ある | ない |
+| Go2 を待つ秒数 | 5 秒（`SIM_KIND=gazebo` では 90 秒） | 5 秒（変えるときは `env.txt` に `GO2_WAIT_READY_S=`） |
+| `GO2_IFACE` | 使わない | 使う |
+
+道具（`robot_check`・`sensor_check`・`ros2`）も、実機では `docker compose -f compose.robot.yaml run --rm --no-deps app …` で動かします。`-f compose.robot.yaml` を忘れると bridge のネットワークで動き、Go2 は見えません。
+
+### 6.6 動かす前の確かめ（この順に）
+
+手順 1〜5 は、サーバーを起動する前にします。どれも Go2 には何も送りません。
+
+1. **ping：** `ping -c 3 192.168.123.161` で返事が来ること（§6.3 の手順 4）。
+2. **まとめて確かめる（`robot_check`）：**
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app python3 -m voice_ltl.robot_check
+   ```
+
+   1 行ずつ［OK］［注意］［だめ］が出ます。［だめ］には直し方が付きます。最後が「全部 OK です。サーバーを起動できます。」なら次へ進みます（終了コードは、［だめ］が無ければ 0、あれば 1）。見ることは次のとおりです。
+
+   | 見ること | ［OK］になる条件 |
+   |---|---|
+   | 設定 | `compose.robot.yaml` で動いている（`SIM=0`）・`GO2_IFACE` がある・`ROS_DOMAIN_ID` が 0 か空・RMW が CycloneDDS・`CYCLONEDDS_URI` が `GO2_IFACE` の差し口を指す（URI の中身は出しません） |
+   | 差し口 | その名前の差し口があり、オンで、リンクがあり（ケーブルと Go2 の電源）、マルチキャストができ、`192.168.123.0/24` の IPv4（`.161` 以外）がついている |
+   | `/sportmodestate` | 5 秒（`--seconds` で変えられる）の間に届いた回数と、最後の `error_code` と姿勢 |
+   | `/utlidar/cloud` | 5 秒の間に届いた回数 |
+   | `/api/sport/request` | 受け手（Go2 の運動の制御）がいて、ほかの送り手がいない |
+
+   設定と差し口に［だめ］があれば、ROS 2 を起動せずに終わります。トピックの確かめを偽の Go2 で 4 秒流したときは、次のようでした（実機の回数は違います）。
+
+   ```
+   ［OK］ /sportmodestate：4 秒で 195 回（49 Hz）
+   ［OK］ error_code 1004（伏せ）
+   ［OK］ /utlidar/cloud：4 秒で 40 回（10 Hz）
+   ［OK］ /api/sport/request の受け手（Go2 の運動の制御）：1
+   ［OK］ /api/sport/request のほかの送り手：なし
+   ```
+3. **ROS 2 で見る：**
+
+   ```bash
+   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic list --no-daemon --spin-time 3
+   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo --once /sportmodestate
+   docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo --once --no-arr /utlidar/cloud
+   ```
+
+   - `topic list`：`/sportmodestate`・`/utlidar/cloud`・`/api/sport/request` が出れば、Go2 が見えています（公式の文書には、ほかに `/lf/sportmodestate`・`/lowstate`・`/wirelesscontroller` なども載っています。[ROS2 Services](https://support.unitree.com/home/en/developer/ROS2_service)）。`/parameter_events` と `/rosout` しか出なければ、Go2 が見えていません（§6.8）。
+   - `echo --once /sportmodestate`：`error_code`・`imu_state`・`position` などが 1 通出て終わります。
+   - `echo --once --no-arr /utlidar/cloud`：点の並びを省いて 1 通出ます。`frame_id: utlidar_lidar` です（公式）。
+4. **姿勢の値（`error_code`）を確かめる（必須）：** このプログラムは `/sportmodestate` の `error_code` で Go2 の姿勢を知ります。対応は `nl_control/go2_nl_control/actions.py` の `_ERROR_CODE_TO_STATE` で、公式の表（[Motion Services Interface V2.0](https://support.unitree.com/home/en/developer/Motion_Services_Interface_V2.0)）から作ったものです（実機では未確認）。リモコンで Go2 を「立つ → 座る → 立つ → 伏せる」の順にして、そのたびに値を見ます。
 
    ```bash
    docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic echo /sportmodestate --field error_code
@@ -305,7 +455,7 @@ Gazebo のログには、ふりのとき「（Gazebo では伏せで代用）」
 
    1002 は StandUp の直後の「歩けない立ち方」なので、わざと「不明」にしています。
    表と違う値が出たら、そのときの姿勢と値を書き留めて知らせてください。表にない値は「不明」になり、計画を始められなかったり、動作の後に「姿勢が計画と違います」で止まったりします。
-8. **LiDAR を確かめる（必須）：** 障害物で止まる・待つのは、LiDAR の点群を胴の座標に直した判定だけが頼りです。その直し方（`PerceptionConfig` の `lidar_x`・`lidar_z`・`lidar_pitch`）は仮の値なので、実機で確かめます。Go2 をリモコンで立たせ、前と後ろを 1 m 以上空けてから、次を実行します。
+5. **LiDAR を確かめる（必須）：** 障害物で止まる・待つのは、LiDAR の点群を胴の座標に直した判定だけが頼りです。その直し方（`PerceptionConfig` の `lidar_x`・`lidar_z`・`lidar_pitch`）は仮の値なので、実機で確かめます。Go2 をリモコンで立たせ、前と後ろを 1 m 以上空けてから、次を実行します。
 
    ```bash
    docker compose -f compose.robot.yaml run --rm --no-deps app python3 -m voice_ltl.sensor_check
@@ -349,7 +499,7 @@ Gazebo のログには、ふりのとき「（Gazebo では伏せで代用）」
      - `tests/test_automata.py`：`test_safety_events_never_in_sup[F moved_backward]`
      - `tests/test_session.py`：`test_back_box_holds_backward`
      - `tests/test_adversarial_session.py`：`test_fuzz_reaches_the_interesting_cases`、`test_property_holds_in_every_trial[P7]`、`[P7b]`
-   - **rviz2 で点群を見たいとき：** このイメージには rviz2 が入っていないので、コンテナの中では動きません。Linux PC に ROS 2 Humble が入っていれば、`sudo apt install ros-humble-rviz2 ros-humble-rmw-cyclonedds-cpp` で入れて、別の手段として使えます。コンテナと同じ設定（`docker/unitree_setup.sh` と同じ）にしてから起動し、Fixed Frame を `utlidar_lidar` にして `/utlidar/cloud` を PointCloud2 で表示します。
+   - **rviz2 で点群を見たいとき：** このイメージには rviz2 が入っていないので、コンテナの中では動きません。PC に ROS 2 Humble が入っていれば、`sudo apt install ros-humble-rviz2 ros-humble-rmw-cyclonedds-cpp` で入れて、別の手段として使えます。コンテナと同じ設定（`docker/unitree_setup.sh` と同じ）にしてから起動し、Fixed Frame を `utlidar_lidar` にして `/utlidar/cloud` を PointCloud2 で表示します。
 
      ```bash
      source /opt/ros/humble/setup.bash
@@ -360,20 +510,46 @@ Gazebo のログには、ふりのとき「（Gazebo では伏せで代用）」
 
      `enp3s0` は `env.txt` の `GO2_IFACE` と同じ名前にします。
 
-   `sensor_check` は `/api/sport/request` の送り手として見えるので、動かしたままサーバーを起動すると「別のプログラム」として断られます。終わってから手順 9 に進みます。
-9. **起動：**
+   `sensor_check` は `/api/sport/request` の送り手として見えるので、動かしたままサーバーを起動すると「別のプログラム」として断られます。終わってから手順 6 に進みます。
+6. **起動して、ページで Go2 の様子を見る：**
 
    ```bash
    docker compose -f compose.robot.yaml up
    ```
 
-   `network_mode: host`、`SIM=0` です。サーバーは 127.0.0.1 だけで待ち受け（ポートは既定で 8810。変えるときは `env.txt` に `GO2_UI_PORT=<ポート>` を書きます。`compose.robot.yaml` では `.env` やシェルの変数は使いません）、箱のボタンは出ません。偽の Go2 は起動しません。
+   ログに `ページ: http://localhost:8810 （実機）` が出たら、PC のブラウザで開きます（ほかの PC からは開けません。サーバーは 127.0.0.1 だけで待ち受けます）。まだ何も話さずに、次を見ます。
 
-### 安全の注意
+   - 右上に「実機」と出る。
+   - 「姿勢」「前方」「後方」「位置」「向き」に値が出て、リモコンで Go2 を伏せ・立ちにすると「姿勢」が変わる。箱を前に置くと「前方」が「あり」になる。
+   - 起動のとき、Go2 が 5 秒で見つからなければ「Go2 が見つかりません …」、ほかの送り手がいれば「… 別のプログラムがあります」で止まります（§6.8）。`/utlidar/cloud` が来ていなければ「注意: /utlidar/cloud が届いていません。届くまで移動は保留されます」と出ます。
 
-- 前方 1 m と周りを空けてください。
+### 6.7 安全の注意
+
+- **伏せから始めます。** リモコンで Go2 を伏せさせてから（`error_code` が 1001・1004・2006 のどれか）サーバーを起動します。最初の指示は「立って」です。
+- 前方 1 m と周りを空けてください。人・物・段差から離した、平らな床で動かします（この 2 行は、ページとサーバーのログにも出ます）。
 - リモコンを持った人が、必ずそばにいてください。
-- 最初は「立って」「止まって」だけで動作を確かめます。
+- **少しずつ：** 最初は「立って」「止まって」だけで動作を確かめます。次に「前に進んで」（0.5 m を 1 回）、そのあと旋回、最後にジェスチャーです。
+- **すぐ止める：**
+  1. ページの「止める」ボタンか、「止まって」と言う：LLM を通さず、すぐ StopMove を送ります（その場で止まり、立ったまま）。
+  2. サーバーの端末で Ctrl+C：StopMove を 3 回送ってから終わります。
+  3. **Unitree のリモコン：** このアプリとは別に、Go2 に直接届きます。このアプリは、リモコンを効かなくする指令（SwitchJoystick）を送りません。いちばん強い止め方はダンピング（公式の Damp：全関節が止まりダンピング状態になる、非常停止用。[Motion Services Interface V2.0](https://support.unitree.com/home/en/developer/Motion_Services_Interface_V2.0)）です。リモコンのボタンの組み合わせは、Go2 の取扱説明書で確かめておきます（「L2 長押し + B」と書いた資料もありますが、公式の文書ではまだ確かめていません）。立っているときにダンピングにすると、脚の力が抜けて体が床に落ちます（実機で未確認）。
+- **ケーブルが抜けたとき・PC が止まったとき：** 公式によると、Go2 は最後の Move を 1 秒保ちます（V2.0 の Move の説明）。アプリは `/sportmodestate` が 0.5 秒途切れると移動を保留しますが、ケーブルが抜けていると StopMove も届きません。リモコンで止めます（実機で未確認）。
+
+### 6.8 困ったとき
+
+| 様子 | 確かめること |
+|---|---|
+| `ping 192.168.123.161` が返らない | ケーブル、Go2 の電源（起動し切るまで待つ）、差し口の IPv4（`ip -br addr`）。設定の後に PC を再起動したか（公式の勧め）。AIR・PRO には有線の差し口がありません |
+| ping は返るのに、`ros2 topic list` に `/parameter_events`・`/rosout` しか出ない／「Go2 が見つかりません」 | **差し口の取り違え：** `env.txt` の `GO2_IFACE` が、`ip -br addr` で `192.168.123.x` がついた差し口と同じ名前か。**compose：** `-f compose.robot.yaml` で起動したか（無いと bridge のネットワークで、Go2 は見えません）。**ドメイン：** `env.txt` に `ROS_DOMAIN_ID` を書いていないか（Go2 は 0）。`robot_check` の［だめ］を順に直します |
+| 差し口は合っているのに見えない（マルチキャスト） | `ip link show enp3s0` に `MULTICAST` があるか（無ければ `sudo ip link set enp3s0 multicast on`）。間にスイッチやハブを挟んでいれば、直結で試します |
+| ファイアウォール | `sudo ufw status` が `active` なら、Go2 の網からの受信を許します：`sudo ufw allow in on enp3s0 from 192.168.123.0/24`。ほかのファイアウォール（`firewalld` など）も同じように、有線の差し口からの UDP を通します |
+| `docker context show` が `desktop-linux` | Docker Desktop です。`docker context use default` で Docker Engine に切り替えます（§6.2） |
+| `/sportmodestate` は届くのに `/utlidar/cloud` が届かない | `ros2 topic list` に `/utlidar/cloud` があるか、`docker compose -f compose.robot.yaml run --rm --no-deps app ros2 topic hz /utlidar/cloud` で届く速さを見ます（Ctrl+C で終わります）。届かなければ、Go2 のソフトの版と一緒に書き留めて知らせてください（実機で未確認） |
+| 「`/api/sport/request` に指令を送っている別のプログラムがあります」 | サーバー・`sensor_check`・PC で動いている ROS 2 のプログラム（Unitree の例など）を終了します。どれも動かしていないのに見えるなら、`robot_check` の送り手の数を書き留めて知らせてください。Go2 の側に送り手が見えるなら、今のままではサーバーは起動できません（実機で未確認） |
+| `robot_check` で「受け手がいません」 | Unitree のアプリの「デバイス → サービスの状態」で、運動の制御のサービス（`mcf`。V1.1.6 より前は `sport_mode`）が止まっていないか。公式 Quick Start は、低レベル制御の例のためにこれを止める手順を書いていますが、このアプリは高レベルの窓口を使うので、止めてはいけません |
+| 時刻 | アプリは Go2 の時刻（メッセージの stamp）を使わず、受け取ったときの PC の時計で数えます（`voice_ltl/ros_link.py`）。PC と Go2 の時計を合わせる必要はありません。PC の時計は、LLM を呼ぶ HTTPS のために合わせておきます（`timedatectl` で `System clock synchronized: yes`） |
+| 姿勢が「不明」／「姿勢が計画と違います」 | §6.6 の手順 4 の表と、実際の `error_code` を比べます |
+| ページは開くが、Claude を呼べない | 有線にゲートウェイを付けていないか（`ip route get 1.1.1.1` の `dev` が Wi-Fi 側か）。`env.txt` のトークン |
 
 ## 7. テスト
 
@@ -389,8 +565,9 @@ docker compose run --rm --no-deps app python3 -m pytest -q -m "not slow" tests n
 ## 8. わかっていないこと
 
 - **Codex：** 実地で動かして確かめていません（`codex login --device-auth` と構造化出力）。道具を外す設定（`voice_ltl/llm.py`）は、ログインせずに `codex debug prompt-input` で確かめただけです。
-- **実機の LiDAR：** 取り付けの値（`lidar_x`・`lidar_z`・`lidar_pitch`）と、前方・後方の物が見えるかは未確認です（§6 の手順 8）。
-- **実機の `error_code`：** 姿勢と `error_code` の対応、ジェスチャーの間や後の値、ジェスチャーの待ち時間（`actions.py`）が実機に合うかは未確認です（§6 の手順 7）。
+- **実機の LiDAR：** 取り付けの値（`lidar_x`・`lidar_z`・`lidar_pitch`）と、前方・後方の物が見えるかは未確認です（§6.6 の手順 5）。
+- **実機の `error_code`：** 姿勢と `error_code` の対応、ジェスチャーの間や後の値、ジェスチャーの待ち時間（`actions.py`）が実機に合うかは未確認です（§6.6 の手順 4）。
+- **実機との有線の接続：** §6 の手順（固定の IPv4・`GO2_IFACE`・`compose.robot.yaml`・`robot_check`）は、実機で通していません。`robot_check` のトピックの確かめは偽の Go2 でだけ流し、設定と差し口の確かめはテストの値でだけ確かめました。Go2 のソフトの版（V1.1.6 の前と後）でこのアプリの `api_id` が通るか、Go2 の側に `/api/sport/request` の送り手が見えないか、リモコンのダンピングのボタン、ケーブルが抜けたときの動き、x86_64 の PC でのイメージのビルドも未確認です。
 - **Whisper の正確さ：** 合成音声の「立って」は 3 モデルとも正しく書き起こせませんでした。本物の声と、実機の PC での精度は未確認です。
 - **実機のカメラ（YOLOE）：** 物の一覧を出すのは、今は Gazebo の logical camera と偽の Go2 だけです。実機では、Go2 の前のカメラの画像を YOLOE に通し、LiDAR の点で位置と大きさを測るノードが、同じ `/go2/objects` を出すのが次の一歩です（物の設計書 §11）。まだ作っていません。アプリ側は変えずに使える形にしてあります。
 - **Gazebo での物を使う指示（設計書（物）§2 の合格の条件）：controller のパッチ（0003・0004）の後に満たしました（どちらの組も一周 3 回以上続けて転ばない、椅子 3/3）。ただし一周は 10 回のうち 1 回、Gazebo が止まった後に転びました。その転び方を直すパッチ 0005 の後も満たしました（一周 5/5）。** 記録は [docs/reference/gazebo_objects_e2e.md](docs/reference/gazebo_objects_e2e.md) の「第 5 部」と「第 6 部」です。
