@@ -57,7 +57,8 @@ def header(cfg: PerceptionConfig) -> list[str]:
 
 def config_from_args(argv: Optional[Iterable[str]] = None) -> PerceptionConfig:
     """既定は PerceptionConfig()（サーバーと同じ）。取り付けの 3 つだけ変えて試せる。"""
-    base = PerceptionConfig()
+    from voice_ltl.perception_config import perception_config
+    base = perception_config()
     p = argparse.ArgumentParser(prog="python3 -m voice_ltl.sensor_check",
                                 description="実機の LiDAR の判定を確かめる（Go2 には何も送らない）")
     p.add_argument("--lidar-x", type=float, default=base.lidar_x, help="前後のずれ [m]")

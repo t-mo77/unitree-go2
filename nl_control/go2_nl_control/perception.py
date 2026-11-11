@@ -30,6 +30,7 @@ class PerceptionConfig:
     lidar_z: float = 0.10
     lidar_pitch: float = 0.0
     lidar_yaw: float = 0.0
+    remove_ground: bool = False    # 実機用。広く支持された、機体より下の床平面だけを除く
 
 
 class ObstacleMonitor:
@@ -57,6 +58,8 @@ class ObstacleMonitor:
         pts = np.asarray(points_xyz, dtype=np.float64).reshape(-1, 3)
         pts = pts[np.isfinite(pts).all(axis=1)]
         body = self._to_body(pts) if len(pts) else pts
+        if c.remove_ground:
+            body = remove_ground(body)
         if len(body):
             m = ((body[:, 0] > 0.0) & (np.abs(body[:, 1]) <= c.half_width)
                  & (body[:, 2] >= c.z_min) & (body[:, 2] <= c.z_max))
@@ -84,3 +87,51 @@ class ObstacleMonitor:
         if self._last_stamp is None or now - self._last_stamp > self.cfg.stale_timeout:
             self.state = SENSOR_LOST
         return self.state
+
+
+def remove_ground(body: np.ndarray) -> np.ndarray:
+    """床の近くの点だけを除く。平面を確定できないときは点を残す。
+
+    壁・小さい台・少数点を床と誤認しないよう、傾き・高さ・支持点数・広がりを検査する。
+    通路全体や近距離の点を一律に捨てる処理は行わない。
+    """
+    candidates = body[(np.linalg.norm(body[:, :2], axis=1) < 2.0)
+                      & (body[:, 2] < -0.15) & (body[:, 2] > -0.8)]
+    if len(candidates) < 100:
+        return body
+    sample = candidates[np.linspace(0, len(candidates) - 1, min(500, len(candidates)), dtype=int)]
+    rng = np.random.default_rng(7)
+    best = None
+    support = 0
+    for _ in range(80):
+        a, b, c = sample[rng.choice(len(sample), 3, replace=False)]
+        normal = np.cross(b - a, c - a)
+        length = np.linalg.norm(normal)
+        if length < 1e-8:
+            continue
+        normal /= length
+        if normal[2] < 0:
+            normal = -normal
+        if normal[2] < 0.85:  # 壁は床にしない
+            continue
+        offset = normal @ a
+        if not -0.65 <= offset / normal[2] <= -0.20:
+            continue
+        mask = np.abs(sample @ normal - offset) < 0.015
+        if mask.sum() > support:
+            best, support = mask, int(mask.sum())
+    if best is None or support < max(60, len(sample) * 0.45):
+        return body
+    points = sample[best]
+    if np.ptp(points[:, 0]) < 0.7 or np.ptp(points[:, 1]) < 0.7:
+        return body
+    center = points.mean(axis=0)
+    _, _, vectors = np.linalg.svd(points - center, full_matrices=False)
+    normal = vectors[-1]
+    if normal[2] < 0:
+        normal = -normal
+    offset = normal @ center
+    if normal[2] < 0.85 or not -0.65 <= offset / normal[2] <= -0.20:
+        return body
+    floor = (np.abs(body @ normal - offset) < 0.025) & (body[:, 2] < -0.15)
+    return body[~floor]

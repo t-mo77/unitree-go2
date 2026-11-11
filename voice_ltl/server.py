@@ -61,7 +61,7 @@ WS_PERIOD = 0.2       # [s] between two snapshots on /ws
 CONTROL_PERIOD = 0.1  # [s] the control loop (10 Hz)
 UI_PORT = 8810        # the page's port on the host (GO2_UI_PORT, R25)
 CONTAINER_PORT = 8000  # inside the container when simulating; compose publishes it as UI_PORT
-WORKDIR = Path("/work/out")
+WORKDIR = Path(__file__).resolve().parents[1] / "out"
 MAX_AUDIO_BYTES = 10 * 1024 * 1024  # [byte] the largest recording /api/audio takes (SEC-2): 413
 # Design §5: shown before motion (README and docs/real_robot.md 「安全の注意」). Logged on start-up; the page has it too.
 SAFETY_CAUTION = "前方 1 m と周りを空けてください。リモコンを持った人が、必ずそばにいてください。"
@@ -279,7 +279,7 @@ def listen_address(env: Mapping[str, str]) -> tuple[str, int]:
     """Where uvicorn listens. SIM=1: in the container on 0.0.0.0:8000, which compose publishes
     as 127.0.0.1:GO2_UI_PORT. Otherwise the host network (a real Go2): 127.0.0.1:GO2_UI_PORT,
     so only the PC itself opens the page."""
-    if sim_mode(env):
+    if sim_mode(env) and env.get("GO2_NATIVE") != "1":
         return "0.0.0.0", CONTAINER_PORT
     return "127.0.0.1", ui_port(env)
 
@@ -305,7 +305,7 @@ def wait_ready_seconds(env: Mapping[str, str]) -> float:
 
 
 def _serve() -> None:
-    from go2_nl_control.perception import PerceptionConfig
+    from voice_ltl.perception_config import perception_config
 
     from voice_ltl.ros_link import RosLink, SimControl
     from voice_ltl.stt import Transcriber
@@ -320,7 +320,7 @@ def _serve() -> None:
         _logger.error("%s", exc)
         raise SystemExit(1) from None
     try:
-        link = RosLink(PerceptionConfig())
+        link = RosLink(perception_config())
     except RuntimeError as exc:  # already running
         _logger.error("%s", exc)
         raise SystemExit(1) from None
@@ -334,6 +334,9 @@ def _serve() -> None:
         _logger.info("Go2 を待ちます（最長 %g 秒。GO2_WAIT_READY_S で変えられます）", wait_s)
         try:
             link.wait_ready(wait_s)
+            prepare = getattr(link, "prepare_onboard_avoidance", None)
+            if callable(prepare):
+                prepare()
         except RuntimeError as exc:  # Go2 not found, or another program sends commands
             _logger.error("%s", exc)
             if link.other_senders():  # that program drives the Go2: do not cut in with StopMove

@@ -109,6 +109,7 @@
 - `BridgeCore` は、Move の速度を controller が歩くに入ってから `TROT_WAIT_S` = 0.5 秒（シミュレーションの時間）まで 0 のまま待たせ、それから入れる。待っている間も窓口は 1015。Move の 1 秒の期限（送り直しが無ければ止まる）は今までどおり実際の時間。待っている間に StopMove が来たら、速度は 1 通も出さない。
 - 「歩くに入った」時刻：controller の伏せ・立つは、コードでは 1.8 秒（200 Hz × 1.2 × 1.5 回）だが、Gazebo で測ると 1.88〜1.92 秒（command を待っていたときは 2.0〜2.5 秒）だった。送った command からの見積もりは 0.1〜0.3 秒早くなる。
   そこで、橋渡しのノードは controller が `/rosout` に出す `Switched from fixed stand to trotting` を受けた時刻を `BridgeCore.trot_entered()` で知らせ、その 0.5 秒後から速度を入れる。知らせが来なければ、見積もりより 1.0 秒（`TROT_REPORT_LATE_S`）遅らせて入れ、ログに出す。
+  （2026-11-11 から：知らせが来なければ速度は入れない。`TROT_REPORT_LATE_S` は無くした。controller の切り替えはすべて `/rosout` で確かめる。[simulation.md](../simulation.md) の「「立って」が終わったのに伏せたままのとき」）
 - 確かめ：demo A で、歩くに入ったのがシミュレーションの 8.66 秒、前進の速度を出したのが 9.18 秒（0.52 秒後）。
 - テスト：`test_stand_then_walk_then_expire`（待ってから入る・1 秒の期限）、`test_move_waits_for_trot_entry_in_sim_time_and_stop_cancels_it`、`test_move_waits_for_reported_trot_entry`。
 

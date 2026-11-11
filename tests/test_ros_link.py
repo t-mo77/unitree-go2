@@ -9,11 +9,15 @@ import fcntl
 import json
 import signal
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import String
+from std_msgs.msg import Header
+from sensor_msgs.msg import PointField
 from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE, STANDING, STOP_MOVE, UNKNOWN
@@ -187,6 +191,101 @@ def test_wait_ready_refuses_when_another_program_sends(ros, monkeypatch):
     assert node.pub.msgs == []            # refusing sends nothing
 
 
+def test_active_background_dds_is_rejected_before_control_tick(ros, monkeypatch):
+    _, make = ros
+    link = make()
+    source = bytes([7]) * 24
+    link._publisher_guard.native = {source}
+    link._publisher_guard.frozen = True
+    monkeypatch.setattr(link.node, "get_publishers_info_by_topic", lambda topic: [
+        SimpleNamespace(node_name="_CREATED_BY_BARE_DDS_APP_", endpoint_gid=source),
+        SimpleNamespace(node_name="go2_voice_ltl", endpoint_gid=bytes([8]) * 24),
+    ], raising=False)
+    link._publisher_guard.on_request(None, SimpleNamespace(publisher_gid=source))
+    def no_callbacks(**kwargs):
+        raise ros_link.TimeoutException()
+    monkeypatch.setattr(link._executor, "wait_for_ready_callbacks", no_callbacks, raising=False)
+    with pytest.raises(RuntimeError, match="停止"):
+        link.spin_once()
+    assert link.node.pub.msgs == []
+
+
+def test_competition_does_not_starve_state_updates_and_recovers(ros, monkeypatch):
+    from voice_ltl.publisher_guard import PublisherGuard, QUIET_SECONDS
+    _, make = ros
+    link = make()
+    now = [0.0]
+    source = bytes([7]) * 24
+    guard = link._publisher_guard = PublisherGuard(own=1, clock=lambda: now[0])
+    monkeypatch.setattr(link.node, "get_publishers_info_by_topic", lambda topic: [
+        SimpleNamespace(node_name="_CREATED_BY_BARE_DDS_APP_", endpoint_gid=source),
+        SimpleNamespace(node_name="go2_voice_ltl", endpoint_gid=bytes([8]) * 24),
+    ], raising=False)
+    guard.freeze(link.node)
+    guard.on_request(None, SimpleNamespace(publisher_gid=source))
+    handled = []
+    def handler():
+        handled.append(True)
+        link._on_state(_state(x=0.25))
+    handler.exception = lambda: None
+    pending = [handler]
+    def next_callback(**kwargs):
+        if pending:
+            return pending.pop(), None, None
+        raise ros_link.TimeoutException()
+    monkeypatch.setattr(link._executor, "wait_for_ready_callbacks", next_callback, raising=False)
+    with pytest.raises(RuntimeError, match="停止"):
+        link.spin_once()
+    assert handled and link.pose()[0] == pytest.approx(0.25)
+    now[0] += QUIET_SECONDS + 0.1
+    link.spin_once()  # 新しい指示へ進めるよう復帰
+    assert link.other_senders() == 0
+    assert not link.node.pub.msgs  # 元の動作を自動再開しない
+
+
+def test_real_lidar_with_mixed_datatypes_extracts_only_xyz(ros, monkeypatch):
+    _, make = ros
+    link = make()
+    fields = [PointField(name=name, offset=offset, datatype=PointField.FLOAT32, count=1)
+              for name, offset in (("x", 0), ("y", 4), ("z", 8))]
+    fields.append(PointField(name="intensity", offset=12, datatype=PointField.UINT8, count=1))
+    cloud = ros_link.point_cloud2.create_cloud(Header(), fields, [(0.2, -0.1, 0.3, 8)])
+    received = []
+    monkeypatch.setattr(link._sensing, "update", lambda points, stamp: received.append(points))
+    link._on_cloud(cloud)
+    np.testing.assert_allclose(received[0], [[0.2, -0.1, 0.3]])
+
+
+def test_onboard_mode_uses_no_pc_lidar_gate_but_keeps_state_timeout(ros, monkeypatch):
+    monkeypatch.setenv("GO2_OBSTACLE_AUTHORITY", "go2")
+    _, make = ros
+    link = make()
+    assert ros_link.LIDAR_TOPIC not in link.node.subscriptions
+    assert link.reading(time.time()).front == SENSOR_LOST
+    link._on_state(_state())
+    reading = link.reading(time.time())
+    assert reading.front == reading.back == CLEAR
+    assert reading.authority == "go2" and reading.front_dist is None
+    assert link.reading(time.time() + STATE_TIMEOUT + .1).front == SENSOR_LOST
+
+
+def test_onboard_mode_never_falls_back_to_unfiltered_sport_move(ros, monkeypatch):
+    monkeypatch.setenv("GO2_OBSTACLE_AUTHORITY", "go2")
+    _, make = ros
+    link = make()
+    command = Command(MOVE, {"x": .2, "y": 0., "z": .1})
+    with pytest.raises(RuntimeError):
+        link.send(command)
+    assert not link.node.pub.msgs
+    link._avoidance = Mock()
+    link.send(command)
+    link._avoidance.move.assert_called_once_with(command.parameter)
+    assert not link.node.pub.msgs
+    link.send(Command(STOP_MOVE))
+    link._avoidance.stop.assert_called_once()
+    assert link.node.pub.msgs[-1].header.identity.api_id == STOP_MOVE
+
+
 def test_wait_ready_says_go2_not_found_without_a_subscriber_or_state(ros, monkeypatch):
     _, make = ros
     link = make()
@@ -203,7 +302,8 @@ def test_close_sends_stopmove_three_times_ignoring_ctrl_c_then_cleans_up_once(ro
     before = signal.getsignal(signal.SIGINT)
     link.close()                                           # the default: 3 times
     assert [m.header.identity.api_id for m in node.pub.msgs] == [STOP_MOVE] * 3
-    assert [m.header.identity.id for m in node.pub.msgs] == [1, 2, 3]
+    ids = [m.header.identity.id for m in node.pub.msgs]
+    assert ids[0] > 0 and ids == list(range(ids[0], ids[0] + 3))
     assert node.pub.sigint_while_sending == [signal.SIG_IGN] * 3
     assert signal.getsignal(signal.SIGINT) is before       # put back afterwards
     assert node.destroyed and link._executor.shut and _lock_is_free(ros_link.LOCK_FILE)
@@ -243,7 +343,7 @@ def test_send_numbers_requests_and_puts_the_parameter_as_json(ros):
     link = make()
     link.send(Command(MOVE, {"x": 0.3, "y": 0.0, "z": 0.0}))
     msg = ros_link.rclpy.nodes[-1].pub.msgs[-1]
-    assert msg.header.identity.api_id == MOVE and msg.header.identity.id == 1
+    assert msg.header.identity.api_id == MOVE and msg.header.identity.id > 0
     assert json.loads(msg.parameter) == {"x": 0.3, "y": 0.0, "z": 0.0}
 
 

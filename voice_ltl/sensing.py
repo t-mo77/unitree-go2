@@ -20,6 +20,7 @@ class Reading:
     back: str
     front_dist: Optional[float]
     back_dist: Optional[float]
+    authority: str = "pc"
 
     @property
     def front_blocked(self) -> bool:
