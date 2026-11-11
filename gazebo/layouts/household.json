@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "objects": [
+    {"id": "box_1", "model": "primitive:box", "x": 2.5, "y": 1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.5, 0.5]}, "height": 0.5,
+     "detectable": false, "accept": ["box"]},
+    {"id": "chair_1", "model": "primitive:chair", "x": 2.5, "y": -1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.45, 0.45]}, "height": 0.9,
+     "detectable": false, "accept": ["chair"]},
+    {"id": "trash_can_1", "model": "model://TrashBin", "x": -1.5, "y": -1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.266, 0.375]}, "height": 0.446,
+     "detectable": false, "accept": ["trash_can"]},
+    {"id": "suitcase_1", "model": "model://Suitcase1", "x": -1.5, "y": 1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.6, 0.4]}, "height": 0.8,
+     "detectable": false, "accept": ["suitcase"]},
+    {"id": "sofa_1", "model": "model://Sofa", "x": -4.4, "y": 0.0, "yaw_deg": 0,
+     "footprint": {"offset": [0.02, 0.0], "size": [1.044, 1.8]}, "height": 0.943,
+     "detectable": true, "accept": ["sofa"]},
+    {"id": "lamp_1", "model": "model://LampAndStand", "x": 0.8, "y": -4.4, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.622, 0.525]}, "height": 1.021,
+     "detectable": true, "accept": ["lamp"]},
+    {"id": "table_1", "model": "model://Table", "x": -2.4, "y": 4.4, "yaw_deg": 0,
+     "footprint": {"offset": [0.002, 0.0], "size": [1.5, 0.8]}, "height": 1.015,
+     "detectable": false, "accept": ["table", "desk"]}
+  ]
+}
