@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic COLLADA for tests/test_fuel_image.py: a tetrahedron 100 x 50 x 30 cm. The second geometry is not in
+     the scene and must not count. -->
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset>
+    <unit name="centimeter" meter="0.01"/>
+    <up_axis>Z_UP</up_axis>
+  </asset>
+  <library_geometries>
+    <geometry id="tetra-mesh" name="tetra">
+      <mesh>
+        <source id="tetra-positions">
+          <float_array id="tetra-positions-array" count="12">0 0 0 100 0 0 0 50 0 0 0 30</float_array>
+          <technique_common>
+            <accessor source="#tetra-positions-array" count="4" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="tetra-vertices">
+          <input semantic="POSITION" source="#tetra-positions"/>
+        </vertices>
+        <triangles count="4">
+          <input semantic="VERTEX" source="#tetra-vertices" offset="0"/>
+          <p>0 2 1 0 1 3 0 3 2 1 2 3</p>
+        </triangles>
+      </mesh>
+    </geometry>
+    <geometry id="unused-mesh" name="unused">
+      <mesh>
+        <source id="unused-positions">
+          <float_array id="unused-positions-array" count="6">-900 -900 -900 900 900 900</float_array>
+          <technique_common>
+            <accessor source="#unused-positions-array" count="2" stride="3">
+              <param name="X" type="float"/>
+              <param name="Y" type="float"/>
+              <param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="unused-vertices">
+          <input semantic="POSITION" source="#unused-positions"/>
+        </vertices>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene" name="Scene">
+      <node id="outer" name="outer">
+        <translate>10 20 0</translate>
+        <node id="inner" name="inner">
+          <rotate>0 0 1 90</rotate>
+          <instance_geometry url="#tetra-mesh"/>
+        </node>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene>
+    <instance_visual_scene url="#Scene"/>
+  </scene>
+</COLLADA>

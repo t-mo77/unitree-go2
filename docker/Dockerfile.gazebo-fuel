@@ -1,0 +1,14 @@
+# Thin image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0005-fuel1 (open-objects spec §12.2, §12.6).
+# It is go2-voice-ltl-gazebo:patch-0005 (docker/Dockerfile.gazebo, patches 0001-0005; built first and never
+# rebuilt for this) plus the Gazebo Fuel models pinned in docker/fuel_models.json (folder, version, sha256).
+# fetch_fuel_models.py downloads each zip from Fuel, checks its sha256 (a mismatch or a null pin stops the build),
+# and unpacks it unchanged to /opt/go2_models/<folder>, which is appended to GZ_SIM_RESOURCE_PATH, so the
+# layouts' model://<folder> resolve. The models are data (no <plugin>); their authors and licences (CC BY 4.0,
+# CC0 1.0) are in docker/fuel_models.json and docs/simulation.md.
+# Build (from the repository root; it needs the network once, for the zips):
+#   docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel1 -f docker/Dockerfile.gazebo-fuel docker
+ARG BASE=go2-voice-ltl-gazebo:patch-0005
+FROM ${BASE}
+COPY fuel_models.json fetch_fuel_models.py /opt/go2_fuel/
+RUN python3 /opt/go2_fuel/fetch_fuel_models.py /opt/go2_fuel/fuel_models.json /opt/go2_models
+ENV GZ_SIM_RESOURCE_PATH=${GZ_SIM_RESOURCE_PATH:+${GZ_SIM_RESOURCE_PATH}:}/opt/go2_models

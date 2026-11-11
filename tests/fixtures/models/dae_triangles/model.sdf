@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<!-- A COLLADA triangle set in centimetres, placed by nested scene nodes (translate, then rotate 90 degrees).
+     The relative URI is resolved against this file. -->
+<sdf version="1.9">
+  <model name="dae_triangles">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>meshes/tetra.dae</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>
