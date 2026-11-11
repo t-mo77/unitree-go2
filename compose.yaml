@@ -43,6 +43,27 @@ services:
       GO2_LAYOUT: "${GO2_LAYOUT:-default}"
     command: python3 -m sim.fake_go2
 
+  detector:
+    # YOLOE (ultralytics, AGPL-3.0) in its own image; never built or started without --profile detector
+    # (OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d).
+    # No env_file and no login volumes; the default ROS domain, like gazebo.
+    profiles: ["detector"]
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.detector
+    image: go2-voice-ltl-detector:yoloe-11s
+    init: true
+    volumes:
+      - ./:/work
+      - /dev/null:/work/env.txt:ro   # the detector never needs the token file
+      - detector-cache:/cache        # text embeddings keyed by the prompt list
+    environment:
+      OBJECTS_SOURCE: "${OBJECTS_SOURCE:-logical}"
+      DETECTOR: "${DETECTOR:-yoloe}"  # yoloe | oracle (measurement only)
+    cpus: "2.0"                      # 1 torch thread used 110-240 % in the spike
+    restart: "on-failure:3"
+    command: python3 -m detector.node
+
   gazebo:
     # not built on the shared image: ROS 2 Jazzy + Gazebo Harmonic (arm64 has no Gazebo Classic)
     # no env_file and no login volumes: the simulator needs no LLM login
@@ -80,3 +101,4 @@ services:
 volumes:
   hf-cache:
   codex-home:
+  detector-cache:
