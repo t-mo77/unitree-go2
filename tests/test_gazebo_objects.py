@@ -200,8 +200,10 @@ def test_xacro_mounts_the_logical_camera_like_the_real_front_camera():
 
 
 def test_launch_bridges_the_logical_camera():
-    assert ('"/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage"'
-            in LAUNCH.read_text(encoding="utf-8"))
+    from gazebo.launch_config import GZ_BRIDGE_ARGS       # the main bridge's arguments (open-objects Task 2.9)
+    assert ("/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage"
+            in GZ_BRIDGE_ARGS)
+    assert "arguments=list(GZ_BRIDGE_ARGS)," in LAUNCH.read_text(encoding="utf-8")
 
 
 def test_the_readme_echo_shows_the_whole_objects_message():
