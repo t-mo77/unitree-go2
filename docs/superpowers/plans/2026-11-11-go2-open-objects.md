@@ -13,7 +13,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-11-go2-open-objects-design.md` (v2, commit `06c7dd5`; "the spec"). Read it with:
 - `~/work/physicalAI/go2/.superpowers/sdd/2026-11-11-go2-open-objects/decisions.md`: D1–D11 and **"Rulings after the builder check"** (Q2, Q4, C1–C6 and the user's answers). **The rulings override the spec where they differ.**
-- In the same folder: `builder-check.md` (its minor defaults M1–M15 are adopted where a task says so), `design-near.md`, `design-vocabulary.md`, `design-language.md`, `design-detector.md`, `vocabulary.draft.json`, `code-map.md`, `spike/gazebo-camera.md`, `spike/detector.md`. Where the spec and a part design disagree, the spec wins (M1); `design-language.md` was written for vocabulary rev 1, so its `desk → table` and `bookshelf → shelf` examples are replaced by the spec's rev-2 values (`lookup("desk") == "desk"`, 本棚 → bookshelf, 戸棚 → cabinet).
+- In the same folder: `builder-check.md` (its minor defaults M1–M15 are adopted where a task says so), `plan-review.md` (its findings I1–I8 and M1–M15 are folded into this plan; the rulings it asked for are taken by default and listed in "Notes for the controller" at the end; this plan cites them as "review I1", "review M7" and so on, apart from builder-check's M1–M15 and the spec's measurements M0–M5), `design-near.md`, `design-vocabulary.md`, `design-language.md`, `design-detector.md`, `vocabulary.draft.json`, `code-map.md`, `spike/gazebo-camera.md`, `spike/detector.md`. Where the spec and a part design disagree, the spec wins (M1); `design-language.md` was written for vocabulary rev 1, so its `desk → table` and `bookshelf → shelf` examples are replaced by the spec's rev-2 values (`lookup("desk") == "desk"`, 本棚 → bookshelf, 戸棚 → cabinet).
 - The objects design `docs/superpowers/specs/2026-11-05-go2-objects-design.md` ("the objects design"): everything this spec does not change, and its §2 acceptance numbers.
 
 ## Global Constraints
@@ -75,12 +75,17 @@ The five inputs most likely to bite a person that no spec-listed test exercises,
 | 2a | 2.1 Detector camera and geometry · 2.2 Detector protocol and tracker · 2.3 Bridge and compose for Gazebo · 2.4 objects_check · 2.5 Household layout · 2.6 Fuel image | wave 1 merged |
 | 2b | 2.7 Detector core and oracle · 2.8 Detector image and compose service · 2.9 Gazebo camera (xacro, launch) | 2a merged |
 | 2c | 2.10 Detector node · 2.11 YOLOE adapter · 2.12 Recording and replay tools | 2b merged |
-| 3 `[HEAVY]` | H1 … H7, strictly one at a time (order below) | the previous step merged |
-| 4 | 4.1 Docs | H6 merged |
+| 3 `[HEAVY]` | H1 … H7, strictly one at a time (order below; each step's header says what it waits for) | the previous step merged |
+| 4 | 4.1 Docs | H6 merged and H4 passed |
 
 - Each task runs in its own worktree on branch `objects2/<short-name>` (the name is given in each task header), cut from `feat/open-objects` at the start of its stage. The controller merges with `git merge --no-ff`, one branch at a time in task-number order, and runs the full suite after each merge.
+- A stage is the unit that runs in parallel, and its tasks own disjoint files (table below). A file that two stages of one wave touch (`compose.yaml`, `tests/test_detector_protocol.py`) is edited by the later stage only after the earlier stage has merged.
 - Wave-3 steps run in their own worktree too (`objects2/h<k>`), cut after the previous step merged, and commit only records and the pins they are told to change.
-- Heavy-step order: H4 (trials, earliest after wave 1) → H7 (slow sweep) → H1 (Fuel image) → H2 (detector image) → H3 (detection preview) → H5 (S7, logical Gazebo) → H6 (A7, detector Gazebo). H4 and H7 may move earlier or later; H1 → H2 → H3 → H5 → H6 is fixed (spec §14: A6 before S7).
+- Heavy-step order: H4 (trials; first, as soon as wave 1 is merged) → H1 (Fuel image; after Task 2.6 merged) → H7 (slow tests; after wave 2 merged) → H2 (detector image) → H3 (detection preview) → H5 (S7, logical Gazebo) → H6 (A7, detector Gazebo). H1 → H2 → H3 → H5 → H6 is fixed (spec §14: A6 before S7). H4 may move later but must pass before H5 (the H4 gate below). H7 may move later, but only to a time when no code task of ours runs a `T` suite and no other heavy step runs (its timing asserts need a quiet CPU); after wave 2 is merged no code task runs until Task 4.1.
+- **H4 gate (ruling on the O10 timing; see "Notes for the controller").** Tasks 1.4 and 1.8 merge into `feat/open-objects` at stages 1c and 1d as planned: Task 1.8 and wave 2 are built on them, and nothing in wave 2 depends on the prompt text. H4 gates the end of the shared step instead: H5 (S7) and Task 4.1 do not start until both H4 runs have met the O10 acceptance. If H4 misses, H4 stops and reports every miss with its numbers, and the controller picks one of:
+  - fix forward: a prompt change (spec §9.2's first lever, the hypernym example) on `objects2/h4-fix`, its full suite, merge, then H4 again (two new runs);
+  - revert: `git revert -m 1` of the Task 1.8 merge commit, then of the Task 1.4 merge commit, on `objects2/h4-revert`, its full suite, merge, and a new plan for the language part.
+  Wave-2 code tasks and H1–H3 go on meanwhile.
 
 ### File ownership
 
@@ -95,7 +100,7 @@ The five inputs most likely to bite a person that no spec-listed test exercises,
 | 1d | 1.7 | `voice_ltl/session.py`, `tests/test_session_detour.py` |
 | 1d | 1.8 | `scripts/object_phrasing_trials.py`, `tests/test_phrasing_trials.py` |
 | 2a | 2.1 | `detector/__init__.py`, `detector/camera.py`, `detector/geometry.py`, `tests/test_detector_geometry.py` |
-| 2a | 2.2 | `detector/protocol.py`, `detector/tracker.py`, `tests/test_detector_tracker.py`, `tests/test_detector_protocol.py` |
+| 2a | 2.2 | `detector/protocol.py`, `detector/tracker.py`, `detector/scripted.py`, `tests/test_detector_tracker.py`, `tests/test_detector_protocol.py` |
 | 2a | 2.3 | `gazebo/bridge_core.py`, `gazebo/gazebo_bridge.py`, `compose.yaml`, `tests/test_gazebo_objects.py`, `tests/test_bridge_core.py` |
 | 2a | 2.4 | `gazebo/tools/objects_check.py`, `tests/test_objects_check.py` |
 | 2a | 2.5 | `gazebo/layouts/household.json`, `tests/test_household.py`, `tests/test_sim_household.py` |
@@ -105,21 +110,47 @@ The five inputs most likely to bite a person that no spec-listed test exercises,
 | 2b | 2.9 | `gazebo/go2_sensors.urdf.xacro`, `gazebo/launch/go2_gazebo.launch.py`, `gazebo/launch_config.py`, `tests/test_gazebo_camera.py` |
 | 2c | 2.10 | `detector/node.py`, `tests/test_detector_node.py` |
 | 2c | 2.11 | `detector/yoloe.py`, `tests/test_detector_yoloe.py` |
-| 2c | 2.12 | `gazebo/tools/record_frames.py`, `gazebo/tools/detector_check.py`, `tests/test_detector_check.py`, `tests/fixtures/detector/` |
+| 2c | 2.12 | `gazebo/tools/record_frames.py`, `gazebo/tools/detector_check.py`, `gazebo/tools/png_rgb.py`, `tests/test_detector_check.py`, `tests/fixtures/detector/` |
 | 3 | H1–H7 | `docs/reference/gazebo_open_objects.md` (new), `docs/reference/object_phrasing_trials.md`, and the pins each step names |
 | 4 | 4.1 | `README.md`, `docs/simulation.md`, `docs/design.md`, `docs/vocabulary.md`, the two specs, `tests/test_docs_open_objects.py`, doc pins in `tests/test_gazebo_objects.py` |
 
 ### Commands
 
-- **`T <pytest args>`**, the light test run (rulings Q2: the main checkout's compose project with the worktree mounted):
-  ```bash
-  cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID=<n> \
-    -v <wt>:/wt -w /wt -e PYTHONPATH=/wt app python3 -m pytest -q -m "not slow" <pytest args>
-  ```
-  `<wt>` is the task's worktree (absolute path), `<n>` a domain id unique to the task (100 + the task number without the dot: Task 1.3 → 113, Task 2.10 → 210). Before the first run in a worktree, check the import: the same command with `python3 -c "import voice_ltl; print(voice_ltl.__file__)"` must print `/wt/voice_ltl/__init__.py`.
+The commands are shell functions, not text macros, so a variable written in front of one (`OBJECTS_SOURCE=detector G up …`) reaches compose. Each tool call starts a fresh shell: put the definitions at the top of the same command, or write them once into a throwaway file in the scratch area (never added to git) and `source` it. `WT` is the task's worktree (absolute path; written `<wt>` below) and `DOMAIN` the task's ROS domain id from the table.
+
+```bash
+WT=<wt>; DOMAIN=<id from the table>
+# TA <command>: any command in the app image (rulings Q2: the main checkout's compose project, the worktree mounted at /wt)
+TA() { (cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID="$DOMAIN" \
+          -v "$WT":/wt -w /wt -e PYTHONPATH=/wt:/wt/nl_control app "$@"); }
+# T <pytest args>: the light test run
+T()  { TA python3 -m pytest -q -m "not slow" "$@"; }
+# TD <pytest args>: the detector image (only in Wave 3)
+TD() { docker run --rm -v "$WT":/work -v /dev/null:/work/env.txt:ro -w /work \
+          go2-voice-ltl-detector:yoloe-11s python3 -m pytest -q "$@"; }
+# G <compose args>: our Gazebo stack (only in Wave 3); always `up -d --no-build`
+G()  { (cd "$WT" && GO2_GAZEBO_PORT=6081 GO2_UI_PORT=8811 docker compose -p go2oo "$@"); }
+```
+
+- **`T`:** `PYTHONPATH=/wt:/wt/nl_control`, so a bare `TA python3 -c "import detector.geometry"` finds `go2_nl_control` (imported by `gazebo/bridge_core.py`); pytest also gets it from `tests/conftest.py`. Before the first run in a worktree, check the import: `TA python3 -c "import voice_ltl; print(voice_ltl.__file__)"` must print `/wt/voice_ltl/__init__.py`.
 - **Full suite:** `T tests nl_control/tests`. Expected: `0 failed`. Every task ends with it.
-- **`TD <pytest args>`** (detector image, only in Wave 3): `docker run --rm -v <wt>:/work -v /dev/null:/work/env.txt:ro -w /work go2-voice-ltl-detector:yoloe-11s python3 -m pytest -q <pytest args>`.
-- **`G <compose args>`** (our Gazebo stack, only in Wave 3): `cd <wt> && GO2_GAZEBO_PORT=6081 GO2_UI_PORT=8811 docker compose -p go2oo <compose args>`. Always `up -d --no-build`. It has no Claude login (the worktree has no `env.txt`); that is enough for everything except the voice step of H6.
+- **`G`:** our compose project `go2oo` (its own network, so its default ROS domain cannot meet the user's stack). It has no Claude login (the worktree has no `env.txt`); that is enough for everything except the voice step of H6, which has its own command there.
+- **ROS domain ids** (`DOMAIN`): one per task or step, all in 1..101 (ROS 2's safe range on Linux; higher ids can collide with ephemeral ports), never 0 (the default of the user's stack, whose network `T` shares) and never 77 (the id of the user's measurement commands):
+
+  | Task / step | id | Task / step | id | Task / step | id |
+  |---|---|---|---|---|---|
+  | 1.1 | 31 | 2.1 | 41 | H1 | 61 |
+  | 1.2 | 32 | 2.2 | 42 | H2 | 62 |
+  | 1.3 | 33 | 2.3 | 43 | H3 | 63 |
+  | 1.4 | 34 | 2.4 | 44 | H4 | 64 |
+  | 1.5 | 35 | 2.5 | 45 | H5 | 65 |
+  | 1.6 | 36 | 2.6 | 46 | H6 | 66 |
+  | 1.7 | 37 | 2.7 | 47 | H7 | 67 |
+  | 1.8 | 38 | 2.8 | 48 | 4.1 | 71 |
+  | — | — | 2.9 | 49 | controller's merge runs | 81 |
+  | — | — | 2.10 | 50 | fix branches (`objects2/*-fix`) | 82 |
+  | — | — | 2.11 | 51 | — | — |
+  | — | — | 2.12 | 52 | — | — |
 - **D11 gate**, before every `[HEAVY]` step and before every Gazebo run inside one: `docker ps --format '{{.Names}}'` must not list `go2-gazebo-1` (otherwise do not start; try again later; never stop it), and no other heavy step of ours may be running. Record `docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}'`, `pmset -g batt` and `pmset -g custom | grep -i lowpower` before and after into the step's record.
 
 ---
@@ -192,7 +223,8 @@ def test_each_rule_rejects_a_broken_copy(rule, mutate):
     with pytest.raises(V.VocabularyError, match=rf"rule {rule}:"):
         V.parse(data)
 ```
-  `BROKEN` rows (write each as a small function): rule 1 — `version` 2; an unknown key `word` in an entry; an unknown top-level key. Rule 2 — label `Box`; `cw_box`; `sim_box`; `near_box`; a 25-character label; a duplicate label; `box` removed; `chair` removed. Rule 3 — `ja` 「椅子」 with brackets; `ja` not among its words; a 13-character `ja`. Rule 4 — word `TV`; a 21-character word; word 本; a word of another kind (椅子 added to `sofa`); a `not_word` used as a word; 21 words in one kind. Rule 5 — `ball` gets the word 箱を (so 「箱を」 resolves to ball). Rule 7 — detect `Chair`; a 41-character prompt; another kind's prompt; `person`; 4 prompts. Rule 8 — 9 `en`; `en` `couch` on `bench` (an alias of `sofa`). Rule 9 — size `[0.5, 3.1]`; size `[0.3, 0.5]` (short first); height 0. Rule 10 — not_word ほげ (contains no word); a not_word that is a word. Rule 11 — 201 kinds.
+  `BROKEN` rows (write each as a small function): rule 1 — `version` 2; an unknown key `word` in an entry; an unknown top-level key. Rule 2 — label `Box`; `cw_box`; `sim_box`; `near_box`; a 25-character label; a duplicate label; `box` removed; `chair` removed. Rule 3 — `ja` 「椅子」 with brackets; `ja` not among its words; a 13-character `ja`. Rule 4 — word `TV`; a 21-character word; word 本; a word of another kind (椅子 added to `sofa`); a `not_word` used as a word; 21 words in one kind. Rule 5 — `ball` gets the word 箱を (so 「箱を」 resolves to ball). Rule 7 — detect `Chair`; a 41-character prompt; another kind's prompt; `person`; 4 prompts. Rule 8 — 9 `en`; `en` `couch` on `bench` (an alias of `sofa`). Rule 9 — size `[0.5, 3.1]`; size `[0.3, 0.5]` (short first); height 0. Rule 10 — not_word ほげ (contains no word). Rule 11 — 201 kinds (the 151 extra kinds are deep copies of `box` relabelled `pad1` … `pad151`, nothing else changed; their copied `ja` and words would fail rules 3 and 4, so this row raises rule 11 only because the count is checked right after rule 1, Step 3).
+  One owner per condition: spec rule 4 (a word is not a `not_word`) and rule 10 (a not_word is not itself a word) state the same condition, and `parse` raises on the first failure, so the condition belongs to **rule 4 only** (its row "a `not_word` used as a word"); rule 10 checks only that every not_word contains some word. The rule numbers stay as the spec's, because `VocabularyError` messages cite them.
 
 ```python
 def test_reserved_segments_come_from_world():                         # C5: a set built from the code, no count
@@ -277,7 +309,7 @@ def test_many_detect_prompts_warn(monkeypatch, caplog):
 
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_vocabulary.py`. Expected: FAIL, `ModuleNotFoundError: No module named 'voice_ltl.vocabulary'`.
 - [ ] **Step 3: Implement `voice_ltl/vocabulary.py` and the three hooks.**
-  - `parse` checks spec §7.3 rules 1–5 and 7–11 in that order and raises on the first failure with the message form above; JSON errors from `load` are rule 1 with "line L column C".
+  - `parse` checks spec §7.3 in this order and raises on the first failure with the message form above: rule 1; rule 11's count (≤ `MAX_KINDS` kinds, so a huge file fails before the per-kind work); rules 2–5; rules 7–10; then rule 11's warning. Rule 4 owns "a word is not a not_word"; rule 10 checks only that each not_word contains a word. JSON errors from `load` are rule 1 with "line L column C".
   - `kinds_in`: NFKC the text; replace every occurrence of each `not_word` by the same number of 「・」; one compiled alternation of `_word_pattern(w)` for all words, longest first; `finditer` left to right (so at one position the longest word wins); map the matched text to the vocabulary spelling (strip a trailing ー when the bare form is the word).
   - `lookup`: `normalise_alias`; a label → itself; else the label whose normalised `detect` or `en` alias it is; else retry once without a trailing `es`, then without a trailing `s`; else None. `detect_ignore` words are never aliases.
   - Rule 5 runs inside `parse` with the new matcher over `SUFFIXES`.
@@ -575,6 +607,7 @@ def test_near_keys_full_sweep():                          # O32: 0.025 m / 0.25 
 # voice_ltl/translator.py
 MAX_UNRESOLVED = 10; MAX_UNRESOLVED_LABEL = 64
 _GOING_TAIL = re.compile(                 # fullmatch on the stripped rest of an item; .match on an instruction clause
+                                          # every part is optional, so it also matches "" (see "Object items" below)
     r"(?:の?(?:ところ|所|前|そば|横|近く|方|周り|まわり|周囲))?"
     r"(?:まで|へ|に|を)?"
     r"(?:(?:ぐるっと|ぐるりと)?(?:歩く|歩いて|あるく|あるいて|行く|行って|いく|いって|進む|進んで|近づく|近づいて"
@@ -607,6 +640,7 @@ def _redacted(value)                       # also every string inside a dict, re
 Rules the signatures do not settle:
 - **Translation order (spec §9.8).** `view = scene` with `focus = labels_in(instruction)` when there is a kind; `propositions = PROPOSITIONS + view.propositions()`; each reply: `entries = _unresolved(reply.get("unresolved_objects"), instruction)` (a missing key reads as `[]`); a refusal returns `items = unsupported + [e.said for e in entries if no item contains it]` with `_unsupported_message(items, view, entries, instruction)` and an `Attempt` holding `unresolved`; after `check` passes: (O8) entries whose label is None or not a label the formula uses refuse with their `said`s as items; then `_kind_guard`; then `_too_far` (message name = the user's word for that kind, else `ja`); then success as today. `Translation.scene` stays the frozen Scene.
 - **Object items (spec §9.6).** An item names an object only when it has no handling verb, its object word (the last vocabulary word in the item, or the last contained entry `said`; on a tie the `said` wins) is followed by nothing or by a `_GOING_TAIL` fullmatch, and — when nothing follows — the word's clause in the instruction (from the word up to the next 「、。,.，．！!？?」) starts with a going/circling phrase other than a bare particle, or with と / や / 、 / ・ and another object word that passes the same test (depth ≤ 4). A word that is not in the instruction is trusted. If the word occurs more than once, any occurrence that passes is enough (M5). **Whitespace is removed from the clause before matching** (Review Focus 4).
+  - Because every part of `_GOING_TAIL` is optional, `.match` succeeds on any clause, at worst with an empty match. So the clause test counts a match only when the matched text contains a place word (ところ … 周囲), まで, or a verb (歩く … 〈数〉周して); an empty match or a bare を / に / へ does not count (spec §9.6 rule 3 excludes exactly those three particles). `going_targets` uses the same test. The item test (`fullmatch` on the rest of the item after the object word) keeps the empty rest as "nothing follows", which then goes to the clause test.
 - **Kind of an object word (spec §9.7).** A vocabulary word gives its label, named by that word. An entry's `said` gives the label of its own head word when that word ends the `said` or is followed by a going tail, else Claude's accepted label named `ja`, else no kind.
 - **Message per kind (spec §9.9 table).** Scene count 0 → `msg_not_found`; every one > 6 m from the frozen pose → `msg_too_far`; ≥ 2 listed → `msg_ambiguous(label, Scene count, directions of the listed ones in listing order, word)`; 0 listed → `msg_not_listed`; 1 listed → no count message (the item keeps 「「…」は単語帳にないので、まだできません。」).
 - **Kind guard (O35).** Named targets = `going_targets(instruction)`. If the formula uses an object whose label is not a named target and some named target has no object in the Scene, refuse before standing up with `msg_not_found(label, word)` once per such target.
@@ -637,6 +671,9 @@ def test_an_entry_refuses_a_formula_unless_its_kind_is_used():
 def test_words_come_first_then_claudes_label():          # 段ボール+chair -> box message; グリーン+potted_plant ->
     # 観葉植物 message; テーブルの上のコップ+cup -> 単語帳; an entry in no item is appended to unsupported
 def test_only_going_or_circling_words_get_count_messages():   # the two tables of spec §9.6, on Scene() and TWO_BOXES
+    # plus the empty-tail and bare-particle cases: going_targets("箱。椅子まで行って") == {"chair": "椅子"} and
+    # going_targets("箱を、椅子まで行って") == {"chair": "椅子"}; the item 「箱」 refused under either instruction gives the
+    # 単語帳 message, not a count message; going_targets("箱まで、椅子を押して") == {"box": "箱"} (まで alone counts)
 def test_kind_guard_refuses_another_kind():
     t = translate("ゴミ箱まで行って", llm_for("F near_box_1"), scene=SCENE)
     assert t.formula is None and t.message == msg_not_found("trash_can", "ゴミ箱")
@@ -863,9 +900,18 @@ def plausible(fp: Footprint, prior: tuple[float, float]) -> bool                
 def ground_ray(box, camera: CameraModel, cam_pos, cam_r, prior) -> Footprint | None
 def vacancy_counts(points_world, lidar_pos, centre, size, height) -> tuple[int, int]   # (n_in, n_through)
 def is_vacant(n_in: int, n_through: int) -> bool                                 # n_in < 3 and n_through >= 5
+@dataclass(frozen=True)
+class Sighting:                                        # what the tracker needs from one detection (Task 2.2's Observation)
+    footprint: Footprint | None                        # None: no usable geometry (seed alone implausible, spec §11.6 step 7)
+    supported: bool                                    # LiDAR-supported; False for the ground-ray fallback and for None
+    fallback: bool                                     # footprint from ground_ray
+    points_xy: np.ndarray | None                       # N x 2 odom XY of the picked cluster (grown, or the seed alone when the
+                                                       # growth was implausible), before the MAD trim; None unless supported
+    cam_xy: tuple[float, float]                        # camera position in odom at the image stamp
 def observe(box, mask, points_world, base_pos, base_quat, camera: CameraModel,
-            label: str) -> tuple[Footprint | None, bool]                          # (footprint, LiDAR-supported)
+            label: str) -> Sighting
 ```
+- `observe` maps 1:1 onto `tracker.Observation` (Task 2.2), so Task 2.7 builds it without redoing the geometry: `Observation(det.label, det.confidence, det.box, fp.x, fp.y, fp.size, fp.filled, s.points_xy, s.supported, s.fallback, s.cam_xy)` with `fp = s.footprint`. When supported, `s.footprint == footprint(s.points_xy, s.cam_xy, prior)`, so the tracker's `fuse` over the last 6 hits uses the same points and the same function.
 - The algorithms are spec §11.6 and `design-detector.md` §7.2–§7.5: seed from the eroded mask (or the shrunk box), seed clusters at 0.25 m, the nearest cluster with ≥ max(5, 25 % of the largest), growth over all cut points (360°) with eps max(0.15, 1.5·r·1°) within `measure_radius(label)` of the seed median and z ≤ height + 0.3, the plausibility fallback to the seed, the one-view footprint with MAD trim and depth completion (`filled = True` whenever the depth is not the observed one), `EDGE_PAD` on each side, sides clamped to [0.1, 3.0]; the ground-ray fallback gives [L, L] and is never "supported".
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_detector_geometry.py` (`design-detector.md` §16 "Camera and extrinsics" and "Selection, clusters, growth, footprint", with these values):
@@ -879,16 +925,17 @@ def observe(box, mask, points_world, base_pos, base_quat, camera: CameraModel,
   - `test_published_footprint_covers_the_object` (O12): true boxes 0.3–2.0 m, yaws 0–90° in 15° steps, ranges 1–5 m, simulated 1° × 4° returns of the visible faces: the AABB contains the true footprint whenever the visible faces are fully inside the LiDAR band; the exceptions are listed in the test.
   - `test_ground_ray_fallback` (distance h·fy/(v − cy) on a flat floor; box at the bottom edge → None; above the horizon → None; a tilted camera; size [L, L]).
   - `test_vacancy` (present → not vacant; removed with a wall behind → vacant; removed behind the Go2 → vacant; an occluder in front → not vacant; behind the Go2's own body → not vacant; rays passing over a low object are not counted).
+  - `test_observe_gives_what_the_tracker_needs` (a supported face-on box: `supported` True, `fallback` False, `points_xy` N × 2 inside the true footprint ± 0.1 m, `cam_xy` equal to `camera_pose(...)`'s XY, and `footprint(points_xy, cam_xy, prior) == footprint`; a box with 2 LiDAR points and a visible bottom edge: `fallback` True, `supported` False, `points_xy` None, size [L, L]; an implausible seed: `footprint` None, `supported` False).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_geometry.py`. Expected: FAIL (`No module named 'detector'`).
 - [ ] **Step 3: Implement** `detector/camera.py` and `detector/geometry.py`.
-- [ ] **Step 4: Run.** Same command. Expected: PASS, and `python3 -c "import detector.geometry, sys; assert 'cv2' not in sys.modules and 'torch' not in sys.modules"` exits 0 in the app image.
+- [ ] **Step 4: Run.** Same command. Expected: PASS, and `TA python3 -c "import detector.geometry, sys; assert 'cv2' not in sys.modules and 'torch' not in sys.modules"` exits 0 (in the app image; `TA` puts `/wt/nl_control` on the path for `gazebo.bridge_core`'s `go2_nl_control` import).
 - [ ] **Step 5: Full suite.** Run: `T tests nl_control/tests`. Expected: 0 failed.
 - [ ] **Step 6: Commit.** `git add detector/__init__.py detector/camera.py detector/geometry.py tests/test_detector_geometry.py` and `git commit -m "feat: detector camera model and LiDAR footprint geometry"`.
 
 ### Task 2.2: Detector protocol and tracker (stage 2a, branch `objects2/det-tracker`)
 
 **Files:**
-- Create: `detector/protocol.py`, `detector/tracker.py`, `tests/test_detector_tracker.py`, `tests/test_detector_protocol.py` (`detector/__init__.py` comes from Task 2.1; until the merge `detector` imports as a namespace package)
+- Create: `detector/protocol.py`, `detector/tracker.py`, `detector/scripted.py` (the shared test detector, review M7), `tests/test_detector_tracker.py`, `tests/test_detector_protocol.py` (`detector/__init__.py` comes from Task 2.1; until the merge `detector` imports as a namespace package)
 
 **Interfaces:**
 - Consumes: `vocabulary.LABELS`, `objects.Obj`, `objects._id_key`.
@@ -910,6 +957,14 @@ YOLOE_THRESHOLDS = Thresholds(0.25, 0.35, 0.5)
 def check_detections(dets: Sequence[Detection], image_shape: tuple[int, ...], labels: frozenset[str]) -> None   # the contract
 def load_detector(name: str | None = None) -> Detector   # env DETECTOR, default "yoloe"; lazy import: yoloe -> detector.yoloe,
                                                          # oracle -> detector.oracle, yoloe_pf -> detector.yoloe_pf; else ValueError
+# detector/scripted.py (stdlib + numpy; the one test detector, used by the tests of 2.2, 2.7, 2.10 and 2.12)
+class ScriptedDetector:                                  # name "scripted"; satisfies Detector
+    def __init__(self, script: Sequence[list[Detection]] | Callable[[int, np.ndarray], list[Detection]],
+                 thresholds: Thresholds = YOLOE_THRESHOLDS, delay_s: float = 0.0, fail_on: frozenset[int] = frozenset()) -> None
+        # detect() call k returns script[k] (the last one repeats) or script(k, image); sleeps delay_s first;
+        # raises RuntimeError on the calls in fail_on (for the 3-errors backoff tests)
+    calls: int; vocabulary: tuple[Mapping[str, Sequence[str]], Sequence[str]] | None   # what set_vocabulary got
+    def set_vocabulary(self, prompts, ignore) -> None; def detect(self, image_rgb) -> list[Detection]; def close(self) -> None
 # detector/tracker.py (spec §11.7)
 M = 2; N = 3; MIN_HIT_GAP_S = 0.5; TENTATIVE_TTL_S = 30.0; ASSOC_BASE = 0.5; ASSOC_GAIN = 0.5; FALLBACK_EXTRA = 0.5
 XLABEL_IOU = 0.4; MERGE_IOU = 0.5; RELABEL_HITS = 5; RELABEL_RATIO = 2.0; CONF_WINDOW = 10; TRACK_POINT_FRAMES = 6
@@ -929,8 +984,10 @@ class Tracker:
     def mark_vacant(self, key: str, vacant: bool, scan_t: float) -> None
     def rows(self, wall_now: float, idle_period_s: float) -> list[Obj]   # confirmed tracks, _id_key order, confidence/measured set
     def stats(self) -> dict      # tracks_tentative, tracks_confirmed, ids_issued {label: n}, ids_retired, filled [ids], notes
-    def reset(self) -> None      # forget every track and restart every label's numbering at 1
+                                 # notes: one string per event, e.g. "box: ids 1-99 used, new box tracks ignored" (C6)
+    def reset(self) -> None      # forget every track and restart every label's numbering at 1 (notes cleared too)
 ```
+- `Observation` is filled 1:1 from `geometry.Sighting` (Task 2.1) by the core (Task 2.7); a detection whose `Sighting.footprint` is None gets no `Observation`.
 - The tracker never reads names from Gazebo, `/sim/world`, the layout or the truth topic; never publishes a tentative track; and re-checks every published label against `vocabulary.LABELS` (spec §11.7).
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_detector_tracker.py` (`design-detector.md` §16 "Tracker", with a stub `fuse`): sightings (0.24 ignored; 0.30 refreshes a confirmed track's `visible` but creates no id; a new id needs one hit ≥ 0.35; a `by_label` override raises it for that label only); confirmation (1 hit → nothing; 2 hits in 3 in-view frames ≥ 0.5 s apart → `chair_1`; two identical frames 0.5 s apart count twice; two hits within 0.5 s count once; frames out of view or beyond 6 m do not count toward N; a tentative track older than 30 s is dropped without an id; no supported hit → 3 of 3 at ≥ 0.5); association (same label within the gate → one track; two boxes 1.0 m apart → `box_1`, `box_2`; counters per label); ids (`test_ids_are_never_reused_and_stop_at_99`: retire `box_1` → the next is `box_2`; after `box_99` a new box is not published and `stats()["notes"]` has one note (C6); rows in `_id_key` order); votes (`bench` on a confirmed `box` → no new track; overlapping confirmed tracks → older id kept; a chair under a table → both kept; relabel at 2× over 5 hits with one hit ≥ confirm → old id retired, new id); forgetting (vacant twice ≥ 0.5 s apart → retired; misses with LiDAR still occupied → kept, `visible` false after 5 s; out of view → kept; an unsupported track → retired after 3 in-view misses, not when occluded); `test_fused_size_recovers_after_one_bad_frame` (it leaves the window after 6 hits); `test_visible_hold_follows_the_idle_period`; `test_filled_ids_are_reported`; `test_reset_restarts_numbering`; `test_rows_round_trip_through_objects_parse` (with `source="detector"`, confidences in [0, 1], `measured`).
@@ -939,7 +996,7 @@ class Tracker:
 - [ ] **Step 3: Implement** `detector/protocol.py` and `detector/tracker.py`.
 - [ ] **Step 4: Run.** Same command. Expected: PASS.
 - [ ] **Step 5: Full suite.** Run: `T tests nl_control/tests`. Expected: 0 failed.
-- [ ] **Step 6: Commit.** `git add detector/protocol.py detector/tracker.py tests/test_detector_tracker.py tests/test_detector_protocol.py` and `git commit -m "feat: detector protocol and tracker (confirmation, ids, votes, forgetting)"`.
+- [ ] **Step 6: Commit.** `git add detector/protocol.py detector/tracker.py detector/scripted.py tests/test_detector_tracker.py tests/test_detector_protocol.py` and `git commit -m "feat: detector protocol and tracker (confirmation, ids, votes, forgetting)"`.
 
 ### Task 2.3: Bridge — layout spawn, truth topic, source switch, sizing — and compose for Gazebo (stage 2a, branch `objects2/bridge`)
 
@@ -973,7 +1030,10 @@ class ObjectMemory:
     def message(self, stamp: float, source: str = "logical", layout: str | None = None) -> dict   # + top-level "layout"
 ```
 - `gazebo_bridge.py`: read `objects_source()` and `layout_name()` once; load the layout and call `missing_models` before spawning (log one line naming the folders and `GZ_SIM_RESOURCE_PATH`, then exit non-zero; an unknown layout logs the `LayoutError`); spawn every entry with `spawn_fields`; publish truth always and `/go2/objects` only in logical mode (`objects_topics`); in detector mode skip `_measure_sizes` and give button boxes the cardboard visual; size with `footprint_size(..., radius=measure_radius(label))` around the footprint centre; every 10 s log `objects_publisher_note(source, count_publishers(OBJECTS_TOPIC))` as an error when not None.
-- `compose.yaml`, service `gazebo`: `image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel1}`; `build: {context: ./docker, dockerfile: Dockerfile.gazebo-fuel}` (the controller image `patch-0005` is built with `Dockerfile.gazebo` first; keep the comments about older images and "Never run build with GO2_GAZEBO_IMAGE set"); `environment: OBJECTS_SOURCE: "${OBJECTS_SOURCE:-logical}"`, `GO2_LAYOUT: "${GO2_LAYOUT:-household}"`; `ports: "127.0.0.1:${GO2_GAZEBO_PORT:-6080}:6080"`.
+- `compose.yaml`, service `gazebo`: `image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel1}`; `build: {context: ./docker, dockerfile: Dockerfile.gazebo-fuel}` (the controller image `patch-0005` is built with `Dockerfile.gazebo` first); `environment: OBJECTS_SOURCE: "${OBJECTS_SOURCE:-logical}"`, `GO2_LAYOUT: "${GO2_LAYOUT:-household}"`; `ports: "127.0.0.1:${GO2_GAZEBO_PORT:-6080}:6080"`. The comments about the older images stay, with the lines that pin (`Never run`, `this tree cannot rebuild it`, the two `GO2_GAZEBO_IMAGE=… up` examples). Two comment lines change, because `build:` is now the thin image (review M13):
+  - the header line `# patches 0001-0005 (docker/patches). …` becomes `# go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image patch-0005-fuel1 on top of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). The older images are kept on this Mac only:`;
+  - the warning's last sentence `compose would build 0001-0005 from this tree and put that image under the given tag.` becomes `compose would build the thin Fuel image (Dockerfile.gazebo-fuel, on top of patch-0005) and put it under the given tag.`
+  `test_the_gazebo_image_carries_the_controller_patches` keeps its pins and its docstring says the same.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_gazebo_objects.py`:
 
@@ -1048,6 +1108,11 @@ def summarize(samples, expect, exit_code, log, layout=DEFAULT_LAYOUT, target: Ob
     # no target: today's §2 keys; target: final_edge, final_footprint_angle_deg, min_clearance (every footprint), final_edge
     # reported, or winding/min_edge for laps; plus the §2 keys when the target is chair_1 (near) or box_1 (lap); the box's
     # centre line (1.5 m / 45°) only when target is box_1, expect near and source == "logical" (O16)
+    # exit_code None and log None (watch only): the exit-code and first-action checks are skipped
+def last_source(payloads: Sequence[object]) -> str | None        # objects.parse_source of the last payload; None if none
+def settled(samples: list[Sample], moved_m: float = 0.3, quiet_s: float = 10.0) -> bool
+    # True once the body has moved >= moved_m from the first sample and the last quiet_s (sim) of samples stay
+    # within 0.05 m and 3 deg (watch's early end)
 def pair_rows(det: Sequence[Obj], truth: Sequence[Obj]) -> list[tuple[Obj, Obj]]   # greedy by centre distance,
                                                                                    # label-agnostic, within max(0.75, truth r)
 def covers(det: Obj, truth: Obj, filled: bool, cam_xy: tuple[float, float]) -> tuple[bool, float]   # C2, below
@@ -1056,7 +1121,7 @@ def accuracy(det_rows, truth_rows, lay: Layout, button_boxes, robot_xy, targets,
 def resolve(det_rows, truth_rows, target: str) -> str | None                  # the detector id paired with the truth id (M10)
 def rtf_stats(clock: list[tuple[float, float]], samples: list[Sample]) -> dict   # median of 10 s windows, walking, still
 ```
-- CLI: `run [--expect near|lap] [--target <truth id>] [--layout <name>] <formula>` (the layout defaults to `GO2_LAYOUT`, else `household`; `run` records `/clock` and adds `rtf_stats`); `accuracy [--seconds 15] [--range 5.0] [--target <id> ...]` (waits until the Go2 is still and `/go2/detector_status` reports `still_inferences` ≥ 3 or the seconds run out; takes `filled` from the same status and the button boxes from `/sim/world`); `resolve --target <truth id> [--timeout 30]` (waits until a `/go2/objects` row pairs with the target and has `measured: true`; prints `{"target", "id", "measured", "listed_after_still_s"}`; exit 0 found, 1 timeout, 2 no data); `rtf` and `objects` as today. `/go2/objects` without `source: "detector"` → `accuracy` exit 2; a truth message whose `layout` differs from `--layout` → exit 2.
+- CLI: `run [--expect near|lap] [--target <truth id>] [--layout <name>] <formula>` (the layout defaults to `GO2_LAYOUT`, else `household`; `run` records `/clock` and adds `rtf_stats`; it also subscribes to `/go2/objects` and passes `last_source(<the messages it got>)` as `source`, so `--target box_1` in logical mode gets the box's centre line); `watch --expect near|lap --target <truth id> [--layout <name>] [--seconds 300]` (records odometry and `/clock` like `run` but starts no child: the app drives the Go2, as in the voice step of H6; it ends at `--seconds` or when `settled(samples)`, then prints `summarize(samples, expect, None, None, target=…, …)` with `"child": null`; exit 0 pass, 1 fail, 2 no odometry); `accuracy [--seconds 15] [--range 5.0] [--target <id> ...]` (waits until the Go2 is still and `/go2/detector_status` reports `still_inferences` ≥ 3 or the seconds run out; takes `filled` from the same status and the button boxes from `/sim/world`); `resolve --target <truth id> [--timeout 30]` (waits until a `/go2/objects` row pairs with the target and has `measured: true`; prints `{"target", "id", "measured", "listed_after_still_s"}`; exit 0 found, 1 timeout, 2 no data); `rtf` and `objects` as today. `/go2/objects` without `source: "detector"` → `accuracy` exit 2; a truth message whose `layout` differs from `--layout` → exit 2.
 - `covers` (C2): not filled → the detector AABB contains the truth AABB (1 mm tolerance), fill shortfall 0. Filled → the depth axis is the axis on which |truth centre − cam_xy| is larger; the detector AABB must contain the truth AABB on both sides of the other axis and on the near side of the depth axis; the shortfall is max(0, truth far edge − detector far edge) along the depth axis, reported as `fill_short_m`, never a failure.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_objects_check.py`:
@@ -1067,6 +1132,8 @@ def rtf_stats(clock: list[tuple[float, float]], samples: list[Sample]) -> dict  
   - `test_section2_keys_unchanged_without_target` (today's tests keep passing).
   - `test_accuracy_*`: perfect rows pass; a 0.4 m error fails `max_pos_err`; a target at 0.2 m fails the target line; a wrong label lowers label accuracy and an `accept` alternative counts as right; a missing object lowers recall; an extra row is a false positive; a row on a button box is `button_boxes_seen`; a non-detectable truth is out of recall but still matches; an undersized footprint gives `covers` False; a filled sofa whose far edge is 0.14 m short has `covers` True and `fill_short_m` 0.14 (C2); a wrong `source` → exit 2.
   - `test_resolve_pairs_the_detector_row`; `test_layout_mismatch_is_no_data`; `test_rtf_stats_split_walking_and_still`.
+  - `test_last_source` (`[{"source": "detector", …}, {"source": "logical", …}]` → "logical"; `[]` → None; a last message without `source` → None, so `summarize` gives no centre line).
+  - `test_watch_skips_the_child_checks` (`summarize(..., exit_code=None, log=None)` on a standing-start near path has no `exit_code` or `first_action` failure, and still fails `final_edge` at 1.51 m); `test_settled` (still from the start → False; moved 1 m then 10 s still → True; moved then 9 s still → False).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_objects_check.py`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Same command. Expected: PASS.
@@ -1122,7 +1189,7 @@ def rtf_stats(clock: list[tuple[float, float]], samples: list[Sample]) -> dict  
 - Modify: `tests/test_detector_protocol.py` (add `OracleDetector` to the parametrisation; Task 2.2's file is free in stage 2b)
 
 **Interfaces:**
-- Consumes: Task 2.1 (`CameraModel`, `camera_pose`, `world_to_camera`, `observe`, `footprint`, `vacancy_counts`, `is_vacant`), Task 2.2 (`Detector`, `Thresholds`, `Tracker`, `Observation`), `bridge_core.StillGate`, `bridge_core.lidar_points_world`, `objects.format_message`, `vocabulary.VOCABULARY`.
+- Consumes: Task 2.1 (`CameraModel`, `camera_pose`, `world_to_camera`, `observe`, `Sighting`, `footprint`, `vacancy_counts`, `is_vacant`), Task 2.2 (`Detector`, `Thresholds`, `Tracker`, `Observation`, `ScriptedDetector`), `bridge_core.StillGate`, `bridge_core.lidar_points_world`, `objects.format_message`, `vocabulary.VOCABULARY`.
 - Produces:
 
 ```python
@@ -1150,19 +1217,24 @@ class DetectorCore:
     def next_job(self) -> Job | None                       # pairing and rate limits (spec §11.5)
     def run(self, job: Job) -> None                        # prepare(view) if present, detect, observe, track; errors counted
     def message(self) -> dict                              # format_message(rows, clock(), source="detector")
-    def health(self) -> dict                               # spec §11.9 keys + "filled": [ids]
+    def health(self) -> dict                               # spec §11.9 keys + "filled": [ids] + "shapeless": n
+                                                           # + "notes": the tracker's notes (C6, review M14)
     def reset(self, reason: str) -> None
 # detector/oracle.py (measurement only, never the default)
 class OracleDetector:                                      # name "oracle", thresholds YOLOE_THRESHOLDS
     def set_vocabulary(self, prompts, ignore) -> None
-    def set_truth(self, rows: Sequence[Obj], heights: Mapping[str, float]) -> None
+    def set_truth(self, rows: Sequence[Obj], heights: Mapping[str, float] | None = None) -> None
+        # heights by id; None -> vocabulary.height_of(row.label) for every row (spec §11.10: truth footprint x
+        # vocabulary height). Every caller (node, detector_check) passes None, so the oracle box uses the
+        # vocabulary height; only detector_check.preview projects with the layout height (Task 2.12)
     def prepare(self, view: View) -> None
     def detect(self, image_rgb: np.ndarray) -> list[Detection]   # truth footprint x height boxes, confidence 1.0, no mask
     def close(self) -> None
 ```
+- `run` turns each detection into an `Observation` through `observe(...)` and the 1:1 mapping of Task 2.1; a `Sighting` with `footprint` None makes no `Observation` (there is nothing to associate it with) and adds 1 to `health()["shapeless"]`. `health()["notes"]` is a copy of `tracker.stats()["notes"]`, so a label whose ids ran out (C6) shows on `/go2/detector_status` without reading logs.
 - Timers and rate limits use the wall clock (`wall`, steady); the gate, the pose lookups and every "0.5 s apart" use sensor stamps (M3). Any odometry, image or scan stamp more than `TIME_BACK_S` earlier than the latest seen calls `reset("sim time went backwards")`: gate, pose buffer, kept frames and tracks are cleared and the numbering restarts (M4).
 
-- [ ] **Step 1: Write the failing tests** in `tests/test_detector_core.py` (`design-detector.md` §16 "Core", with `ScriptedDetector`): no job before the gate opens; an image stamped before `still_since + 0.3` is refused even if still now; image and scan from different still intervals never pair; a job waits for odometry to pass both stamps (≤ 0.1 s); poses 0.03 m apart drop the job; one job in flight; gap max(1.0, p50); idle period after 3 frames; motion resets it; a result applied after the Go2 moved uses the stamp poses; start-up gives empty lists with status `loading`, then `ok` after the first odometry, scan and image; labels outside the vocabulary and ignored prompts never become tracks; no camera for 10 s → `no_camera`, tracks kept, vacancy still runs; no scan in the still interval → the image is dropped and the status says `no_cloud`; no odometry → no job and `no_odometry`; an image whose size differs from the CameraInfo or the constants → refused once with `bad_camera`; 3 exceptions → 30 s backoff then recovery; a slow p50 doubles the idle period; `health()` has every spec §11.9 key; and
+- [ ] **Step 1: Write the failing tests** in `tests/test_detector_core.py` (`design-detector.md` §16 "Core", with `ScriptedDetector`): no job before the gate opens; an image stamped before `still_since + 0.3` is refused even if still now; image and scan from different still intervals never pair; a job waits for odometry to pass both stamps (≤ 0.1 s); poses 0.03 m apart drop the job; one job in flight; gap max(1.0, p50); idle period after 3 frames; motion resets it; a result applied after the Go2 moved uses the stamp poses; start-up gives empty lists with status `loading`, then `ok` after the first odometry, scan and image; labels outside the vocabulary and ignored prompts never become tracks; no camera for 10 s → `no_camera`, tracks kept, vacancy still runs; no scan in the still interval → the image is dropped and the status says `no_cloud`; no odometry → no job and `no_odometry`; an image whose size differs from the CameraInfo or the constants → refused once with `bad_camera`; 3 exceptions → 30 s backoff then recovery; a slow p50 doubles the idle period; `health()` has every spec §11.9 key plus `filled`, `shapeless` and `notes`; `test_used_up_ids_show_in_the_status` (a tracker with `box_99` issued: the next confirmed box gives one entry in `health()["notes"]`); `test_shapeless_sighting_makes_no_observation`; and
 
 ```python
 def test_sim_time_going_backwards_resets_gate_buffer_and_tracks():   # Review Focus 2
@@ -1172,7 +1244,7 @@ def test_sim_time_going_backwards_resets_gate_buffer_and_tracks():   # Review Fo
     confirm_chair(core, t0=1.0)
     assert [r["id"] for r in core.message()["objects"]] == ["chair_1"]              # numbering restarted
 ```
-  In `tests/test_detector_oracle.py`: the oracle projects a truth box into the image box the camera model gives (±1 px), returns confidence 1.0 and no mask; through `DetectorCore` on a synthetic still scene (truth sofa and lamp, simulated LiDAR) it publishes both with position error ≤ 0.15 m and `covers` on the observed extent.
+  In `tests/test_detector_oracle.py`: the oracle projects a truth box (footprint × `vocabulary.height_of(label)` when no heights are given) into the image box the camera model gives (±1 px), returns confidence 1.0 and no mask; through `DetectorCore` on a synthetic still scene (truth sofa and lamp, simulated LiDAR) it publishes both with position error ≤ 0.15 m and `covers` on the observed extent.
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_core.py tests/test_detector_oracle.py tests/test_detector_protocol.py`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Same command. Expected: PASS.
@@ -1190,7 +1262,7 @@ def test_sim_time_going_backwards_resets_gate_buffer_and_tracks():   # Review Fo
   - `docker/Dockerfile.detector`: `design-detector.md` §3.2 as written (header comments naming the tag and AGPL-3.0; `FROM ros:jazzy-ros-base-noble`; the three ARG version pins and the CLIP commit; `ASSETS=https://github.com/ultralytics/assets/releases/download/v8.4.0`; both sha256 ARGs; apt `python3-venv libgl1 libglib2.0-0t64 ros-jazzy-rmw-cyclonedds-cpp curl ca-certificates`; the venv; torch from `https://download.pytorch.org/whl/cpu`; ultralytics, clip and `pytest==8.4.2`; `curl` + `sha256sum -c` for `yoloe-11s-seg.pt` and `mobileclip_blt.ts`; `ENV YOLO_CONFIG_DIR=/opt/yoloe/config YOLO_AUTOINSTALL=False YOLO_OFFLINE=True RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONPATH=/work:/work/nl_control OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`; `yolo settings weights_dir=/opt/yoloe sync=False`; the ENTRYPOINT sourcing Jazzy; `CMD ["python3", "-m", "detector.node"]`).
   - `compose.yaml`: a `detector` service **inserted before `gazebo:`** as `design-detector.md` §3.6 (profile `detector`, build `./docker` + `Dockerfile.detector`, image `go2-voice-ltl-detector:yoloe-11s`, `init: true`, volumes `./:/work`, `/dev/null:/work/env.txt:ro`, `detector-cache:/cache`, environment `OBJECTS_SOURCE: "${OBJECTS_SOURCE:-logical}"` and `DETECTOR: "${DETECTOR:-yoloe}"`, `cpus: "2.0"`, `restart: "on-failure:3"`, command `python3 -m detector.node`, no `env_file`, the default ROS domain like `gazebo`, M9); `detector-cache:` under `volumes:`.
   - `pytest.ini`: marker `detector: needs the detector image (ultralytics); skipped elsewhere`.
-- [ ] **Step 1: Write the failing tests** in `tests/test_detector_image.py`: `test_dockerfile_pins` (every version, the commit, both URLs and both sha256 from spec §11.1, `YOLO_OFFLINE=True`, `YOLO_AUTOINSTALL=False`, no `-pf` and no `11m`); `test_compose_detector_service` (the shape above, no `env_file`, `env.txt` masked); `test_detector_marker_is_registered`; `test_licence_isolation` (walk every `*.py` in the tree except `.git`: only `detector/yoloe*.py` contains `import torch`, `from torch`, `import ultralytics` or `from ultralytics`).
+- [ ] **Step 1: Write the failing tests** in `tests/test_detector_image.py`: `test_dockerfile_pins` (every version, the commit, both URLs and both sha256 from spec §11.1, `YOLO_OFFLINE=True`, `YOLO_AUTOINSTALL=False`, no `-pf` and no `11m`); `test_compose_detector_service` (the shape above, no `env_file`, `env.txt` masked); `test_detector_marker_is_registered`; `test_licence_isolation` (walk every `*.py` in the tree except `.git`: only `detector/yoloe*.py` has a line matching `re.compile(r"^\s*(?:import|from)\s+(?:torch|ultralytics)\b", re.M)`, indented imports included; the pattern is anchored to import statements so the test's own pattern string does not match itself). Every test file obeys it too: the `detector`-marked tests (Task 2.11) skip with `importlib.util.find_spec("ultralytics") is None` and read torch state only through adapter methods, never importing torch or ultralytics themselves (spec §4).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_image.py`. Expected: FAIL.
 - [ ] **Step 3: Implement.** No build here (H2 builds).
 - [ ] **Step 4: Run.** Run: `T tests/test_detector_image.py tests/test_gazebo_objects.py`. Expected: PASS.
@@ -1236,6 +1308,8 @@ def camera_bridge_args(source: str) -> tuple[str, ...] | None   # detector only
 STATUS_TOPIC = "/go2/detector_status"; IMAGE_TOPIC = "/gazebo/front_camera/image"
 CAMERA_INFO_TOPIC = "/gazebo/front_camera/camera_info"; CLOUD_TOPIC = "/utlidar/cloud"; ODOM_TOPIC = "/model/robot/odometry"
 def startup_refusal(environ: Mapping[str, str]) -> str | None    # one line when OBJECTS_SOURCE != "detector", else None
+                                                                  # main() prints it and returns 0, so compose's
+                                                                  # restart: on-failure:3 does not restart it (review M9)
 def image_from_msg(msg) -> np.ndarray                             # rgb8 H x W x 3 (np.frombuffer, no cv_bridge)
 def points_from_cloud(msg) -> np.ndarray                          # N x 3 float64
 def stamp_of(msg) -> float
@@ -1243,8 +1317,9 @@ class DetectorNode(Node):                                         # spec §11.1 
     def __init__(self, make_detector: Callable[[], Detector] = load_detector) -> None
 def main() -> int                                                 # python3 -m detector.node
 ```
-- Start-up: publishers and the 2 Hz (objects) and 1 Hz (status) steady wall-clock timers first, publishing `{"frame": "odom", "source": "detector", "objects": []}` and `{"ok": false, "reason": "loading"}` at once; then the vocabulary (exit non-zero on error), the detector (`set_vocabulary` with every kind's `detect` and the ignore list), `mark_loaded()`; then the subscriptions (`qos_profile_sensor_data`, image depth 1); a worker thread runs `next_job`/`run`; every 10 s an error from `objects_publisher_note("detector", count)` when not None; with `DETECTOR=oracle` it subscribes to the truth topic and feeds `set_truth`. It never subscribes to `/sim/*` (D9).
-- [ ] **Step 1: Write the failing tests** in `tests/test_detector_node.py`: `test_startup_refusal` (logical or unset → a line naming `OBJECTS_SOURCE`; detector → None); `test_image_and_cloud_conversion` (synthetic messages round-trip); `test_camera_constants_match_the_xacro` (`CAMERA_W`, `CAMERA_H`, `CAMERA_RATE_HZ`, `CAMERA_HFOV` and the clip equal the xacro's camera block); `test_node_publishes_an_empty_detector_list_at_once` (rclpy, skipped without it: with a slow scripted detector factory, the first `/go2/objects` message within 1 s has `source: "detector"` and no objects, and the status says `loading`; uses the task's `ROS_DOMAIN_ID`).
+- Exit codes: `startup_refusal` not None → print the line, return 0 before `rclpy.init` (a refusal is not a failure, so `restart: on-failure:3` leaves it stopped); a vocabulary, model or weight load failure → log it, return 1 (compose restarts it up to 3 times, spec §11.9).
+- Start-up: publishers and the 2 Hz (objects) and 1 Hz (status) steady wall-clock timers first, publishing `{"frame": "odom", "source": "detector", "objects": []}` and `{"ok": false, "reason": "loading"}` at once; then the vocabulary (exit non-zero on error), the detector (`set_vocabulary` with every kind's `detect` and the ignore list), `mark_loaded()`; then the subscriptions (`qos_profile_sensor_data`, image depth 1); a worker thread runs `next_job`/`run`; every 10 s an error from `objects_publisher_note("detector", count)` when not None; with `DETECTOR=oracle` it subscribes to the truth topic and feeds `set_truth(rows)` (no heights: the oracle uses the vocabulary height, review M8). It never subscribes to `/sim/*` (D9).
+- [ ] **Step 1: Write the failing tests** in `tests/test_detector_node.py`: `test_startup_refusal` (logical or unset → a line naming `OBJECTS_SOURCE`; detector → None); `test_main_returns_0_on_refusal` (`OBJECTS_SOURCE=logical`: `main()` returns 0, prints the line and never calls `rclpy.init`); `test_main_returns_1_when_the_detector_fails_to_load` (`OBJECTS_SOURCE=detector DETECTOR=nope`: `load_detector` raises, `main()` logs it and returns 1; rclpy, skipped without it, the task's `ROS_DOMAIN_ID`); `test_image_and_cloud_conversion` (synthetic messages round-trip); `test_camera_constants_match_the_xacro` (`CAMERA_W`, `CAMERA_H`, `CAMERA_RATE_HZ`, `CAMERA_HFOV` and the clip equal the xacro's camera block); `test_node_publishes_an_empty_detector_list_at_once` (rclpy, skipped without it: with a slow scripted detector factory, the first `/go2/objects` message within 1 s has `source: "detector"` and no objects, and the status says `loading`; uses the task's `ROS_DOMAIN_ID`).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_node.py`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Same command. Expected: PASS (the rclpy test runs in the app image).
@@ -1274,9 +1349,12 @@ class YoloeDetector:                                   # name "yoloe-11s-seg"; t
                                                        # save/load_prompt_embeddings, else get_text_pe + set_classes(names, pe)
     def detect(self, image_rgb) -> list[Detection]     # RGB -> BGR, PREDICT, masks to image size, ignore dropped after NMS
     def close(self) -> None
+    def threads(self) -> dict[str, int]                # {"torch": torch.get_num_threads(), "interop": …, "cv2": cv2.getNumThreads()}
+    embedding_source: str | None                       # "cache" or "encoder" after set_vocabulary (which path made the embeddings)
 ```
+- The test files never import torch, ultralytics or cv2 (Task 2.8's `test_licence_isolation` scans them too). The `detector`-marked tests skip with `pytest.mark.skipif(importlib.util.find_spec("ultralytics") is None, reason=…)` and read thread counts through `threads()` and the cache path through `embedding_source`.
 - Threads (spec §11.1): `torch.set_num_interop_threads(1)` before any parallel work, one warm-up predict on a black 640 × 480 frame, then `torch.set_num_threads(DET_TORCH_THREADS)`; `cv2.setNumThreads(1)`.
-- [ ] **Step 1: Write the failing tests** in `tests/test_detector_yoloe.py`. Unmarked (app image): `test_class_list_puts_ignore_last_and_maps_labels`; `test_embedding_key_changes_with_the_list_and_order`; `test_module_imports_without_ultralytics`. Marked `detector` (skipped without ultralytics; run in H2): `test_prompts_of_one_label_merge`; `test_ignore_classes_are_dropped_and_still_suppress`; `test_agnostic_nms_is_on`; `test_threads_are_1_after_warm_up`; `test_embedding_cache_skips_the_encoder` (a second start with the same list does not load `mobileclip_blt.ts`; a changed list does).
+- [ ] **Step 1: Write the failing tests** in `tests/test_detector_yoloe.py`. Unmarked (app image): `test_class_list_puts_ignore_last_and_maps_labels`; `test_embedding_key_changes_with_the_list_and_order`; `test_module_imports_without_ultralytics`. Marked `detector` (skipped without ultralytics; run in H2): `test_prompts_of_one_label_merge`; `test_ignore_classes_are_dropped_and_still_suppress`; `test_agnostic_nms_is_on`; `test_threads_are_1_after_warm_up` (`threads() == {"torch": 1, "interop": 1, "cv2": 1}`); `test_embedding_cache_skips_the_encoder` (a second start with the same list has `embedding_source == "cache"` and does not load `mobileclip_blt.ts`; a changed list gives `"encoder"`).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_yoloe.py`. Expected: FAIL on the unmarked tests; the marked ones are skipped.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run.** Same command. Expected: PASS for the unmarked tests, `detector` tests skipped.
@@ -1286,84 +1364,137 @@ class YoloeDetector:                                   # name "yoloe-11s-seg"; t
 ### Task 2.12: Recording and replay tools (stage 2c, branch `objects2/det-tools`)
 
 **Files:**
-- Create: `gazebo/tools/record_frames.py`, `gazebo/tools/detector_check.py`, `tests/test_detector_check.py`, `tests/fixtures/detector/` (scans, poses and truth JSON of synthetic frames; **no images**, spec §11.11)
+- Create: `gazebo/tools/record_frames.py`, `gazebo/tools/detector_check.py`, `gazebo/tools/png_rgb.py`, `tests/test_detector_check.py`, `tests/fixtures/detector/` (scans, poses and truth JSON of synthetic frames; **no images**, spec §11.11)
 
 **Interfaces:**
-- Consumes: `DetectorCore`, `OracleDetector`, `load_detector`, `objects_check.pair_rows`, `objects_check.accuracy`, `layout.load`, `geometry` and `camera`.
+- Consumes: `DetectorCore`, `OracleDetector`, `ScriptedDetector`, `load_detector`, `objects_check.pair_rows`, `objects_check.accuracy`, `layout.load`, `vocabulary.height_of`, `geometry` and `camera`.
 - Produces:
-  - `record_frames.py` (runs inside the gazebo container: Jazzy rclpy, cv2, the `gz` CLI): `python3 gazebo/tools/record_frames.py <out_dir> --view <name> [--shift dx,dy,dyaw_deg] [--layout household]` waits for an open still gate, saves one pair (`<view>.png`, `<view>_scan.npy` in the LiDAR frame, `<view>.json` with both stamps' poses, CameraInfo, the truth message, `/sim/world`, the status); `--shift` first moves every static layout model by the inverse of the view shift with `gz service -s /world/empty/set_pose` (the spike's way to emulate a viewpoint) and moves them back afterwards. Pure helpers importable without cv2: `shifted_pose(x, y, yaw_deg, shift) -> tuple[float, float, float]`, `pair_record(...) -> dict`.
-  - `detector_check.py` (detector image for yoloe, app image for oracle): `python3 gazebo/tools/detector_check.py <set_dir> [--detector yoloe|oracle|yoloe_pf] [--layout household]` replays each frame through `DetectorCore` and prints one JSON line per frame (the `accuracy` result) and one for the set, plus `confusion(frames) -> dict` (per prompt label and per truth id: hits with confidences) and `preview(frames, targets, confirm=0.35) -> dict` (spec §12.8 step 3: per target, a hit with an `accept` label ≥ 0.35 and IoU ≥ 0.5 with the truth box projected with the layout height, in the pose view and in ≥ 2 of its 4 shifted views, and no other target's label on it; per spawn view, no confirmed label other than box and chair).
-- [ ] **Step 1: Write the failing tests** in `tests/test_detector_check.py`: `test_shifted_pose_inverts_the_view`; `test_pair_record_shape`; `test_replay_with_the_oracle_passes_accuracy` (fixture frames); `test_confusion_counts_prompts_per_truth_object`; `test_preview_rule` (synthetic detections: a target hit in the pose view and 2 of 4 shifts passes; 1 of 4 fails; another target's label on it fails; a new label in a spawn view fails).
+  - `png_rgb.py` (stdlib `zlib`/`struct` + numpy; no PIL, no cv2): `write_png(path, rgb: np.ndarray) -> None` (H × W × 3 uint8, colour type 2, bit depth 8, filter 0 on every row) and `read_png(path) -> np.ndarray` (8-bit RGB or RGBA, not interlaced, filter types 0–4; anything else raises `ValueError`; RGBA drops alpha). `record_frames` writes with it and `detector_check` reads with it, so neither needs an image library in its container.
+  - `record_frames.py` (runs inside the gazebo container: Jazzy rclpy, numpy 1.26, the `gz` CLI; **deviation from spec §11.11**, which puts it in the detector image: `--shift` needs `gz service`, which only the gazebo image has; the gazebo image has no OpenCV and no verified PIL, so the PNG goes through `png_rgb`): `python3 gazebo/tools/record_frames.py <out_dir> --view <name> [--shift dx,dy,dyaw_deg] [--layout household]` waits for an open still gate, saves one pair (`<view>.png`, `<view>_scan.npy` in the LiDAR frame, `<view>.json` with both stamps' poses, CameraInfo, the truth message, `/sim/world`, the status); `--shift` first moves every static layout model by the inverse of the view shift with `gz service -s /world/empty/set_pose` (the spike's way to emulate a viewpoint) and moves them back afterwards. rclpy and the message types are imported inside `main()` only. Pure helpers: `shifted_pose(x, y, yaw_deg, shift) -> tuple[float, float, float]`, `pair_record(...) -> dict`.
+  - `detector_check.py` (detector image for yoloe, app image for oracle): `python3 gazebo/tools/detector_check.py <set_dir> [--detector yoloe|oracle|yoloe_pf] [--layout household]` replays each frame through `DetectorCore` and prints one JSON line per frame (the `accuracy` result) and one for the set, plus `confusion(frames) -> dict` (per prompt label and per truth id: hits with confidences) and `preview(frames, targets, confirm=0.35) -> dict` (spec §12.8 step 3: per target, a hit with an `accept` label ≥ 0.35 and IoU ≥ 0.5 with the truth box projected with the **layout height** (the layout is the truth here), in the pose view and in ≥ 2 of its 4 shifted views, and no other target's label on it; for the standing spawn view `spawn`, no confirmed label other than box and chair; a `spawn_lying` frame is replayed and printed but `preview` ignores it). With `--detector oracle` it calls `set_truth(rows)` without heights, so the oracle box uses the vocabulary height (review M8, as in the node).
+- [ ] **Step 1: Write the failing tests** in `tests/test_detector_check.py`: `test_shifted_pose_inverts_the_view`; `test_pair_record_shape`; `test_png_round_trip` (`write_png` then `read_png` gives the same array; the file starts with the PNG signature and has one IHDR, IDAT and IEND); `test_read_png_undoes_every_filter` (a 3 × 4 image whose rows the test encodes with filters 1–4 by hand); `test_record_frames_imports_without_rclpy` (in a fresh `subprocess` with the test's `PYTHONPATH`, importing `gazebo.tools.record_frames` leaves `rclpy`, `cv2` and `PIL` out of `sys.modules`); `test_replay_with_the_oracle_passes_accuracy` (fixture frames; the images are made by the test with `write_png`, never committed); `test_confusion_counts_prompts_per_truth_object`; `test_preview_rule` (synthetic detections from `ScriptedDetector`: a target hit in the pose view and 2 of 4 shifts passes; 1 of 4 fails; another target's label on it fails; a new label in the `spawn` view fails; the same label in `spawn_lying` changes nothing).
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_detector_check.py`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Same command. Expected: PASS.
+- [ ] **Step 4: Run.** Same command. Expected: PASS. Then the light check that `record_frames` starts in the gazebo image (no Gazebo, no simulation; `patch-0005` has the same Python as `patch-0005-fuel1`, which adds only models):
+  ```bash
+  docker run --rm -v "$WT":/wt -w /wt --entrypoint bash go2-voice-ltl-gazebo:patch-0005 -c \
+    'source /opt/ros/jazzy/setup.bash && command -v gz && PYTHONPATH=/wt:/wt/nl_control python3 -c \
+     "import numpy, rclpy, sensor_msgs.msg, nav_msgs.msg, std_msgs.msg, gazebo.tools.record_frames; from gazebo.tools.png_rgb import write_png; write_png(\"/dev/null\", numpy.zeros((2, 2, 3), \"uint8\"))"'
+  ```
+  Expected: exit 0, with the path of `gz` printed.
 - [ ] **Step 5: Full suite.** Run: `T tests nl_control/tests`. Expected: 0 failed.
-- [ ] **Step 6: Commit.** `git add gazebo/tools/record_frames.py gazebo/tools/detector_check.py tests/test_detector_check.py tests/fixtures/detector` and `git commit -m "feat: record still frames in Gazebo and replay them through the detector core"`.
+- [ ] **Step 6: Commit.** `git add gazebo/tools/record_frames.py gazebo/tools/detector_check.py gazebo/tools/png_rgb.py tests/test_detector_check.py tests/fixtures/detector` and `git commit -m "feat: record still frames in Gazebo and replay them through the detector core"`.
 
 ---
 
 ## Wave 3 `[HEAVY]`: acceptance
 
-Every step: the D11 gate first; one step at a time; Gazebo and the detector restarted together for every run (`G down` then `G up -d --no-build …`; M4); a record section in `docs/reference/gazebo_open_objects.md` (or `object_phrasing_trials.md` for H4) with the time, power state, other containers' CPU, commands and every result, in Japanese like the other records. A step that fails its line stops and reports to the controller with the numbers; it changes no rule, line or copy.
+Every step: the D11 gate first; one step at a time; Gazebo and the detector restarted together for every run (`G down` then `G up -d --no-build …`; M4); a record section in `docs/reference/gazebo_open_objects.md` (or `object_phrasing_trials.md` for H4) with the time, power state, other containers' CPU, commands and every result, in Japanese like the other records. A step that fails its line stops and reports to the controller with the numbers; it changes no rule, line or copy. The commands use the functions of "Commands" (`TA`, `T`, `TD`, `G`) with `WT` = the step's worktree and `DOMAIN` = its id; Gazebo runs go through `G` and its own network, so they need no domain id. For a GUI-off run, Gazebo starts with `OBJECTS_SOURCE=<source> G run -d --no-deps --service-ports --name go2oo-gazebo gazebo ros2 launch /work/gazebo/launch/go2_gazebo.launch.py gui:=false` (in detector mode plus `OBJECTS_SOURCE=detector DETECTOR=<oracle|yoloe> G --profile detector up -d --no-build detector`) and stops with `docker rm -f go2oo-gazebo` (our own container) and `G down`.
 
 ### H1 `[HEAVY]`: Build the Fuel image and record Suitcase1 (branch `objects2/h1-fuel`; after Task 2.6)
 
-- [ ] **Fetch Suitcase1 once** into a new empty folder in the scratch area: `curl -fsSL -o <scratch>/fuel/Suitcase1.zip https://fuel.gazebosim.org/1.0/OpenRobotics/models/Suitcase1/2/Suitcase1.zip`; `shasum -a 256` and the byte count; extract with `python3 -I docker/fetch_fuel_models.py`'s `extract` (or `unzip` into its own folder); run `python3 -I gazebo/tools/model_extent.py <folder>` on it, and on the four other models for a cross-check against spec §12.2's footprints (differences are reported, the spec values stay unless the controller says otherwise). Record the author from `model.config` if present.
-- [ ] **Pin it:** `docker/fuel_models.json` gets Suitcase1's sha256, bytes and author; `gazebo/layouts/household.json` gets its footprint, height and `z`. If the footprint exceeds 0.6 × 0.4, re-place it within spec §12.1's rules and re-run `T tests/test_household.py` (a moved number is reported). Run the full suite.
+- [ ] **Fetch Suitcase1 once** into a new empty folder in the scratch area: `curl -fsSL -o <scratch>/fuel/Suitcase1.zip https://fuel.gazebosim.org/1.0/OpenRobotics/models/Suitcase1/2/Suitcase1.zip`; record `shasum -a 256` and the byte count. Do not unpack it on the host; the build unpacks it after checking the pin.
+- [ ] **Pin the zip:** `docker/fuel_models.json` gets Suitcase1's sha256 and bytes (the build refuses a null pin). Run `T tests/test_layout.py tests/test_fuel_image.py`.
 - [ ] **Build:** `docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel1 -f docker/Dockerfile.gazebo-fuel docker`. Expected: success; then `docker run --rm --entrypoint bash go2-voice-ltl-gazebo:patch-0005-fuel1 -c 'ls /opt/go2_models; echo "$GZ_SIM_RESOURCE_PATH"'` lists the 5 folders and ends with `/opt/go2_models`.
+- [ ] **Measure the five models inside the built image** (review M12: only the image has all five unpacked; nothing runs on the host):
+  ```bash
+  docker run --rm -v "$WT":/wt -w /wt --entrypoint bash go2-voice-ltl-gazebo:patch-0005-fuel1 -c \
+    'for m in /opt/go2_models/*; do echo "$m"; python3 -I /wt/gazebo/tools/model_extent.py "$m"; done; cat /opt/go2_models/Suitcase1/model.config'
+  ```
+  Suitcase1's `size`, `offset`, `height` and `z_min` give its layout footprint, height and `z`; its author comes from `model.config` if present. The four other models are a cross-check against spec §12.2's footprints: differences are reported, and the spec values stay unless the controller says otherwise.
+- [ ] **Pin the model:** `docker/fuel_models.json` gets Suitcase1's author; `gazebo/layouts/household.json` gets its footprint, height and `z`. If the footprint exceeds 0.6 × 0.4, re-place it within spec §12.1's rules and re-run `T tests/test_household.py` (a moved number is reported). Run the full suite.
 - [ ] **Commit** the pins and the record (`docs: H1 Fuel image built, Suitcase1 pinned`).
 
 ### H2 `[HEAVY]`: Build the detector image and run its tests (branch `objects2/h2-detector`; after wave 2)
 
 - [ ] **Build:** `docker build -t go2-voice-ltl-detector:yoloe-11s -f docker/Dockerfile.detector docker`. Record the build time and `docker image ls` size.
-- [ ] **A1 check first:** `TD -m detector tests/test_detector_yoloe.py -k embedding_cache`. Record which embedding path works on 8.4.210 (ultralytics' save/load or the `get_text_pe` fallback); if neither, fix `detector/yoloe.py` in this branch and re-run.
-- [ ] **In-image tests:** `TD -m detector tests/test_detector_yoloe.py tests/test_detector_protocol.py` and `TD -m "not slow" tests/test_detector_geometry.py tests/test_detector_tracker.py tests/test_detector_core.py tests/test_detector_oracle.py` (numpy 2.x). Expected: PASS.
+- [ ] **A1 check first:** `TD -m detector tests/test_detector_yoloe.py -k embedding_cache`. Record which embedding path works on 8.4.210 (ultralytics' save/load or the `get_text_pe` fallback, as `embedding_source` shows); if neither, fix `detector/yoloe.py` in this branch and re-run.
+- [ ] **In-image tests:** `TD -m detector tests/test_detector_yoloe.py tests/test_detector_protocol.py` and `TD -m "not slow" tests/test_detector_geometry.py tests/test_detector_tracker.py tests/test_detector_core.py tests/test_detector_oracle.py tests/test_detector_check.py` (numpy 2.x). Expected: PASS.
 - [ ] **Commit** any adapter fix and the record.
 
 ### H3 `[HEAVY]`: Detection preview, A6 / M2 (branch `objects2/h3-preview`; after H1 and H2; before H5)
 
-- [ ] **Record 16 views** headless on `household`: `OBJECTS_SOURCE=detector G run -d --no-deps --service-ports --name go2oo-gazebo gazebo ros2 launch /work/gazebo/launch/go2_gazebo.launch.py gui:=false`; spawn lying, then standing; then the test poses B (`F(turned_left & X F turned_left)`), L (`F turned_left`), R (`F turned_right`) driven with `G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula …`, each pose recorded plain and with the 4 shifts (±0.1 m, ±5°) by `docker exec -e PYTHONPATH=/work:/work/nl_control go2oo-gazebo bash -c 'source /opt/ros/jazzy/setup.bash && python3 /work/gazebo/tools/record_frames.py …'`. Check the first render: every Fuel model is visible in its views (M15). The same `G run -d … gui:=false` form gives the GUI-off runs of H5 and H6.
-- [ ] **Detect:** `docker run --rm -v <wt>:/work -v /dev/null:/work/env.txt:ro -v <set>:/set -w /work go2-voice-ltl-detector:yoloe-11s python3 gazebo/tools/detector_check.py /set --detector yoloe` (YOLOE-11s text at 640, the 87 prompts + 3 ignore).
+- [ ] **Check `record_frames` in the Fuel image** (light, before any Gazebo): Task 2.12's Step 4 command with the tag `go2-voice-ltl-gazebo:patch-0005-fuel1`. Expected: exit 0.
+- [ ] **Record the views** headless on `household` (review M4: the list is pinned here). Each frame is taken by `docker exec -e PYTHONPATH=/work:/work/nl_control go2oo-gazebo bash -c 'source /opt/ros/jazzy/setup.bash && python3 /work/gazebo/tools/record_frames.py /work/out/h3-preview --view <name> [--shift <s>]'` into the worktree's `out/h3-preview/` (`out/` is git-ignored; the images are CC BY renders and never enter git, spec §11.11), and each pose is driven with `G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "<formula>"`. The four shifts `<s>` are `0.1,0.1,5`, `0.1,-0.1,-5`, `-0.1,0.1,-5` and `-0.1,-0.1,5` (dx, dy in m, dyaw in degrees; names `<pose>_s1` … `<pose>_s4`).
+  1. Fresh GUI-off detector-mode Gazebo (`OBJECTS_SOURCE=detector`, the GUI-off form above, no detector service): `spawn_lying` right away (offline data for the lying viewpoint, which spec §11.5 has not measured; `preview` ignores it), then `F standing` and `spawn` (plain only).
+  2. Same Gazebo: `F(turned_left & X F turned_left)`, then `B` and `B_s1` … `B_s4`.
+  3. Restart; `F turned_left`, then `L` and `L_s1` … `L_s4`.
+  4. Restart; `F turned_right`, then `R` and `R_s1` … `R_s4`.
+  That is 17 frames, of which `preview` uses 16: `spawn` plus B, L and R × (plain + 4 shifts). Spec §12.8 counts 15 views (the 15 pose views); Task 4.1 writes the count with this list. Check the first render: every Fuel model is visible in its views (M15).
+- [ ] **Detect:** `docker run --rm -v "$WT":/work -v /dev/null:/work/env.txt:ro -w /work go2-voice-ltl-detector:yoloe-11s python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe` (YOLOE-11s text at 640, the 87 prompts + 3 ignore).
 - [ ] **Decide (spec §12.8):** a target passing `preview` gets `"detectable": true`; from the confusion table set `BY_LABEL` overrides in `detector/yoloe.py` where a wrong name sits between 0.35 and the right name's score, or drop a prompt (box, desk, cabinet, bench, stool first) from `detect` into `en` through spec §7.5 (`T tests/test_vocabulary.py` and the language tests). If fewer than 3 new kinds pass: (1) the word fixes, (2) an alternate model of spec §12.9 (re-run H1 for its pin and `tests/test_household.py`), (3) re-placement within spec §12.1, (4) report to the controller with the numbers. If the sofa fails (O38): one forward step after the turn (3.9 m), then MiniSofa, then fewer targets behind the spawn.
-- [ ] **Re-check** spec §12.4 with `T tests/test_household.py` after any change; full suite; commit the layout, vocabulary, overrides and the record.
+- [ ] **Re-check** spec §12.4 with `T tests/test_household.py` after any change; full suite; commit the layout, vocabulary, overrides and the record (nothing under `out/`).
 
-### H4 `[HEAVY]`: Real-Claude phrasing trials ×2, S6 (branch `objects2/h4-trials`; earliest after wave 1)
+### H4 `[HEAVY]`: Real-Claude phrasing trials ×2, S6 (branch `objects2/h4-trials`; first heavy step, as soon as wave 1 is merged; gates H5)
 
-- [ ] **Run twice** (rulings Q2; nothing copies `env.txt`):
+- [ ] **Run twice** (rulings Q2; nothing opens or copies `env.txt`: compose reads the main checkout's through `env_file`), `DOMAIN=64`:
   ```bash
-  cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID=<n> -e LLM_BACKEND=claude \
-    -v <wt>:/wt -w /wt -e PYTHONPATH=/wt app python3 scripts/object_phrasing_trials.py --workers 4
+  cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID=64 -e LLM_BACKEND=claude \
+    -v "$WT":/wt -w /wt -e PYTHONPATH=/wt:/wt/nl_control app python3 scripts/object_phrasing_trials.py --workers 4
   ```
-  after checking that `voice_ltl` imports from `/wt`. Keep each run's JSON lines.
-- [ ] **Judge (O10):** both runs lap 10/10, near 10/10, kinds ≥ 9/10, refusals ≥ 13/14, regression ≥ 12/13. Record every miss with Claude's raw `unresolved_objects` and what the code accepted in a new section of `docs/reference/object_phrasing_trials.md`. On a miss, report; the controller decides about a prompt fix (spec §9.2's first lever: the hypernym example).
+  after checking that `voice_ltl` imports from `/wt` (`TA python3 -c "import voice_ltl; print(voice_ltl.__file__)"` prints `/wt/voice_ltl/__init__.py`). Keep each run's JSON lines.
+- [ ] **Judge (O10):** both runs lap 10/10, near 10/10, kinds ≥ 9/10, refusals ≥ 13/14, regression ≥ 12/13. Record every miss with Claude's raw `unresolved_objects` and what the code accepted in a new section of `docs/reference/object_phrasing_trials.md`.
+- [ ] **Gate (Execution, "H4 gate"):** if both runs pass, say so to the controller: the shared step's language part is accepted and H5 may start once H3 has merged. On a miss, stop and report; the controller picks fix forward (`objects2/h4-fix`, spec §9.2's first lever: the hypernym example, then two new runs) or the revert of the Task 1.8 and 1.4 merges. H5 and Task 4.1 wait for that.
 - [ ] **Commit** the record.
 
-### H5 `[HEAVY]`: Logical Gazebo measurements, S7 (branch `objects2/h5-logical`; after H3)
+### H5 `[HEAVY]`: Logical Gazebo measurements, S7 (branch `objects2/h5-logical`; after H3, and after H4 has passed)
 
 - [ ] **M0 logical baseline:** RTF of a fresh `household` Gazebo, GUI on and GUI off, 75 s windows after 20 s (`G run --rm --no-deps -T app python3 gazebo/tools/objects_check.py rtf --seconds 75`), 3 runs each; the old records are not reused (C4).
-- [ ] **§2 set 1 (spec §13.6)** in `household`, logical: `F around_box_1` ×5 (≥ 4 pass, 3 in a row), `F near_chair_1` ×3, `F(near_chair_1 & X F hello)` ×1, `F near_box_1` ×1 with `objects_check.py run --expect lap|near` (the §2 keys; the box's centre line); no fall.
+- [ ] **§2 set 1 (spec §13.6)** in `household`, logical, a fresh Gazebo per run, each through `G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run …`; no fall:
+  - `run --expect lap "F around_box_1"` ×5 (≥ 4 pass, 3 in a row; the §2 lap keys);
+  - `run --expect near "F near_chair_1"` ×3 and `run --expect near "F(near_chair_1 & X F hello)"` ×1 (the §2 chair keys; no target: today's summary measures `chair_1`);
+  - `run --expect near --target box_1 "F near_box_1"` ×1 (「箱の前まで」: the target lines on the box, plus the box's centre line 1.5 m / 45°, which `summarize` adds only for `--target box_1` with `source == "logical"`, O16; without `--target` the run would be judged on the chair).
 - [ ] **New kinds, logical (spec §13.4):** for `trash_can_1`, `suitcase_1`, `sofa_1`, `lamp_1`, `table_1`: the turn of spec §12.4, `objects_check.py resolve --target <id>` (waits for `measured: true`), then `objects_check.py run --expect near --target <id> "F near_<id>"` 2/2 and `--expect lap … "F around_<id>"` 2/2. Record whether the front obstacle bit was set during the sofa near (O14).
 - [ ] **Commit** the record.
 
 ### H6 `[HEAVY]`: Detector-mode Gazebo measurements, A7 (branch `objects2/h6-detector`; after H5)
 
-- [ ] **M3 accuracy (spec §13.3):** `OBJECTS_SOURCE=detector DETECTOR=oracle G --profile detector up -d --no-build gazebo detector`, then `objects_check.py accuracy` at the spawn (lying), after standing, and at B, L and R; then the same with `DETECTOR=yoloe`. The oracle must meet every position and size line with `covers` true on the observed extent; record `fill_short_m` and `ids_retired`.
-- [ ] **M4 formula runs (spec §13.4, §13.5):** for each `detectable` new kind (≥ 3): the §12.4 turn, `resolve` (record `listed_after_still_s` ≤ 5 s and the status' `latency_ms_p50` ≤ 600, `latency_ms_p90` ≤ 800), then `F near_<detector id>` 3/3 and `F around_<detector id>` 3/3 with `--target <truth id>`; record the RTF per run (walking and still) and the logical baseline of H5. If a lap or near fails, re-run GUI-off; if it still fails, run M1 (camera in the xacro, no camera bridge) and report to the controller (O42).
-- [ ] **Voice step (spec §13.4, O26):** per detectable kind, 「〈名前〉まで歩いて」 1/1 and 「〈名前〉の周りを回って」 1/1 typed into the operation page with the real Claude. This needs an app with the login on the `go2oo` network, which neither `G` (no `env.txt` in the worktree) nor the Q2 command (the main project's network) gives. **Open decision D-1 for the controller:** run this app from the main checkout directory as project `go2oo` (`cd ~/work/physicalAI/go2 && docker compose -p go2oo --project-directory . -f <wt>/compose.yaml -f <override> …`, where the override replaces the `/work` mounts with the worktree, so compose reads the main checkout's `env.txt` as it does today and nobody opens it), or leave the voice step to the user (O26). Until D-1 is decided, record the step as not run.
+Detector-mode runs start with `OBJECTS_SOURCE=detector DETECTOR=<oracle|yoloe> G --profile detector up -d --no-build gazebo detector` (GUI on) or the GUI-off form of the Wave 3 preamble, and stop with `G down`.
+- [ ] **M0 before (spec §13.5, M0 at A7; D11: the baseline is taken under the same conditions, before and after):** logical `household` RTF, a fresh Gazebo per run, 20 s, then `objects_check.py rtf --seconds 75`: 3 runs with the GUI on and 3 with the GUI off.
+- [ ] **M0 detector, still:** `DETECTOR=yoloe`, 3 runs with the GUI on and 3 with the GUI off: a fresh stack, `run_formula "F turned_right"` (pose R: `lamp_1` in view, so the detector keeps inferring every 3 s), then `rtf --seconds 75` while the Go2 stands still. Record the status' `latency_ms_p50` / `latency_ms_p90` with each.
+- [ ] **M3 accuracy (spec §13.3):** `DETECTOR=oracle`, then `objects_check.py accuracy` at the spawn (lying), after `F standing`, and at B, L and R (a fresh stack per pose, as in H3); then the same with `DETECTOR=yoloe`. The oracle must meet every position and size line with `covers` true on the observed extent; record `fill_short_m`, `ids_retired` and the status' `notes`.
+- [ ] **M4 formula runs (spec §13.4, §13.5), GUI on:** for each `detectable` new kind (≥ 3): the §12.4 turn, `resolve` (record `listed_after_still_s` ≤ 5 s and the status' `latency_ms_p50` ≤ 600, `latency_ms_p90` ≤ 800), then `F near_<detector id>` 3/3 and `F around_<detector id>` 3/3 with `--target <truth id>`; record each run's `rtf_stats` (walking and still: the GUI-on detector-mode walking RTF of M0). If a lap or near fails, re-run it GUI-off; if it still fails, run M1 (camera in the xacro, no camera bridge) and report to the controller (O42).
+- [ ] **M0 detector, walking, GUI off:** for the first detectable kind, one `F near_<detector id>` and one `F around_<detector id>` run with the GUI off (same procedure as M4); record their `rtf_stats` and their lines (a GUI-off re-run of M4 counts here too).
+- [ ] **Voice step (spec §13.4, O26; ruling on review I6, see "Notes for the controller"):** per detectable kind, 「〈名前〉まで歩いて」 1/1 and 「〈名前〉の周りを回って」 1/1 typed into the operation page with the real Claude, judged by M4's lines.
+  - The app runs from the main checkout's directory under our project name `go2oo`: compose then reads the main checkout's `env.txt` through `env_file` as it does for the user's own stack (nobody opens, prints or copies it), and the app joins our network `go2oo_default`, where our Gazebo and detector run. An override puts the worktree at `/work` instead of the main checkout. Write it into the scratch area (never added to git):
+    ```yaml
+    # go2oo-app.override.yaml: only for H6's voice step
+    services:
+      app:
+        volumes:
+          # replaces ./:/work, which resolves against --project-directory (the main checkout);
+          # compose merges a service's volumes by their container path
+          - ${GO2OO_WT:?set GO2OO_WT to the worktree}:/work
+        environment:
+          LLM_BACKEND: claude
+    ```
+    and define, next to the other functions (`OV` = that file's absolute path):
+    ```bash
+    GA() { (cd ~/work/physicalAI/go2 && GO2OO_WT="$WT" GO2_UI_PORT=8811 SIM_KIND=gazebo \
+             docker compose -p go2oo --project-directory . -f "$WT/compose.yaml" -f "$OV" "$@"); }
+    ```
+    Only `app` runs this way; Gazebo and the detector stay on `G`. Never `GA config` (it prints `env_file` values).
+  - **Check before use:** `GA run --rm --no-deps -T app python3 -c "import voice_ltl.vocabulary as v; print(v.__file__, len(v.VOCABULARY.entries))"` must print `/work/voice_ltl/vocabulary.py 50`. `/work` is the same path for both checkouts, so the check uses a module that only the worktree has. If it fails, or the app reports the login message, do not work around it: record the voice step as not run, and it falls to the user (O26).
+  - **Each instruction:** a fresh detector-mode stack (`DETECTOR=yoloe`, GUI on); the §12.4 turn and `resolve --target <truth id>` as in M4, both before the app starts (so `run_formula` and the app never drive the Go2 at once); `GA up -d --no-build --no-deps app` and wait until the page at http://localhost:8811 shows the Go2 ready and the target in 「見えている物」; start `G run --rm --no-deps -T app python3 gazebo/tools/objects_check.py watch --expect near|lap --target <truth id>`; type the instruction into the page's text field (the Browser pane; the field posts to `/api/text`). Record the formula Claude gave, the page's messages and the `watch` line. `G down` also removes the app.
 - [ ] **M5 (D9):** with the Go2 standing, 「前に箱を置く」 in view; record whether a `box` row appears (cardboard look). Not a pass line.
-- [ ] **§2 set 2 (spec §13.6):** as in H5, logical mode, after A; record whether box_1 and chair_1 were found in detector mode (Q4).
+- [ ] **M0 after:** the M0-before block again (logical, 3 + 3 runs), now that the detector block is done.
+- [ ] **§2 set 2 (spec §13.6):** the four commands of H5's "§2 set 1" again (logical, `run --expect near --target box_1 "F near_box_1"` included); record whether box_1 and chair_1 were found in detector mode during M3 and M4 (Q4).
 - [ ] **Resources:** record the containers' CPU and memory during the runs (spec §11.12).
 - [ ] **Commit** the record.
 
-### H7 `[HEAVY]`: Slow tests (branch `objects2/h7-slow`; earliest after Task 1.3; never during a Gazebo run)
+### H7 `[HEAVY]`: Slow tests (branch `objects2/h7-slow`; after wave 2 is merged; in the heavy order before H2)
 
-- [ ] Run: `cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_ID=<n> -v <wt>:/wt -w /wt -e PYTHONPATH=/wt app nice -n 19 taskset -c 0 python3 -m pytest -q -m slow tests` (M13). Expected: PASS (the near full sweep, the synthesis timing, the existing slow tests). Record the time; commit the record.
+It needs Task 2.5's `test_sofa_synthesis_is_fast` (spec §13.1's synthesis-time line, stage 2a), so it never runs before stage 2a has merged; and its timing asserts need a quiet CPU, so it runs only when no code task of ours runs a `T` suite and no other heavy step or Gazebo run of ours is up. After wave 2 is merged both hold until Task 4.1.
+- [ ] **D11 gate**, plus `docker ps` shows no other container of ours. `DOMAIN=67`.
+- [ ] **Timing tests** (wall-clock lines, so no `nice` and no CPU pin): `TA python3 -m pytest -q -m slow tests nl_control/tests --deselect tests/test_grid.py::test_near_keys_full_sweep`. Expected: PASS (sofa near ≤ 1 s and sofa lap ≤ 3 s, the existing `< 25 s` refusal, the Whisper fixture; that test may fetch its model into the main project's `hf-cache` on first use).
+- [ ] **Near sweep** (M13; about 30 min on one core): `TA nice -n 19 taskset -c 0 python3 -m pytest -q -m slow tests/test_grid.py::test_near_keys_full_sweep`. Expected: PASS.
+- [ ] Record both times and the CPU before and after; commit the record.
 
 ---
 
 ## Wave 4: docs
 
-### Task 4.1: Docs (branch `objects2/docs`; after H6)
+### Task 4.1: Docs (branch `objects2/docs`; after H6, and after H4 has passed)
 
 **Files:**
 - Modify: `README.md`, `docs/simulation.md`, `docs/design.md`, `docs/vocabulary.md`, `docs/superpowers/specs/2026-11-05-go2-objects-design.md` (one line), `docs/superpowers/specs/2026-11-11-go2-open-objects-design.md` (measured numbers), `tests/test_gazebo_objects.py` (doc pins whose anchors move)
@@ -1372,10 +1503,10 @@ Every step: the D11 gate first; one step at a time; Gazebo and the detector rest
 **Content:**
 - `README.md` (commands only, M12): the two Gazebo builds (`docker build -t go2-voice-ltl-gazebo:patch-0005 -f docker/Dockerfile.gazebo docker`, then `docker compose --profile gazebo build gazebo`); `GO2_LAYOUT=default` for the old room; the detector build `docker compose --profile detector build detector` and start `OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d`.
 - `docs/simulation.md`: the household room (kinds, places, the turn-first habit), `GO2_LAYOUT`; the two builds; detector mode (start, what it sees, about 3.5 s after stopping, nothing on the page, restart detector with Gazebo); **the plain box and chair are not recognised by the detector** (Q4); licences: the detector container uses ultralytics, the YOLOE weights and the CLIP tokenizer fork under AGPL-3.0, the MobileCLIP text encoder weights are under Apple's research-only, non-commercial terms (the user accepted research use), ultralytics stays out of the app and gazebo images and behind `detector/protocol.py`, the prompt-free YOLOE and OWLv2/Grounding DINO are the alternatives, adding a LICENSE file is a separate decision; the section 「Gazebo の物の出典」 (spec §12.7 table and sentences, `design-vocabulary.md` §4.8 text, Suitcase1's author from H1); the `/go2/objects` example with `source` and `measured` (M14); the RTF sentence for the household world from H5/H6 (C4).
-- `docs/design.md`: the grid lines (blocking from the footprint, bands A and B, size messages), the language lines (vocabulary file, `unresolved_objects`, kind guard, the five object messages), R16 rewritten and R-new (spec §9.8); a pointer to the spec.
+- `docs/design.md`: the grid lines (blocking from the footprint, bands A and B, size messages), the language lines (vocabulary file, `unresolved_objects`, kind guard, the five object messages), R16 rewritten and R-new (spec §9.8); a short licence paragraph (spec §11.2 puts the licence facts in both `docs/design.md` and `docs/simulation.md`, review M5): the detector container uses ultralytics, the YOLOE weights and the CLIP tokenizer fork under AGPL-3.0; the MobileCLIP text encoder weights are under Apple's research-only, non-commercial terms (the user accepted research use); ultralytics stays out of the app and gazebo images and behind `detector/protocol.py`; adding a LICENSE file to the repo is a separate decision for the user; a pointer to the spec.
 - `docs/vocabulary.md`: the object section for every kind (how to add a kind, spec §7.5) and the messages table; keep or move the pinned anchors together with `tests/test_gazebo_objects.py`.
-- The objects design: one line pointing readers to the spec. The spec: numbers measured in H1–H7 that differ, each with its reason (spec §15).
-- [ ] **Step 1: Write the failing tests** in `tests/test_docs_open_objects.py`: the AGPL-3.0 sentence, the MobileCLIP research-only sentence, every Fuel model's name, version, URL and licence, the Q4 sentence, the detector start command (in README and `docs/simulation.md`), `GO2_LAYOUT`, and no `/Users/` in any doc.
+- The objects design: one line pointing readers to the spec. The spec: numbers measured in H1–H7 that differ, each with its reason (spec §15), including §12.8's view count (16 views used by the preview, as listed in H3).
+- [ ] **Step 1: Write the failing tests** in `tests/test_docs_open_objects.py`: the AGPL-3.0 sentence, the MobileCLIP research-only sentence and the LICENSE-file sentence, each in both `docs/simulation.md` and `docs/design.md`; every Fuel model's name, version, URL and licence; the Q4 sentence; the detector start command (in README and `docs/simulation.md`); `GO2_LAYOUT`; and no `/Users/` in any doc.
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_docs_open_objects.py tests/test_gazebo_objects.py`. Expected: FAIL.
 - [ ] **Step 3: Write the docs** (Japanese, like the existing ones).
 - [ ] **Step 4: Run.** Same command. Expected: PASS.
@@ -1392,16 +1523,34 @@ Every step: the D11 gate first; one step at a time; Gazebo and the detector rest
 | §8 ids, propositions, rows | 1.2 |
 | §9.1–9.9 prompt, field, lookup, words, messages, flow | 1.1 (lookup, matcher), 1.2 (focus, messages), 1.4 |
 | §9.10 page | 1.5 |
-| §10 near band, rectangle, laps, lines, tests | 1.3, 1.7 (O15), 2.4 (lines), H7 (slow sweep) |
+| §10 near band, rectangle, laps, lines, tests | 1.3, 1.7 (O15), 2.4 (lines), H7 (slow sweep, after stage 2a) |
 | §11.1–11.2 container, image, licence | 2.8, 2.11, H2, 4.1 |
 | §11.3 switch and topics | 2.3, 2.9, 2.10 |
 | §11.4–11.5 camera, when to detect | 2.9, 2.7 |
 | §11.6–11.8 geometry, tracking, wire | 2.1, 2.2, 1.2 |
-| §11.9–11.10 failures, swap interface | 2.7, 2.10, 2.2 |
-| §11.11 accuracy, offline tools | 2.4, 2.12 |
+| §11.9–11.10 failures, swap interface | 2.7 (status, `notes`), 2.10 (exit codes), 2.2 (`ScriptedDetector`) |
+| §11.11 accuracy, offline tools | 2.4, 2.12 (`record_frames` in the gazebo container, PNG via `png_rgb`) |
 | §11.13 button boxes (D9) | 2.3, H6 |
 | §12 household room, layout, Fuel image, attribution, preview | 1.6, 2.5, 2.6, H1, H3, 4.1 |
-| §13.1 tests | every wave-1/2 task |
-| §13.2 trials | 1.8, H4 |
-| §13.3–13.6 Gazebo acceptance | H5, H6 |
-| Rulings C1–C6, Q2, Q4, user answers | 2.4 (C1, C2), 2.3 (C3), H5 (C4), 1.1 (C5), 2.2 (C6), H4 (Q2), 4.1 (Q4, O24) |
+| §13.1 tests | every wave-1/2 task; the synthesis-time line: 2.5's slow test, run in H7 |
+| §13.2 trials, O10 acceptance | 1.8, H4 (gates H5 and 4.1) |
+| §13.3–13.6 Gazebo acceptance | H5 (§13.4 logical, §13.6 set 1 with `--target box_1`), H6 (§13.3 M3; §13.4 M4 and the voice step through `GA` and `objects_check watch`; §13.5 M0 before and after, GUI on and off, still and walking; §13.6 set 2) |
+| Rulings C1–C6, Q2, Q4, user answers | 2.4 (C1, C2), 2.3 (C3), H5 and H6 (C4), 1.1 (C5), 2.2 and 2.7 (C6, the note on the status), `T`/H4/H6 voice step (Q2), 4.1 (Q4, O24) |
+
+---
+
+## Notes for the controller
+
+Rulings this plan takes by default (from `plan-review.md`), and the places where it deviates from the spec's wording. Each can be overridden; the task that changes with it is named.
+
+1. **O10 timing (review I5).** Spec §13.2 and `design-language.md` §6.3 put the two-run trial acceptance "before merging into `feat/open-objects`". The plan merges Tasks 1.4 and 1.8 at stages 1c and 1d and lets H4 gate the end of the shared step instead (Execution, "H4 gate"): H5 and Task 4.1 wait for it, and a miss means fix forward or revert, by the controller's choice. Reason: Task 1.8 and wave 2 are cut from `feat/open-objects` after those merges, and no wave-2 file depends on the prompt. To keep the literal reading instead: hold 1.4 and 1.8 on their branches, cut 1.8 from 1.4's branch, run H4 there, and merge both after it passes; Task 1.7's `session.py` edit then merges beside 1.4's `_redacted` change later.
+2. **Voice step (review I6).** Option (a) is adopted: the app runs from the main checkout's directory as project `go2oo` with an override that mounts the worktree at `/work` (H6, `GA`), so compose reads the main checkout's `env.txt` through `env_file` and nobody opens it, as in ruling Q2. It is measured with the new `objects_check.py watch` (Task 2.4). If the import check or the login fails, the step is recorded as not run and falls to the user (O26).
+3. **Rules 2 (world part) and 6 run only in the app (review M15).** `vocabulary.py` stays stdlib-only and imports neither `world.py` nor `translator.py`, so the reserved segments from `world` and the handling-verb check run when `world.py` and `translator.py` import (Task 1.1). The bridge and the detector check rules 1–5 and 7–11 without rule 2's world part. Spec §7.3 says the loader checks 1–11; the app still fails closed, and the bridge and the detector never parse formulas.
+4. **Rules 4 and 10 (review I1).** The spec states "a not_word is not a word" in both; rule 4 owns it and rule 10 checks only that each not_word contains a word. Rule numbers are unchanged.
+5. **Rule 11's order (review M11).** The kind count is checked right after rule 1, before the per-kind rules; the detect-prompt warning stays last. The number stays 11.
+6. **`record_frames.py` (review I8).** It runs in the gazebo container, not the detector image (spec §11.11), because `--shift` needs `gz service`; it writes PNGs with the stdlib `gazebo/tools/png_rgb.py`, since the gazebo image has no OpenCV and no verified PIL. Task 2.12 and H3 check that it imports there before any heavy run.
+7. **Preview views (review M4).** H3 pins 17 frames, of which `preview` uses 16 (the standing spawn view plus B, L and R × (plain + 4 shifts)); spec §12.8 says 15. The lying spawn frame is offline data only. Task 4.1 corrects the count in the spec (spec §15: a number, not a rule).
+8. **Shapeless sightings (review I2).** `geometry.observe` returns a `Sighting` that maps 1:1 onto `tracker.Observation`. A detection with no usable geometry (`design-detector.md` §7.2 step 7) makes no `Observation`, because nothing can associate it; it is counted in `health()["shapeless"]`.
+9. **Oracle height (review M8).** The oracle projects the truth footprint × the vocabulary height (spec §11.10) everywhere it runs; only `detector_check.preview` projects with the layout height, because it compares against the truth.
+10. **Status keys (review M14).** `/go2/detector_status` carries the spec §11.9 keys plus `filled`, `shapeless` and `notes` (the C6 "ids used up" note).
+11. **Slow tests (review I4).** H7 runs after wave 2 is merged, when no `T` suite or other heavy step of ours runs; its timing tests run without `nice`, and only the near sweep runs under `nice -n 19 taskset -c 0`.
