@@ -138,14 +138,30 @@ def test_instruction_goes_in_as_one_json_string():
 
 def test_retry_asks_for_the_whole_answer():
     p = build_prompt("走って", "F run", "run は単語帳にありません")
-    assert p.endswith("直した答え（formula・unsupported・substitutions のすべて）を返してください。")
+    assert p.endswith("直した答え（formula・unsupported・substitutions・unresolved_objects のすべて）を返してください。")
 
 
 def test_schema_requires_substitutions_of_said_and_as():
     from voice_ltl.prompt import SCHEMA
-    assert SCHEMA["required"] == ["formula", "unsupported", "substitutions"]
+    # all four keys are required (Codex's strict --output-schema), and nothing else is allowed
+    assert SCHEMA["required"] == ["formula", "unsupported", "substitutions", "unresolved_objects"]
+    assert sorted(SCHEMA["properties"]) == sorted(SCHEMA["required"]) and SCHEMA["additionalProperties"] is False
     item = SCHEMA["properties"]["substitutions"]["items"]
     assert item["required"] == ["said", "as"] and item["additionalProperties"] is False
+    field = SCHEMA["properties"]["unresolved_objects"]
+    assert field["type"] == "array"
+    assert field["items"] == {"type": "object",
+                              "properties": {"said": {"type": "string"}, "label": {"type": "string"}},
+                              "required": ["said", "label"], "additionalProperties": False}
+
+
+def test_goal_names_unresolved_objects():
+    p = build_prompt("x")
+    goal = p[p.index("## Goal"):p.index("## Grammar")]
+    assert goal.endswith(
+        "答えは JSON で、formula（式の文字列。翻訳できないときは null）、unsupported（表せなかった部分の一覧）、"
+        "substitutions（言われた言葉と違う形にした部分の一覧）、unresolved_objects（Objects の 1 つに決められなかった"
+        "物の名前。ふつうは []）を返します。\n\n")
 
 
 def test_prompt_examples_all_pass_the_grammar_check():
