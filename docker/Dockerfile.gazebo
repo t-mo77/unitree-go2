@@ -1,6 +1,7 @@
-# Image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0004 (compose.yaml; patches 0001-0004).
-# The image with 0001-0002 only is kept on this Mac as go2-voice-ltl-gazebo:patch-0002 (= the old :dev) for
-# rollback (GO2_GAZEBO_IMAGE, compose.yaml); this Dockerfile cannot rebuild it, so never build with that set.
+# Image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0005 (compose.yaml; patches 0001-0005).
+# Older images are kept on this Mac for rollback (GO2_GAZEBO_IMAGE, compose.yaml): go2-voice-ltl-gazebo:patch-0004
+# (0001-0004) and go2-voice-ltl-gazebo:patch-0002 (0001-0002, = the old :dev). This Dockerfile cannot
+# rebuild them, so never build with GO2_GAZEBO_IMAGE set to one of them.
 # Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic + legubiao/quadruped_ros2_control
 # (unitree_guide controller, Go2 model, gz_quadruped_playground with a LiDAR).
 # Gazebo Classic 11 has no arm64 build for Ubuntu 22.04, so only this container moves to
@@ -76,7 +77,8 @@ RUN apt-get update \
 # docs/reference/gazebo_turn_fix.md. Without 0003 the estimated velocity lags (a low-pass filter
 # written back into the Kalman state) and the trot sways until it falls at walk starts and corners;
 # without 0004 the first steps after standing can lift all four feet at once:
-# docs/reference/gazebo_objects_e2e.md part 5.
+# docs/reference/gazebo_objects_e2e.md part 5. Without 0005 the gait phase runs on the wall clock, so
+# when Gazebo stalls the feet jump ahead of the body and it can fall: part 6.
 COPY patches /tmp/quadruped_ros2_control_patches
 RUN cd /root/gz_ws/src/quadruped_ros2_control \
     && for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose "$p" || exit 1; done

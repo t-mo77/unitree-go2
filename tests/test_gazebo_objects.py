@@ -214,8 +214,11 @@ def test_the_docs_state_the_gazebo_lap_result():
     hello 1/1; its RTF (0.87) and L1-L3 were on battery in Low Power Mode, AC from 07:08:34 in L4.
     Set 2, all on AC (RTF 0.99): lap 4/5 (L2-L5 in a row; L1 fell right after two Gazebo stalls),
     chair 3/3, hello 1/1. Laps 9/10, 371 lap steps with 1 fall against C2's 336 with 6. The docs
-    say the fall and its likely cause (the gait clock counts wall time), not "5 of 5".
-    Before the patches the lap passed 2 of 5 (part 4). README §4 and §8 and design §2 and §12 say so, name what is still
+    say the fall and its likely cause (the gait clock counts wall time), not "5 of 5". Patch 0005
+    (part 6, image go2-voice-ltl-gazebo:patch-0005) counts the gait in simulation time: laps with
+    Gazebo paused on purpose went 0/3 on patch-0004 and 3/3 on patch-0005; its acceptance set (on
+    battery, RTF 0.89) was lap 5/5, chair 3/3, hello 1/1, with larger walk-start tilts in the chair
+    runs left unexplained. Before the patches the lap passed 2 of 5 (part 4). README §4 and §8 and design §2 and §12 say so, name what is still
     unchecked, and README does not read as if the grid executor were checked on the real robot."""
     readme = README.read_text(encoding="utf-8")
     assert "偽の Go2 と Gazebo でしか確かめていません" not in readme
@@ -225,8 +228,10 @@ def test_the_docs_state_the_gazebo_lap_result():
     assert "controller のパッチ" in lap_row and "10 回のうち 9 回" in lap_row and "§8" in lap_row
     assert "5 回のうち 5 回" not in lap_row and "Gazebo が止まった後に転んだ" in lap_row
     assert "まだ毎回は通らない" not in lap_row
+    assert "0005 の後は 5 回とも通った" in lap_row and "わざと止めながらでも 3 回とも" in lap_row
     assert "Gazebo でも、controller のパッチ（0003・0004）の後に、設計書（物）§2 の合格の条件を満たしました" in objects
     assert "§2 の合格の条件をまだ満たしていません" not in objects
+    assert "0005 を足した後の組でも満たしました（一周 5/5・椅子 3/3・挨拶つき 1/1。§8）" in objects
     near_row = next(line for line in objects.splitlines() if line.startswith("| `near_<id>` |"))
     assert "1.3 m" in near_row and "1.4 m" not in near_row
     unknown = readme[readme.index("## 8. わかっていないこと"):]
@@ -234,24 +239,38 @@ def test_the_docs_state_the_gazebo_lap_result():
     for words in ("満たしました", "一周 5/5", "一周 4/5", "RTF 0.99", "椅子 3/3", "低電力モード", "patch-0004",
                   "L4 の途中から電源", "静かな Mac", "371 回、転んだのは 1 回", "336 回で 6 回", "5 回のうち 2 回",
                   "2 回続けて止まった", "31 回のうち 1 回", "unitree_guide", "gazebo_objects_e2e.md", "第 5 部",
-                  "椅子まで 1.28 m"):
+                  "椅子まで 1.28 m", "patch-0005", "第 6 部", "3 回とも止まりの直後に転び", "0005 は 3 回とも一周",
+                  "一周 5/5（一周の動作 192 回で転び 0）", "RTF 0.89", "確かめていません", "0005 の組は電源につないで流していません"):
         assert words in gazebo, words
+    assert "シミュレーションの時間で数えるパッチは、まだ作っていません" not in gazebo
     assert "ただし Mac が低電力モードのときに測りました" not in gazebo           # only R1 and L1-L3 were
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002" in readme and "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in readme
     design = DESIGN.read_text(encoding="utf-8")
     goal = design[design.index("## 2. ゴール"):design.index("## 3. やらないこと")]
     assert "**Gazebo での状態（2026-11-11、§12）：満たした。**" in goal and "patch-0004" in goal
     assert "一周 4/5" in goal and "10 回のうち 1 回" in goal
+    assert "patch-0005" in goal and "3/3（0005 の前は 0/3）" in goal and "RTF 0.89" in goal
     results = design[design.index("**確かめた結果**"):]
     for words in ("§2 の合格の条件は、Gazebo で満たした", "一周 5/5", "一周 4/5", "一周は 2 組で 9/10", "椅子まで 3/3",
                   "低電力モード", "patch-0004", "07:08:34", "RTF 0.99", "動作 371 回で転び 1", "一周 2/5", "25 回", "終えたのは 1 回", "10 回のうち 7 回合格", "unitree_guide",
                   "決めたこと（利用者の判断、C4）"):
         assert words in results, words
     assert "Gazebo ではまだ満たせていない" not in results
+    assert "**0005 の後も §2 を満たした（第 6 部、C5）。**" in results and "0004 が 0/3、0005 が 3/3" in results
+    assert "最大 0.117" in results and "確かめていない" in results
+    assert "シミュレーションの時間で数えるパッチは作っていない" not in results
+    assert "**C5 歩き方の周期をシミュレーションの時間で数える（2026-11-11、利用者の判断）：**" in design
     assert "まだ決めていないこと（利用者の判断を待つ）" not in results
     assert "min(物の半径 + 1.5 m, 1.3 m)" in design and "min(物の半径 + 1.5 m, 1.4 m)" not in design
     record = (ROOT / "docs" / "reference" / "gazebo_objects_e2e.md").read_text(encoding="utf-8")
-    assert record.index("## 第 5 部") < record.index("## 第 4 部") < record.index("## 第 3 部") < record.index("## 結論")
+    assert (record.index("## 第 6 部") < record.index("## 第 5 部") < record.index("## 第 4 部")
+            < record.index("## 第 3 部") < record.index("## 結論"))
+    part6 = record[record.index("## 第 6 部"):record.index("## 第 5 部")]
+    for words in ("**0004 は一周 0/3、0005 は 3/3。**", "| R1 | 11:02:52 | — | — | RTF **0.89** | — |",
+                  "一周の動作（立つは数えない）は 192 回で転び 0", "0.333 → 0.516 m", "#### 歩き出しの傾き（椅子・挨拶つき）",
+                  "`lowpowermode` は 0", "0005 のせいかどうかは確かめていない", "1.131 m・23.5°", "id `39fd601dc2a3`",
+                  "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up", "`INVALID`"):
+        assert words in part6, words
     part5 = record[record.index("## 第 5 部"):record.index("## 第 4 部")]
     assert "§2 の合格の条件（一周 3 回・椅子 3 回、転ばない）を Gazebo で満たした。" in part5
     assert "一周 5/5" in part5 and "低電力モード" in part5 and "RTF は R1 で 1 回だけ測った（0.87" in part5
@@ -267,22 +286,25 @@ def test_the_docs_state_the_gazebo_lap_result():
     summary = record[record.index("## まとめ：一周・椅子・RTF の全部"):record.index("## 気づいたこと")]
     assert "第 4 部の `a2fe140`" in summary and "第 5 部の 1 組目、`go2-voice-ltl-gazebo:patch-0004`" in summary
     assert "第 5 部の 2 組目、電源" in summary and "10 回で 9 回" in summary
+    assert "第 6 部の受け入れの組、`patch-0005`、バッテリー" in summary and "| 第 6 部、`patch-0005`" in summary
     assert "**最後のコード（`a2fe140`）で一周 2/5・椅子 3/3・挨拶つき 0/1、操作画面の一周 1/3 とそこからの椅子まで 1/1。**" in record
     assert "終わって 1 秒（`TAIL_S`）しか見ない" not in record                  # TAIL_S is 3 s since 6bf599c
 
 
 def test_the_gazebo_image_carries_the_controller_patches():
-    """Patches 0003-0004 (gazebo_objects_e2e.md part 5) are applied by Dockerfile.gazebo with
-    0001-0002, and compose builds and runs them as go2-voice-ltl-gazebo:patch-0004; the image
-    without them (kept as go2-voice-ltl-gazebo:patch-0002) is reached through GO2_GAZEBO_IMAGE, with a
-    warning never to build with it set (this tree would build 0001-0004 under that tag). 0003 drops the three lines that
-    wrote the low-pass velocity back into the Kalman state and keeps feeding the filters; 0004 makes
-    StateTrotting::enter() start from STANCE_ALL."""
+    """Patches 0003-0004 (gazebo_objects_e2e.md part 5) and 0005 (part 6) are applied by
+    Dockerfile.gazebo with 0001-0002, and compose builds and runs them as go2-voice-ltl-gazebo:patch-0005;
+    the older images (kept as go2-voice-ltl-gazebo:patch-0004 and :patch-0002) are reached through
+    GO2_GAZEBO_IMAGE, with a warning never to build with it set (this tree would build 0001-0005 under
+    that tag). 0003 drops the three lines that wrote the low-pass velocity back into the Kalman state and
+    keeps feeding the filters; 0004 makes StateTrotting::enter() start from STANCE_ALL; 0005 makes the
+    wave generator count the controller's update time (the simulation time) instead of the wall clock."""
     patches = sorted(p.name for p in (ROOT / "docker" / "patches").glob("*.patch"))
     assert patches == ["0001-estimator-world-frame-leg-odometry.patch",
                        "0002-feet-end-calc-body-frame-stance-angle.patch",
                        "0003-estimator-velocity-low-pass-out-of-state.patch",
-                       "0004-trotting-enter-from-stance-all.patch"]
+                       "0004-trotting-enter-from-stance-all.patch",
+                       "0005-wave-generator-controller-time.patch"]
     p3 = (ROOT / "docker" / "patches" / patches[2]).read_text(encoding="utf-8")
     removed = [line for line in p3.splitlines() if line.startswith("-") and not line.startswith("---")]
     assert removed == [f"-    x_hat_({i + 3}) = low_pass_filters_[{i}]->getValue();" for i in range(3)]
@@ -291,11 +313,22 @@ def test_the_gazebo_image_carries_the_controller_patches():
     added = [line for line in p4.splitlines() if line.startswith("+") and not line.startswith("+++")]
     assert added[-1] == "+    wave_generator_->status_ = WaveStatus::STANCE_ALL;"
     assert "@@ -41,6 +41,12 @@ void StateTrotting::enter() {" in p4
+    p5 = (ROOT / "docker" / "patches" / patches[4]).read_text(encoding="utf-8")
+    removed = [line for line in p5.splitlines() if line.startswith("-") and not line.startswith("---")]
+    assert removed == ["-    start_t_ = getSystemTime();",
+                       "-            const double past_t = static_cast<double>(getSystemTime() - start_t_) * 1e-6;"]
+    added = [line for line in p5.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    assert "+        ctrl_component_.wave_generator_->setTime(time.seconds());" in added
+    assert "+            const double past_t = static_cast<double>(now_us_ - start_t_) * 1e-6;" in added
+    lines = p5.splitlines()
+    i = lines.index("+        ctrl_component_.wave_generator_->setTime(time.seconds());")
+    assert lines[i + 1] == "         ctrl_component_.wave_generator_->update();"   # the time is set before update()
     dockerfile = (ROOT / "docker" / "Dockerfile.gazebo").read_text(encoding="utf-8")
     assert "for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose" in dockerfile
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     gazebo = compose[compose.index("\n  gazebo:"):compose.index("\nvolumes:")]
-    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0004}" in gazebo.splitlines()
+    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005}" in gazebo.splitlines()
+    assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
     assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in gazebo
