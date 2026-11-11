@@ -6,11 +6,17 @@ logical camera（画像は出さず、見えている model の名前と位置�
 rviz2 で CPU が足りず RTF が 0.13 になる（NO-GO）ので使わない。
 物（box_1・chair_1）は橋渡しが起動時に置く。
 
+OBJECTS_SOURCE（spec §11.3）は起動のときに 1 回読む（bridge_core.objects_source。ほかの値なら起動しない）。
+detector のときだけ、xacro に camera:=true を渡して描くカメラ front_camera（640×480、2 Hz）を付け、その絵と
+CameraInfo を別の parameter_bridge のノード front_camera_bridge で ROS に渡す（gazebo/launch_config.py）。
+logical（既定）のときのロボットの記述と主の ros_gz_bridge の引数は 0f6e06a と同じ（spec §2 の 7）。
+
 使い方（gazebo コンテナの中）: ros2 launch /work/gazebo/launch/go2_gazebo.launch.py
 画面: http://localhost:6080/vnc.html?autoconnect=1
 """
 
 import os
+import sys
 from pathlib import Path
 
 import xacro
@@ -23,9 +29,16 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 ROOT = Path(__file__).resolve().parents[2]                 # このリポジトリ（コンテナでは /work）
+# gazebo.bridge_core（OBJECTS_SOURCE）と gazebo.launch_config を読むため（bridge_core は go2_nl_control も使う）
+for _path in (ROOT / "nl_control", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from gazebo import bridge_core  # noqa: E402
+from gazebo.launch_config import (CAMERA_BRIDGE_NAME, GZ_BRIDGE_ARGS, MODEL,  # noqa: E402
+                                  camera_bridge_args, xacro_mappings)
+
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
-WORLD = "empty"                                            # worlds/default.sdf の world の名前
-MODEL = "robot"                                            # gazebo_bridge.py と同じ
 # 画面のカメラ：Go2 の右前 (1.3, -1.1, 0.7) から、Go2 が出る場所の少し前 (0.3, 0.1, 0.15) を見る
 # （既定の (-6, 0, 6) からでは Go2 が小さすぎる）。画面が立ち上がるまで待ってから送る。
 CAMERA = ("pose: {position: {x: 1.3, y: -1.1, z: 0.7}, "
@@ -37,9 +50,11 @@ SET_CAMERA = ("for i in $(seq 60); do gz service -s /gui/move_to/pose --reqtype 
 
 
 def generate_launch_description() -> LaunchDescription:
+    source = bridge_core.objects_source()        # ほかの値なら ValueError で、何も作る前に止まる
     playground = get_package_share_directory("gz_quadruped_playground")
     world_sdf = os.path.join(playground, "worlds", "default.sdf")
-    robot_description = xacro.process_file(str(XACRO)).toxml()
+    # logical なら mappings は {} で、出力は 0f6e06a と同じ。detector なら camera:=true で front_camera が付く
+    robot_description = xacro.process_file(str(XACRO), mappings=xacro_mappings(source)).toxml()
     sim_time = {"use_sim_time": True}
 
     # Gazebo（サーバーと画面）。-r：すぐ動かし始める。gui:=false なら -s（サーバーだけ）
@@ -65,18 +80,17 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(os.path.join(playground, "launch", "unitree_guide.launch.py")))
 
     # Gazebo ↔ ROS：時計、LiDAR、logical camera（画像は無く、見えている model の名前と位置だけ）、
-    # 本当の位置、箱と物を出し入れするサービス
+    # 本当の位置、箱と物を出し入れするサービス（GZ_BRIDGE_ARGS。0f6e06a と同じ）
     gz_bridge = Node(
         package="ros_gz_bridge", executable="parameter_bridge", output="screen",
-        arguments=[
-            "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
-            "/gazebo/lidar/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked",
-            "/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage",
-            f"/model/{MODEL}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
-            f"/world/{WORLD}/create@ros_gz_interfaces/srv/SpawnEntity",
-            f"/world/{WORLD}/remove@ros_gz_interfaces/srv/DeleteEntity",
-        ],
+        arguments=list(GZ_BRIDGE_ARGS),
         parameters=[sim_time])
+
+    # detector のときだけ：描くカメラの絵と CameraInfo を別のノードで（主の bridge の引数は変えない）
+    camera_args = camera_bridge_args(source)
+    front_camera_bridge = [] if camera_args is None else [Node(
+        package="ros_gz_bridge", executable="parameter_bridge", name=CAMERA_BRIDGE_NAME, output="screen",
+        arguments=list(camera_args), parameters=[sim_time])]
 
     # 実機と同じ窓口（/api/sport/request・/sportmodestate・/utlidar/cloud）、/go2/objects と /sim/*
     bridge = ExecuteProcess(
@@ -89,5 +103,5 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument("height", default_value="0.5", description="Go2 を出す高さ [m]"),
         DeclareLaunchArgument("gui", default_value="true", description="Gazebo の画面を出すか"),
-        gazebo, robot_state_publisher, spawn, controllers, gz_bridge, bridge, camera,
+        gazebo, robot_state_publisher, spawn, controllers, gz_bridge, *front_camera_bridge, bridge, camera,
     ])
