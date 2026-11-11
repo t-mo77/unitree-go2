@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!-- A cylinder lying along x (pitch 90 degrees, written in degrees) and a standing one beside it, in two links. -->
+<sdf version="1.9">
+  <model name="cylinders">
+    <static>true</static>
+    <link name="lying">
+      <collision name="collision">
+        <pose degrees="true">0 0 0.1 0 90 0</pose>
+        <geometry>
+          <cylinder><radius>0.1</radius><length>1.0</length></cylinder>
+        </geometry>
+      </collision>
+    </link>
+    <link name="standing">
+      <pose>0.6 0 0 0 0 0</pose>
+      <collision name="collision">
+        <pose>0 0 0.3 0 0 0</pose>
+        <geometry>
+          <cylinder><radius>0.05</radius><length>0.6</length></cylinder>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>
