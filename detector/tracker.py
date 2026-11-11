@@ -15,9 +15,14 @@
   当たりが 1 回あれば、今の id を終わりにし、同じ点で新しい label の新しい id にする。
 - まとめ：絵ごとに、確かな追跡 2 つの足跡が IoU 0.5 以上なら古い id にまとめ、新しい id を終わりにする。
   同じ label なら、片方の中心がもう片方の足跡の中にあるときもまとめる。違う label の少しの重なり
-  （机の下に押し込んだ椅子。IoU 約 0.17 で、椅子の中心は机の足跡の中）は 2 つのまま。
+  （机の下に押し込んだ椅子。IoU 約 0.17 で、椅子の中心は机の足跡の中）は 2 つのまま。確かになるときや
+  名前を付け直すときに、この決まりですぐまとまる確かな追跡があれば、新しい id を出さずにその追跡にまとめる
+  （同じ絵の中の重なった見え方、台の上のランプと desk・ソファとその一部・box と bench が、止まるたびに id を
+  使い切らないように。C6）。
 - 忘れ方：LiDAR に支えられた確かな追跡は、空きの判定（`mark_vacant`）が 0.5 秒以上離れて 2 回続いたときだけ
   消す。支えのない確かな追跡は、見える絵で 3 回続けて当たらなければ消す。ほかは `visible: false` で覚えておく。
+- 見える絵：`in_view` は呼ぶ側（core）が、カメラから 6 m 以内・絵の中・LiDAR に隠されていない、のすべてを
+  確かめる。追跡はカメラの位置を見え方の `cam_xy` からしか知らないので、見え方のない絵では `in_view` だけで決まる。
 - 形：LiDAR に支えられた直近 6 回の当たりの点（0.05 m で間引き、2000 点まで）を `fuse` に渡す（向きは
   いちばん新しい見え方）。予備の見え方は、LiDAR に支えられた追跡を動かさない。
 
@@ -137,9 +142,12 @@ class Tracker:
 
     def update(self, observations: Sequence[Observation], frame_t: float, wall_t: float,
                in_view: Callable[[float, float], bool]) -> None:
-        """One still image. in_view(x, y): the image's camera sees odom point (x, y) (inside the image, not
-        occluded by LiDAR returns; for a track without LiDAR support also not cut short by returns in front).
-        Beyond INVIEW_RANGE from the observations' camera a frame never counts."""
+        """One still image. in_view(x, y): the image's camera sees odom point (x, y). in_view must itself apply
+        all of: within INVIEW_RANGE (6 m) of the image's camera, inside the image (frustum), and not occluded by
+        LiDAR returns (for a track without LiDAR support also not cut short by returns in front). The tracker
+        takes the camera only from the observations' cam_xy, so it can add the 6 m check only to frames with
+        observations; in a frame without any, in_view alone decides whether the frame counts toward N and
+        whether an unsupported confirmed track misses."""
         frame_t, wall_t = float(frame_t), float(wall_t)
         cam = next((_xy(o.cam_xy) for o in observations if isinstance(o, Observation) and _xy(o.cam_xy)), None)
         usable = [o for o in observations if self._usable(o)]
@@ -291,7 +299,17 @@ class Tracker:
         self._next[label] = n + 1
         return f"{label}_{n}"
 
+    def _absorber(self, track: _Track, label: str) -> _Track | None:
+        """The oldest confirmed track that track, published as label, would merge into at once (_overlap)."""
+        found = [t for t in self._tracks if t.confirmed and t is not track and _overlap(t, track, label)]
+        return min(found, key=lambda t: (t.order, t.serial), default=None)
+
     def _confirm(self, track: _Track) -> None:
+        old = self._absorber(track, track.label)
+        if old is not None:                         # a duplicate view of a confirmed track: it joins it and
+            _fold(old, track)                       # takes no id, so duplicates never use up a label's ids
+            self._tracks.remove(track)
+            return
         obj_id = self._issue(track.label)
         if obj_id is None:
             self._tracks.remove(track)
@@ -316,6 +334,11 @@ class Tracker:
                 best = label
         if best is None:
             return
+        old = self._absorber(track, best)
+        if old is not None:                         # the new label would merge into old at once: join it, the
+            _fold(old, track)                       # current id ends and no new id is used
+            self._retire(track)
+            return
         obj_id = self._issue(best)
         if obj_id is None:
             return                                  # the new label's ids ran out: keep the old id
@@ -338,13 +361,7 @@ class Tracker:
             for young in confirmed[i + 1:]:
                 if id(young) in gone or not _overlap(old, young):
                     continue
-                if young.last_hit_wall is not None and (old.last_hit_wall is None
-                                                        or young.last_hit_wall > old.last_hit_wall):
-                    old.last_hit_wall = young.last_hit_wall
-                if not old.measured and young.measured:
-                    old.x, old.y, old.size, old.filled = young.x, young.y, young.size, young.filled
-                    old.measured, old.cam_xy = True, young.cam_xy
-                    old.point_frames = young.point_frames
+                _fold(old, young)
                 gone.add(id(young))
                 self._retire(young)
 
@@ -480,7 +497,19 @@ def _inside(x: float, y: float, t: _Track) -> bool:
     return abs(x - t.x) <= t.size[0] / 2 + _EPS and abs(y - t.y) <= t.size[1] / 2 + _EPS
 
 
-def _overlap(a: _Track, b: _Track) -> bool:
+def _overlap(a: _Track, b: _Track, b_label: str | None = None) -> bool:
+    """The merge rule: footprint IoU >= MERGE_IOU, or, for the same label, one centre inside the other's footprint.
+    b_label: b's label to test with (a relabel), default b.label."""
     if _iou((a.x, a.y, a.size), (b.x, b.y, b.size)) >= MERGE_IOU - _EPS:
         return True
-    return a.label == b.label and (_inside(a.x, a.y, b) or _inside(b.x, b.y, a))
+    return a.label == (b.label if b_label is None else b_label) and (_inside(a.x, a.y, b) or _inside(b.x, b.y, a))
+
+
+def _fold(old: _Track, young: _Track) -> None:
+    """young merges into old: old keeps its id and its geometry, unless only young has LiDAR support."""
+    if young.last_hit_wall is not None and (old.last_hit_wall is None or young.last_hit_wall > old.last_hit_wall):
+        old.last_hit_wall = young.last_hit_wall
+    if not old.measured and young.measured:
+        old.x, old.y, old.size, old.filled = young.x, young.y, young.size, young.filled
+        old.measured, old.cam_xy = True, young.cam_xy
+        old.point_frames = young.point_frames

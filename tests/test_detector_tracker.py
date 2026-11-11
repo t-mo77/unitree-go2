@@ -411,13 +411,95 @@ def test_a_bench_vote_on_a_confirmed_box_makes_no_new_track():
 
 
 def test_overlapping_confirmed_tracks_keep_the_older_id():
+    # Two fallback-only tracks (their gates let fallback views move them) confirm apart, then bench_1 walks
+    # onto box_1: the merge keeps the older id and retires the younger one.
     run = Run()
-    confirmed(run, obs("box", 0.6))
-    both = (obs("box", 0.6), obs("bench", 0.6, x=2.05, size=(0.5, 0.5)))
-    confirmed(run, *both)                                # the box track is taken: bench is a new track
+    for _ in range(3):
+        run.frame(obs("box", 0.6, x=2.0, supported=False))
+    for _ in range(3):
+        run.frame(obs("box", 0.6, x=2.0, supported=False), obs("bench", 0.6, x=3.2, size=(0.5, 0.5),
+                                                               supported=False))
+    assert run.ids() == ["bench_1", "box_1"]
+    run.frame(obs("box", 0.6, x=2.0, supported=False), obs("bench", 0.6, x=2.6, size=(0.5, 0.5), supported=False))
+    assert run.ids() == ["bench_1", "box_1"]             # no overlap yet
+    run.frame(obs("box", 0.6, x=2.0, supported=False), obs("bench", 0.6, x=2.05, size=(0.5, 0.5),
+                                                           supported=False))
     assert run.ids() == ["box_1"]
     assert run.stats()["ids_issued"] == {"bench": 1, "box": 1}
     assert run.stats()["ids_retired"] == 1               # bench_1 merged into box_1
+
+
+def test_a_duplicate_of_a_confirmed_track_gets_no_id():
+    # box and bench in one image on the same place: the box track takes the box view, so the bench view starts a
+    # tentative track; it would merge into box_1 at once, so it joins box_1 at confirmation and burns no id.
+    run = Run()
+    confirmed(run, obs("box", 0.6))
+    both = (obs("box", 0.6), obs("bench", 0.6, x=2.05, size=(0.5, 0.5)))
+    confirmed(run, *both)
+    assert run.ids() == ["box_1"]
+    assert run.stats()["ids_issued"] == {"box": 1}
+    assert run.stats()["ids_retired"] == 0
+    assert run.stats()["notes"] == []
+
+
+def test_two_new_overlapping_tracks_confirm_as_one_id():
+    run = Run()
+    confirmed(run, obs("lamp", 0.6, size=(0.4, 0.4)), obs("desk", 0.64, size=(0.4, 0.4)))
+    assert run.ids() == ["lamp_1"]                       # the first one keeps its id; the other gets none
+    assert run.stats()["ids_issued"] == {"lamp": 1}
+    assert run.stats()["ids_retired"] == 0
+
+
+DUPLICATES = {
+    # spec §11.7: a lamp on its stand also called desk (same points), a sofa and a part of it, a box also bench.
+    "lamp_desk": ([obs("lamp", 0.6, size=(0.4, 0.4)), obs("desk", 0.64, size=(0.4, 0.4))], "lamp_1",
+                  obs("desk", 0.6, x=1.0, y=-3.0), "desk_1"),
+    "sofa_part": ([obs("sofa", x=3.0, y=0.0, size=(1.8, 0.9)), obs("sofa", x=3.6, y=0.2, size=(0.5, 0.5))],
+                  "sofa_1", obs("sofa", x=1.0, y=-3.0), "sofa_2"),
+    "box_bench": ([obs("box", 0.6), obs("bench", 0.6, x=2.05, size=(0.5, 0.5))], "box_1",
+                  obs("bench", 0.6, x=1.0, y=-3.0), "bench_1"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(DUPLICATES))
+def test_a_duplicate_in_every_frame_uses_no_ids(case):
+    # Review fix round 1: 200 still frames 3 s apart (10 minutes at the idle period) of an object and its
+    # duplicate view issue one id; the duplicate's label keeps all its ids for real objects (D2, C6).
+    pair, kept, real, real_id = DUPLICATES[case]
+    run = Run()
+    for _ in range(200):
+        run.frame(*pair, dt=3.0)
+    assert run.ids() == [kept]
+    label = kept.rsplit("_", 1)[0]
+    assert run.stats()["ids_issued"] == {label: 1}
+    assert run.stats()["ids_retired"] == 0
+    assert run.stats()["notes"] == []
+    for _ in range(2):
+        run.frame(*pair, real, dt=3.0)                   # a real object of the duplicate's label elsewhere
+    assert real_id in run.ids()
+    assert run.stats()["ids_retired"] == 0
+
+
+def test_a_relabel_onto_an_overlapping_track_joins_it():
+    # A chair under a table, then called table: the relabelled track would merge into table_1 at once, so it joins
+    # table_1 (chair_1 ends) instead of taking table_2.
+    run = Run()
+    table = obs("table", x=2.0, y=0.0, size=(1.2, 0.75))
+    chair = obs("chair", x=2.0, y=0.24, size=(0.45, 0.45))
+    confirmed(run, table, chair)
+    assert run.ids() == ["chair_1", "table_1"]
+    as_table = obs("table", 0.6, x=2.0, y=0.24, size=(0.45, 0.45))
+    for _ in range(4):
+        run.frame(table, as_table)                       # table_1 takes the table view; the other votes on chair_1
+    assert run.ids() == ["table_1"]
+    assert run.stats()["ids_issued"] == {"chair": 1, "table": 1}
+    assert run.stats()["ids_retired"] == 1               # chair_1
+    for _ in range(10):
+        run.frame(table, as_table)
+    assert run.ids() == ["table_1"]
+    assert run.stats()["ids_issued"] == {"chair": 1, "table": 1}
+    assert run.stats()["ids_retired"] == 1
+    assert run.rows()[0].size == pytest.approx((1.2, 0.75), abs=0.06)
 
 
 def test_a_chair_under_a_table_stays_two_objects():
@@ -434,14 +516,15 @@ def test_a_chair_under_a_table_stays_two_objects():
 
 def test_same_label_tracks_merge_when_a_centre_is_inside():
     # A whole sofa and a part of it in one image (NMS at IoU 0.7 keeps both boxes): IoU 0.15, the part's
-    # centre inside the sofa's footprint. Both confirm in the same frame; the first one keeps its id.
+    # centre inside the sofa's footprint. Both are ready in the same frame; the first one takes the id and the
+    # part joins it without one.
     run = Run()
     whole = obs("sofa", x=3.0, y=0.0, size=(1.8, 0.9))
     part = obs("sofa", x=3.6, y=0.2, size=(0.5, 0.5))
     confirmed(run, whole, part)
     assert run.ids() == ["sofa_1"]
-    assert run.stats()["ids_issued"] == {"sofa": 2}
-    assert run.stats()["ids_retired"] == 1
+    assert run.stats()["ids_issued"] == {"sofa": 1}
+    assert run.stats()["ids_retired"] == 0
     assert run.rows()[0].size == pytest.approx((1.8, 0.9), abs=0.06)
 
 
