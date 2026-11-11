@@ -4,12 +4,52 @@
 
 ## 目次
 
+- [Linux PCで直接動かす（Dockerなし）](#linux-pcで直接動かすdockerなし)
 - [1. 準備（Mac）](#1-準備mac)
 - [2. 偽の Go2 で動かす](#2-偽の-go2-で動かす)
 - [3. Gazebo で動かす](#3-gazebo-で動かす)
 - [4. 実機の Go2 で動かす（有線・Linux の PC）](#4-実機の-go2-で動かす有線linux-の-pc)
 - [5. テスト](#5-テスト)
 - [詳しい説明](#詳しい説明)
+
+## Linux PCで直接動かす（Dockerなし）
+
+Ubuntu 22.04・ROS 2 Humbleと `~/unitree_ros2/cyclonedds_ws/install` があるPCでは、
+Dockerを使わずに起動できます。アプリのPython依存は専用の `.venv` に入れます。
+このPCでは既存のROS 2・Unitreeメッセージ・Graphviz・Codex CLIを使います。
+
+```bash
+cd ~/student_ws/unitree-go2
+bash scripts/setup_local.sh                   # 初回。準備済みなら不要
+# env.txtがなければ env.txt.example から作り、LLM_BACKEND=codex / GO2_IFACE=enp3s0 を設定
+bash scripts/run_local.sh fake                # 偽Go2とWeb画面。Ctrl+Cで両方終了
+```
+
+ページは <http://localhost:8810>。偽Go2はlocalhost・ROSドメイン73で動き、
+実機のドメイン0とは分離します。CodexはこのPCのログインを利用します。
+モデルは既存の `../.models/whisper` があれば再利用します。
+文字起こしは既定でCPUを使うため、CUDA 12の追加導入は不要です。
+
+実機に切り替えるときは偽Go2をCtrl+Cで終了してから、有線LANを接続し、
+リモコンを持った人がそばにいる状態で、次の順に確認します。
+
+```bash
+bash scripts/run_local.sh check               # 実機の接続確認。動作指令は送らない
+bash scripts/run_local.sh sensors             # LiDAR確認。Ctrl+Cで終了
+bash scripts/run_local.sh robot               # 実機のWeb操作
+```
+
+実機の準備は [docs/real_robot.md](docs/real_robot.md) の姿勢・LiDARの確認にも従います。
+Linux直接実行の実機モードは、移動可否をGo2本体の障害物回避サービスに任せます。
+PCはLiDAR点群から移動を禁止しません。画面の「Go2判断」は、PCが障害物なしと判断した意味ではありません。
+起動時に本体の回避機能がONであることを確認し、API操作モードへ切り替えます。
+アプリの実行中はAPI操作モードを使い、終了時に解除します。
+移動は `/api/obstacles_avoid/request` へ送り、姿勢変更は従来のSport APIを使います。
+本体回避機能が無効・未対応・無応答なら起動を中止し、通常Moveへは切り替えません。
+`sensors` は診断専用でPC判定を表示するため、実機操作モードの停止条件とは異なります。
+通信断・明示的停止・処理異常・動作完了/タイムアウトの管理はPC側にも残します。
+既存の有線IPv4が `192.168.123.x/24` なら、`.99` に変更する必要はありません。
+テストは `bash scripts/run_local.sh test`。
 
 ## 1. 準備（Mac）
 

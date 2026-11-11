@@ -157,7 +157,7 @@ def check_iface(name: str, info: Optional[IfaceInfo]) -> list[Check]:
 
 # ---------- 3・4. 届くもの ----------
 def check_topics(seconds: float, n_state: int, n_cloud: int, error_code: Optional[int],
-                 request_subs: int, request_pubs: int) -> list[Check]:
+                 request_subs: int, request_pubs: int, require_cloud: bool = True) -> list[Check]:
     out: list[Check] = []
     if n_state:
         out.append(Check(OK, f"{STATE_TOPIC}：{seconds:g} 秒で {n_state} 回（{n_state / seconds:.0f} Hz）"))
@@ -173,8 +173,10 @@ def check_topics(seconds: float, n_state: int, n_cloud: int, error_code: Optiona
             out.append(Check(OK, text))
     if n_cloud:
         out.append(Check(OK, f"{LIDAR_TOPIC}：{seconds:g} 秒で {n_cloud} 回（{n_cloud / seconds:.0f} Hz）"))
-    else:
+    elif require_cloud:
         out.append(Check(BAD, f"{LIDAR_TOPIC} が {seconds:g} 秒届きません。届くまで、アプリは移動を保留します。{HELP}"))
+    else:
+        out.append(Check(WARN, "障害物判定はGo2本体へ委譲します。PCのLiDAR受信は移動条件に使いません。"))
     if request_subs:
         out.append(Check(OK, f"{REQUEST_TOPIC} の受け手（Go2 の運動の制御）：{request_subs}"))
     else:
@@ -195,10 +197,13 @@ def listen(seconds: float) -> list[Check]:
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import PointCloud2
     from unitree_go.msg import SportModeState
+    from unitree_api.msg import Request
+    from voice_ltl.publisher_guard import PublisherGuard
 
     rclpy.init()
     node = rclpy.create_node("go2_robot_check")
     got = {"state": 0, "cloud": 0, "code": None}
+    guard = PublisherGuard()
 
     def on_state(msg: SportModeState) -> None:
         got["state"] += 1
@@ -210,15 +215,23 @@ def listen(seconds: float) -> list[Check]:
     try:
         node.create_subscription(SportModeState, STATE_TOPIC, on_state, qos_profile_sensor_data)
         node.create_subscription(PointCloud2, LIDAR_TOPIC, on_cloud, qos_profile_sensor_data)
+        node.create_subscription(Request, REQUEST_TOPIC, guard.on_request, qos_profile_sensor_data)
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             rclpy.spin_once(node, timeout_sec=0.05)
-        subs = node.count_subscribers(REQUEST_TOPIC)
-        pubs = node.count_publishers(REQUEST_TOPIC)
+        subs = max(0, node.count_subscribers(REQUEST_TOPIC) - 1)  # 自分の受信監視を除く
+        total_pubs = node.count_publishers(REQUEST_TOPIC)
+        guard.freeze(node)
+        pubs = guard.conflicts(node)
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
-    return check_topics(seconds, got["state"], got["cloud"], got["code"], subs, pubs)
+    checks = check_topics(seconds, got["state"], got["cloud"], got["code"], subs, pubs,
+                          require_cloud=os.environ.get("GO2_OBSTACLE_AUTHORITY") != "go2")
+    if total_pubs != pubs:
+        checks.append(Check(WARN, f"待機中のnative DDS送り手 {total_pubs - pubs} 個（監視中の指令送信なし）。"
+                            "実際に指令を送った場合や新しい送り手が増えた場合は競合として拒否します。"))
+    return checks
 
 
 def config_from_args(argv: Optional[Iterable[str]] = None) -> float:

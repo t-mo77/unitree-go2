@@ -406,6 +406,34 @@ def test_stop_during_gesture_then_new_instruction_waits_for_the_gesture(tmp_path
     assert sess.snapshot()["status"] == "done"
 
 
+def test_new_instruction_after_stop_and_quiet_dds_is_executed(tmp_path):
+    from types import SimpleNamespace
+    from voice_ltl.publisher_guard import BARE_DDS, PublisherGuard, QUIET_SECONDS
+    sim = SimGo2()
+    sim.error_code = 1013
+    sess, link = make(tmp_path, llm_for("F moved_forward", "F lying"), sim=sim)
+    source = bytes([7]) * 24
+    node = SimpleNamespace(get_publishers_info_by_topic=lambda topic: [
+        SimpleNamespace(node_name=BARE_DDS, endpoint_gid=source)])
+    guard = PublisherGuard(clock=lambda: link.now)
+    guard.freeze(node)
+    link.other_senders = lambda: guard.conflicts(node)
+    sess.submit_text("前に進んで")
+    drive(sess, link, 1)
+    assert MOVE in sim.accepted
+    guard.on_request(None, SimpleNamespace(publisher_gid=source))
+    assert link.other_senders() == 1
+    sess.stop()  # control_loopが競合を検出した際の停止
+    sent = len(sim.accepted)
+    drive(sess, link, QUIET_SECONDS + 0.2)
+    assert len(sim.accepted) == sent  # 元の移動は再開しない
+    assert link.other_senders() == 0
+    sess.submit_text("伏せて")
+    drive(sess, link, 10)
+    assert STAND_DOWN in sim.accepted[sent:]
+    assert sess.snapshot()["status"] == "done"
+
+
 class IgnoresSit(DirectSimLink):
     """A Go2 that does not take Sit (as a busy one would): it keeps standing."""
 

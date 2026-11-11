@@ -1258,6 +1258,7 @@ class Session:
                 "front": r.front if r else SENSOR_LOST,
                 "back": r.back if r else SENSOR_LOST,
                 "front_dist": r.front_dist if r else None,
+                "obstacle_authority": r.authority if r else "pc",
                 "back_dist": r.back_dist if r else None,
                 "sup_state": self.runtime.state if self.runtime is not None else None,
                 "diagram_version": self.diagram_version,

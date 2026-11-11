@@ -31,7 +31,7 @@ from voice_ltl.objects import formula_object_props, split_prop
 from voice_ltl.server import wait_ready_seconds
 from voice_ltl.world import PROPOSITIONS
 
-WORKDIR = Path("/work/out")   # 合成の作業場所（server.py と同じ）
+WORKDIR = Path(__file__).resolve().parents[1] / "out"   # server.py と同じ
 PERIOD = 0.1                  # 制御の周期（10 Hz）
 FINAL = ("done", "error")     # これになったら終わる
 INSTRUCTION = "(run_formula)"  # Session に渡す指示の文（ログに出るだけ。式は FakeLLM が返す）
@@ -75,18 +75,21 @@ def run(formula: str, timeout: float, wait_s: float) -> int:
     link = None
     stop_times = 3
     try:   # ROS 2 を読み込み・RosLink を作っている間の Ctrl+C も「中断しました」で終える
-        from go2_nl_control.perception import PerceptionConfig
+        from voice_ltl.perception_config import perception_config
 
         from voice_ltl.ros_link import RosLink
         from voice_ltl.session import Session
 
         try:
-            link = RosLink(PerceptionConfig(), node_name="go2_run_formula")
+            link = RosLink(perception_config(), node_name="go2_run_formula")
         except RuntimeError as exc:   # 二重起動
             print(exc, flush=True)
             return 1
         try:
             link.wait_ready(wait_s)
+            prepare = getattr(link, "prepare_onboard_avoidance", None)
+            if callable(prepare):
+                prepare()
         except RuntimeError as exc:   # Go2 が見つからない・別の送り手がいる
             print(exc, flush=True)
             if link.other_senders():  # そちらが Go2 を動かしているので、StopMove で割り込まない
