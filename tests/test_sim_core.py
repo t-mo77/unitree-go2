@@ -204,3 +204,18 @@ def test_cloud_of_back_box_is_behind_the_body():
     reading = Sensing(cfg).update(cloud, 0.0)
     assert reading.back_dist == pytest.approx(1.05, abs=0.05)
     assert reading.front_dist is None or reading.front_dist > 5
+
+
+def test_button_box_cloud_is_unchanged():
+    """A button box keeps BOX_HEIGHT walls: the same 216 points as before the object heights (24 edge points × 9)."""
+    sim = standing_sim()
+    box = sim.place_box("front", 1.2)
+    cloud = sim.cloud_lidar()
+    cfg = sim.cfg
+    assert cloud.shape == (216, 3)
+    world_z = cloud[:, 2] + cfg.lidar_z + 0.30
+    assert world_z.min() == pytest.approx(0.0, abs=1e-9) and world_z.max() == pytest.approx(0.4)
+    assert len(np.unique(np.round(world_z, 6))) == 9
+    wx, wy = cloud[:, 0] + cfg.lidar_x, cloud[:, 1]
+    on_edge = np.isclose(np.abs(wx - box.x), 0.15) | np.isclose(np.abs(wy - box.y), 0.15)
+    assert on_edge.all()

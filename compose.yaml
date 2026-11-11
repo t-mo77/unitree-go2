@@ -38,6 +38,9 @@ services:
   sim:
     <<: *go2
     profiles: ["fake"]
+    environment:
+      # the fake Go2's objects: gazebo/layouts/<name>.json (default: box_1 and chair_1)
+      GO2_LAYOUT: "${GO2_LAYOUT:-default}"
     command: python3 -m sim.fake_go2
 
   gazebo:
