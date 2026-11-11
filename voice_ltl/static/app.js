@@ -672,8 +672,15 @@ function renderSense(id, state, dist) {
 
 function renderGo2(s) {
   setText("posture", POSTURE_JA[s.posture] ?? s.posture);
-  renderSense("front", s.front, s.front_dist);
-  renderSense("back", s.back, s.back_dist);
+  for (const side of ["front", "back"]) {
+    if (s.obstacle_authority === "go2" && s[side] === "CLEAR") {
+      setText(`${side}-dist`, "PC未判定");
+      setText(side, "Go2判断");
+      setData(side, "tone", "off");
+    } else {
+      renderSense(side, s[side], s[`${side}_dist`]);
+    }
+  }
   const now = s.steps.find((st) => st.status === "current");
   setText("current", now ? `${now.label}（${now.action}）` : "—");
   if (s.pose) {

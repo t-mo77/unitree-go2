@@ -9,6 +9,7 @@ has no_speech_prob 0.68, so no_speech_prob alone would drop a stop word.
 """
 
 import io
+import os
 import time
 import unicodedata
 
@@ -87,7 +88,8 @@ class Transcriber:
             from faster_whisper import WhisperModel
 
             loading = time.monotonic()
-            self._model = WhisperModel(self.model_size, compute_type=self.compute_type)
+            self._model = WhisperModel(self.model_size, compute_type=self.compute_type,
+                                      device=os.environ.get("WHISPER_DEVICE", "auto"))
             self.last_load_seconds = time.monotonic() - loading
         segments, _ = self._model.transcribe(
             io.BytesIO(audio), language="ja", vad_filter=False, beam_size=5
