@@ -364,6 +364,8 @@ class DetectorCore:
                     self._drop_image()                           # odometry did not reach the stamps in time
                 return None
             pi, pc = self._poses.at(img.t), self._poses.at(scan.t)
+            if pi is not None and pc is None:
+                self._no_cloud = True                            # the stop's last scan left the pose buffer
             if pi is None or pc is None or _shift_m(pi, pc) > PAIR_MAX_SHIFT_M + 1e-9 \
                     or _shift_deg(pi, pc) > PAIR_MAX_SHIFT_DEG + 1e-9:
                 self._drop_image()

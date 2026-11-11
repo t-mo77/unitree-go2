@@ -607,6 +607,18 @@ def test_no_scan_in_the_still_interval_drops_the_image_and_says_no_cloud():
     assert rig.health()["reason"] == "ok" and rig.detector.calls == calls + 1
 
 
+def test_a_lidar_lost_during_a_stop_says_no_cloud_once_its_last_scan_left_the_pose_buffer():
+    rig = confirmed_chair_core()                          # still since 119.0, the last scan at 121.0
+    rig.feed(121.02, 122.0, clouds=False)                 # the LiDAR stops; the Go2 keeps standing
+    calls = rig.detector.calls                            # (the image at 121.5 may still pair with 121.0)
+    rig.feed(122.02, 125.0, clouds=False)                 # 121.0 leaves the 2 s pose buffer
+    h = rig.health()
+    assert (h["ok"], h["reason"], h["still"]) == (False, "no_cloud", True)
+    assert rig.detector.calls == calls and h["cloud_age_s"] > POSE_BUFFER_S
+    rig.feed(125.02, 125.5)                               # scans again, still the same stop
+    assert rig.health()["reason"] == "ok" and rig.detector.calls == calls + 1
+
+
 def test_no_odometry_means_no_job_and_no_odometry():
     rig = Rig()
     rig.feed(10.0, 11.0)
