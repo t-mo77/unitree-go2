@@ -9,10 +9,10 @@ from go2_nl_control.actions import (BALANCE_STAND, HELLO, LYING, MOVE, RISE_SIT,
                                     STAND_DOWN, STAND_UP, STOP_MOVE, state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
 from gazebo.bridge_core import (DOWN_CMD, FALL_TILT, FALL_Z, FIXED_DOWN, FIXED_STAND, GROUND_Z,
-                                LIDAR_IN_BODY, PASSIVE, RELEASE_ACC, STAND_CMD, TROT_CMD,
-                                TROT_REPORT_LATE_S, TROT_WAIT_S, TROTTING, UPRIGHT_Z, V_X_MAX, V_Y_MAX,
-                                W_Z_MAX, BoxWorld, BridgeCore, drop_ground_and_self_points,
-                                drop_self_points, move_input)
+                                LIDAR_IN_BODY, MAX_SENDS, PASSIVE, RELEASE_ACC, RESEND_S, STAND_CMD,
+                                STANDING_CODES, TROT_CMD, TROT_WAIT_S, TROTTING, UPRIGHT_Z, V_X_MAX,
+                                V_Y_MAX, W_Z_MAX, BoxWorld, BridgeCore, ControllerInput,
+                                drop_ground_and_self_points, drop_self_points, move_input, parse_switch)
 from sim.sim_core import FOOTPRINT
 from voice_ltl.grid_executor import GRID_EXEC_CONFIG
 
@@ -87,41 +87,30 @@ def test_move_waits_for_trot_entry_in_sim_time_and_stop_cancels_it():
 
 
 def test_move_waits_for_reported_trot_entry():
-    """橋渡しのノードが controller の本当の切り替え（/rosout）を知らせるとき：待つ 0.5 秒は、知らせを
-    受けた時刻から数える（controller の伏せ・立つは 1.8 秒より少し長くかかる）。知らせが来なければ、
-    見積もりより TROT_REPORT_LATE_S 遅らせて入れる。"""
-    def walking(reports_at):
-        b = BridgeCore(0.0, reports_trot_entry=True)
-        b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2)
-        b.handle(BALANCE_STAND, "", 2.1); b.step(2.1)
-        sent, t = [], 3.0
-        while t <= 6.0 + 1e-9:
-            if reports_at is not None and abs(t - reports_at) < 1e-9:
-                b.trot_entered(t)
-            b.handle(MOVE, '{"x":0.3,"y":0,"z":0}', t)
-            i = b.step(t)
-            if i is not None:
-                sent.append((t, i.ly))
-            t = round(t + 0.1, 2)
-        return sent, b.notes
+    """橋渡しのノードが controller の切り替え（/rosout）を知らせるとき：Move の速度は、歩くに入った知らせを
+    受けてから TROT_WAIT_S 秒（sim）たって 0 から上げる。知らせが来なければ速度は入れない（見積もりで入れると、
+    伏せたままの controller に速度を送ることになる。2026-11-11 の件）。4 を送り直し、MAX_SENDS 回でも来なければ
+    あきらめてノートに書き、窓口は立ち固め（1002）にする（アプリは BalanceStand からやり直す）。
+    前の「歩く」の知らせを次の「歩く」に使わないことは test_sit_and_rise_follow_the_reports。"""
+    walk = '{"x":0.3,"y":0,"z":0}'
+    late = Rig(FakeController(report_delay=0.3))              # 知らせはどれも 0.3 秒遅れて届く
+    late.run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 6.0, walk))
+    trot_known = 5.05                                         # 歩くに入ったのは 4.705、知らせは次の周期の 5.05
+    assert late.ctl.entered_at(TROTTING) == pytest.approx(4.705)
+    sent = [(t, i.ly) for t, i, _ in late.sent if i.ly != 0.0]
+    assert [t for t, _ in sent] == pytest.approx([trot_known + TROT_WAIT_S + 0.05 * k for k in range(1, 10)])
+    assert [ly for _, ly in sent] == pytest.approx([0.075 * k for k in range(1, 10)])
 
-    ramp = [pytest.approx(0.15 * k) for k in range(1, 6)]     # 0 から 0.6 m/s²（ly 0.15 / 0.1 秒）で 0.75 まで
-    sent, _ = walking(reports_at=3.9)                         # 見積もり（3.6）より 0.3 秒遅く入った
-    assert sent == list(zip([4.5, 4.6, 4.7, 4.8, 4.9], ramp))  # 3.9 + 0.5 = 4.4 から上げる
-    sent, notes = walking(reports_at=None)
-    assert TROT_REPORT_LATE_S == 1.0                          # 3.6 + 0.5 + 1.0 = 5.1 から上げる
-    assert sent == list(zip([5.2, 5.3, 5.4, 5.5, 5.6], ramp))
-    assert any("/rosout" in n for n in notes)
-
-    b = BridgeCore(0.0, reports_trot_entry=True)              # 前の「歩く」の知らせは、次の「歩く」に使わない
-    b.handle(STAND_UP, "", 0.0); b.step(0.0); b.step(0.2)
-    b.handle(BALANCE_STAND, "", 2.1); b.step(2.1); b.trot_entered(3.7)
-    b.handle(SIT, "", 5.0); b.step(5.0); b.step(5.2)
-    b.handle(RISE_SIT, "", 10.0); assert b.step(10.0).command == STAND_CMD
-    assert b.step(12.0).command == TROT_CMD                   # 4 は 2 の 2.0 秒後
-    assert resend_move(b, '{"x":0.3,"y":0,"z":0}', 12.1, 13.0) == []   # まだ知らせが無い
-    b.trot_entered(13.1)
-    assert [t for t, _ in resend_move(b, '{"x":0.3,"y":0,"z":0}', 13.1, 13.8)] == [13.7, 13.8]   # 13.6 から上げる
+    lost = Rig(FakeController(lose_report=lambda k: k == 2))  # 「歩くに入った」の知らせだけ落ちる
+    lost.run(13.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 13.0, walk))
+    assert lost.ctl.state == TROTTING
+    assert all((i.lx, i.ly, i.rx) == (0.0, 0.0, 0.0) for _, i, _ in lost.sent)   # 速度は 1 通も送らない
+    assert RESEND_S == 2.8 and MAX_SENDS == 3                 # 4 を 4.1 に送り、2.8 秒ごとに 2 回送り直す
+    assert lost.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD), (6.9, TROT_CMD),
+                               (9.7, TROT_CMD)]
+    assert sum("送り直します" in n for n in lost.b.notes) == MAX_SENDS - 1
+    assert any("/rosout" in n for n in lost.b.notes)
+    assert any("Gazebo を起動し直して" in n for n in lost.b.notes) and lost.b.error_code == 1002
 
 
 def test_gesture_is_pretend_and_sit_uses_crouch():
@@ -576,7 +565,240 @@ def test_open_loop_sequencing_leaves_a_slow_controller_lying(clock, balance_at):
     （2026-11-11 の件）。窓口は立って歩けるつもり（1013）のまま。"""
     rig = Rig(FakeController(hold={FIXED_DOWN: 2.4}), reports=False, clock=clock)
     rig.run(12.0, api=[(0.0, STAND_UP), (balance_at, BALANCE_STAND)])
-    assert [(clock(t), c) for t, c in rig.commands()] == pytest.approx(
-        [(0.0, STAND_CMD), (0.2, STAND_CMD), (max(clock(balance_at), 2.0), TROT_CMD)])
+    assert [(round(clock(t), 6), c) for t, c in rig.commands()] == [
+        (0.0, STAND_CMD), (0.2, STAND_CMD), (max(clock(balance_at), 2.0), TROT_CMD)]
     assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN]
     assert stuck(rig) and rig.b.error_code == 1013
+
+
+# ---- 知らせ有り：確かめた状態からだけ送る（Gazebo の橋渡しのノード） ----
+def assert_honest(rig: Rig, window: float = 0.1) -> None:
+    """controller が脱力・伏せに window 秒（sim）より長くいる間、error_code は立ち・歩き（1002・1013・1015）でない。"""
+    since = None
+    for t, code, state in rig.trace:
+        s = rig.clock(t)
+        if state not in (PASSIVE, FIXED_DOWN):
+            since = None
+            continue
+        since = s if since is None else since
+        assert not (code in STANDING_CODES and s - since > window + 1e-9), (t, code, state)
+
+
+def no_trot_while_lying(rig: Rig) -> bool:
+    """4（速度の入力も 4）を、controller が本当に脱力・伏せにいる間に送っていない。"""
+    return all(state not in (PASSIVE, FIXED_DOWN) for _, i, state in rig.sent if i.command == TROT_CMD)
+
+
+def test_closed_loop_stand_and_walk():
+    """伏せ・立つ・歩くの command は、確かめた状態に入った知らせから HOLD_S + SETTLE_S（2.0 秒）後に 1 通ずつ。
+    StandUp の 2 秒（実際の時間）で窓口は 1002 になるが、controller が立つに入ったと知らされるまでは 1001 のまま。
+    速度は、歩くに入った知らせ（4.15）から TROT_WAIT_S 後に 0 から上げる。"""
+    rig = Rig().run(7.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 6.0, '{"x":0.3,"y":0,"z":0}'))
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    # 伏せの知らせは 0.05、立つは 2.10、歩くは 4.15。7.0 の 4 は、Move の送り直しが止まって 1 秒後の「止める」
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD), (7.0, TROT_CMD)]
+    assert [rig.code_at(t) for t in (1.95, 2.0, 2.05, 2.1, 3.45, 3.5, 4.0)] == [1001] * 3 + [1002] * 2 + [1013, 1015]
+    assert rig.first_velocity() == pytest.approx(4.15 + TROT_WAIT_S + 0.05)
+    assert rig.b.notes == []                                  # 普通に立てたときは何も書かない
+    assert no_trot_while_lying(rig)
+    assert_honest(rig)
+
+
+@pytest.mark.parametrize("clock,balance_at", SLOW)
+def test_slow_controller_is_followed_to_trotting(clock, balance_at):
+    """controller の伏せが見積もりより長い（2.4 秒）。見積もりで送ると伏せのまま残る（上の
+    test_open_loop_sequencing_leaves_a_slow_controller_lying）。知らせ有りなら、伏せの間は 2 しか送らず、
+    立つに入ったと知らされてから 4 を送るので、歩くに入る。速度は歩くに入った後にだけ送る。"""
+    rig = Rig(FakeController(hold={FIXED_DOWN: 2.4}), clock=clock)
+    rig.run(14.0, api=[(0.0, STAND_UP), (balance_at, BALANCE_STAND)],
+            move=(balance_at + 1.0, 13.0, '{"x":0.3,"y":0,"z":0}'))
+    assert not stuck(rig) and rig.ctl.state == TROTTING
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert no_trot_while_lying(rig)
+    assert clock(rig.first_velocity()) >= rig.ctl.entered_at(TROTTING) + TROT_WAIT_S
+    assert_honest(rig)
+
+
+def test_error_code_waits_for_the_controller_to_stand():
+    """Gazebo が実時間の半分の速さで、controller の伏せも 2.4 秒かかる。StandUp の 2 秒（実際の時間）がたっても
+    controller は伏せなので 1001 のまま（アプリには、まだ立っていないと見える）。アプリが StandUp の 3 秒後に送る
+    BalanceStand は受け付け（立つ途中）、controller が立つに入ったと知らされたら 1013 にする。
+    MASK_NOTE_S（sim）より長く待たせたら、ノートに書く。"""
+    rig = Rig(FakeController(hold={FIXED_DOWN: 2.4}), clock=lambda t: t / 2)
+    rig.run(4.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert {c for _, c, _ in rig.trace} == {1001}
+    assert not any("受け付けません" in n for n in rig.b.notes)
+    assert any("fixed down のままなので" in n and "/rosout" in n for n in rig.b.notes)
+    rig.run(6.0)
+    stood = rig.ctl.entered_at(FIXED_STAND)                   # sim 2.41（実際の時間 4.82）。知らせは次の周期の 4.85
+    assert stood == pytest.approx(2.41)
+    assert rig.code_at(4.8) == 1001 and rig.code_at(4.85) == 1013
+    assert_honest(rig)
+
+
+def test_a_bridge_restarted_on_the_stuck_controller_stands_it_up():
+    """2026-11-11 の Gazebo のまま（controller は伏せで 4 が残っている）、橋渡しだけ起動し直した。橋渡しは脱力の
+    つもりで 2 を送り、controller は伏せから立つへ行く（2 が 4 を上書きする）。知らせは「伏せ」ではなく「立つ」
+    なので、そこから続ける。"""
+    rig = Rig(FakeController(state=FIXED_DOWN, command=TROT_CMD, entered=-10.0))
+    rig.run(7.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 7.0, '{"x":0.3,"y":0,"z":0}'))
+    assert [(a, b) for _, a, b in rig.ctl.switches] == [(FIXED_DOWN, FIXED_STAND), (FIXED_STAND, TROTTING)]
+    assert rig.commands()[:2] == [(0.0, STAND_CMD), (3.0, TROT_CMD)]
+    assert any("fixed stand に切り替わりました（fixed down のはずでした）" in n for n in rig.b.notes)
+    assert rig.code_at(1.95) == 1001 and rig.code_at(2.0) == 1002
+    assert rig.first_velocity() >= rig.ctl.entered_at(TROTTING) + TROT_WAIT_S
+    assert no_trot_while_lying(rig)
+    assert_honest(rig)
+
+
+def test_the_incident_state_met_while_walking_recovers_at_once():
+    """立って歩いているつもりのところで、ほかの送り手が controller を 2・2 で伏せさせ、伏せの間に 4 を送った
+    （2026-11-11 と同じ：伏せで 4 が残る）。知らせで伏せと分かったら窓口は 1001 にし、行きたい状態（歩く）が
+    あるので、すぐ伏せから 2 → 立つ → 4 で戻す。2 は残っていた 4 を上書きする。"""
+    rig = Rig().run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 6.0, '{"x":0.3,"y":0,"z":0}'))
+    assert rig.ctl.state == TROTTING and rig.code_at(6.0) == 1015
+    rig.ctl.receive(ControllerInput(STAND_CMD), 6.0)          # 歩く → 立つ
+    rig.run(6.2)
+    rig.ctl.receive(ControllerInput(STAND_CMD), 6.2)          # 立つの 1.8 秒の後（7.81）に伏せへ
+    rig.run(8.0)
+    rig.ctl.receive(ControllerInput(TROT_CMD), 8.0)           # 伏せの間に 4：伏せは無視し続ける
+    rig.run(9.5)
+    assert stuck(rig) and rig.b.error_code == 1001
+    assert any("trotting から fixed stand に切り替わりました（橋渡しが待っていた切り替えではありません）" in n
+               for n in rig.b.notes)
+    rig.run(14.0, move=(12.0, 13.5, '{"x":0.3,"y":0,"z":0}'))
+    assert rig.ctl.state == TROTTING
+    later = [(t, c) for t, c in rig.commands() if t > 6.0]
+    assert later == [(9.85, STAND_CMD), (11.9, TROT_CMD)]   # 伏せの知らせ 7.85 + 2.0、立つ 9.90 + 2.0
+    assert rig.code_at(9.85) == 1001 and rig.code_at(9.9) == 1013
+    assert min(t for t, i, _ in rig.sent if t > 6.0 and i.ly != 0.0) >= rig.ctl.entered_at(TROTTING) + TROT_WAIT_S
+    assert no_trot_while_lying(rig)
+    assert_honest(rig)
+
+
+def test_a_lost_command_is_sent_again():
+    """2 通目の 2 が controller に届かなかった。伏せのまま RESEND_S（sim）たったら、伏せからもう一度 2 を送る。
+    その間に来た BalanceStand は受け付け、窓口は立つに入った知らせまで 1001 のまま。"""
+    rig = Rig(FakeController(lose_input=lambda n: n == 1))
+    rig.run(8.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    # 2.05 の 2 が落ち、RESEND_S（2.8）後の 4.85 に送り直す。立つの知らせは 4.90、4 はその 2.0 秒後
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.85, STAND_CMD), (6.9, TROT_CMD)]
+    assert rig.ctl.state == TROTTING
+    assert any("送り直します" in n for n in rig.b.notes)
+    assert rig.code_at(4.85) == 1001 and rig.code_at(4.9) == 1013
+    assert_honest(rig)
+
+
+def test_a_lost_report_is_found_from_the_next_one():
+    """「伏せに入った」の知らせが落ちた。橋渡しは脱力のつもりで 2 を送り直し、controller は伏せから立つへ行く。
+    次の知らせ（伏せ → 立つ）で、そこから続ける。"""
+    rig = Rig(FakeController(lose_report=lambda k: k == 0))
+    rig.run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (4.85, TROT_CMD)]
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING]
+    assert any("送り直します" in n for n in rig.b.notes)
+    assert any("fixed stand に切り替わりました（fixed down のはずでした）" in n for n in rig.b.notes)
+    assert_honest(rig)
+
+
+def test_the_bridge_gives_up_and_the_next_stand_up_starts_again():
+    """controller に command が届かない（3 通続けて落ちる）。MAX_SENDS 回送ったらあきらめ、ノートに書いて送るのを
+    やめる。窓口は確かめた状態のまま（脱力なので 1001）で、BalanceStand の 1013 も出さない。
+    次の StandUp で、また初めから送る。"""
+    assert MAX_SENDS == 3
+    rig = Rig(FakeController(lose_input=lambda n: n < 3))
+    rig.run(9.9, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.8, STAND_CMD), (5.6, STAND_CMD)]
+    assert sum("送り直します" in n for n in rig.b.notes) == 2
+    assert any("passive から切り替わりません" in n and "Gazebo を起動し直して" in n for n in rig.b.notes)
+    assert {c for _, c, _ in rig.trace} == {1001} and rig.ctl.state == PASSIVE
+    rig.run(13.0, api=[(10.0, STAND_UP)])
+    assert rig.commands()[3:] == [(10.0, STAND_CMD), (12.05, STAND_CMD)]
+    assert rig.ctl.state == FIXED_STAND and rig.code_at(12.1) == 1002
+    assert_honest(rig)
+
+
+def test_stop_move_during_the_stand_holds_the_velocity_back():
+    """立つ途中（歩くの知らせの前）に来た Move の速度は待たせ、StopMove で捨てる。立つのはそのまま続く。"""
+    rig = Rig().run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (4.0, STOP_MOVE)],
+                    move=(3.5, 3.9, '{"x":0.3,"y":0,"z":0}'))
+    assert all((i.lx, i.ly, i.rx) == (0.0, 0.0, 0.0) for _, i, _ in rig.sent)
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD)]
+    assert rig.ctl.state == TROTTING and rig.code_at(3.9) == 1015 and rig.code_at(4.0) == 1013
+
+
+def test_stand_down_before_the_trot_goes_straight_down():
+    """BalanceStand の後、4 を送る前に StandDown：立つから 2 で伏せる。4 は送らない。controller が伏せに入ったと
+    知らされたら、StandDown の 2 秒を待たずに 1004 を返す。"""
+    rig = Rig().run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (3.6, STAND_DOWN)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, DOWN_CMD)]
+    assert rig.ctl.state == FIXED_DOWN
+    assert [rig.code_at(t) for t in (3.6, 4.1, 4.15, 6.0)] == [1013, 1013, 1004, 1004]
+    assert not any("のままなので" in n for n in rig.b.notes)
+    assert_honest(rig)
+
+
+def test_stand_down_while_the_trot_is_on_the_way_waits_for_it():
+    """4 を送って、歩くに入った知らせを待つ間に StandDown。知らせを待ってから、歩くから 2・2 で伏せる
+    （知らせはどれも 0.2 秒遅れる）。"""
+    rig = Rig(FakeController(report_delay=0.2))
+    rig.run(8.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (4.6, STAND_DOWN)])
+    assert rig.commands() == [(0.0, STAND_CMD), (2.25, STAND_CMD), (4.5, TROT_CMD), (4.95, DOWN_CMD),
+                              (7.2, DOWN_CMD)]
+    assert [b for _, _, b in rig.ctl.switches] == [FIXED_DOWN, FIXED_STAND, TROTTING, FIXED_STAND, FIXED_DOWN]
+    assert rig.b.error_code == 1004
+    assert no_trot_while_lying(rig)
+    assert_honest(rig, window=0.3)
+
+
+def test_sit_and_rise_follow_the_reports():
+    """おすわり（Gazebo では伏せ）から立ち上がる：伏せの知らせの後に 2、立つの知らせの後に 4。窓口の 1013 は
+    立つに入った後。速度は、新しく歩くに入った知らせから TROT_WAIT_S 後（前の「歩く」の知らせは使わない）。"""
+    rig = Rig().run(16.5, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (8.0, SIT), (13.0, RISE_SIT)],
+                    move=(15.5, 16.5, '{"x":0.3,"y":0,"z":0}'))
+    assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, TROT_CMD), (8.0, DOWN_CMD),
+                              (10.05, DOWN_CMD), (13.0, STAND_CMD), (15.05, TROT_CMD)]
+    assert [rig.code_at(t) for t in (9.95, 10.0, 14.95, 15.0)] == [1013, 1007, 1007, 1013]
+    assert rig.first_velocity() == pytest.approx(15.1 + TROT_WAIT_S + 0.05)
+    assert no_trot_while_lying(rig)
+    assert_honest(rig)
+
+
+def test_a_fall_with_reports_stops_and_sends_nothing_more():
+    """知らせ有りでも、転んだら（R38）速度 0 を 1 通送り、その後は何も送らない（起き上がらせない）。
+    controller が後から切り替わっても、そこから送り直さない。"""
+    rig = Rig().run(5.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND)], move=(4.0, 5.0, '{"x":0.3,"y":0,"z":0}'))
+    rig.b.observe(*UPRIGHT, 5.0)
+    rig.b.observe(1.3, 0.0, 0.20, 5.05)
+    assert rig.b.error_code == 1001 and fell(rig.b)
+    i = rig.b.step(5.05)
+    assert i.command == TROT_CMD and (i.lx, i.ly, i.rx) == (0.0, 0.0, 0.0)
+    rig.b.controller_switched(FIXED_STAND, 5.1, from_state=TROTTING)
+    assert all(rig.b.step(t) is None for t in (5.1, 7.5, 10.0)) and rig.b.error_code == 1001
+
+
+def test_an_unknown_controller_state_is_left_through_fixed_stand():
+    """橋渡しが使わない状態（balance test・free stand など）にいると知らされたら、2 で立つへ戻してから進む
+    （どれも 2 で fixed stand へ行く）。"""
+    b = BridgeCore(0.0, 0.0, reports_switches=True)
+    b.handle(STAND_UP, "", 0.0, 0.0)
+    assert b.step(0.0, 0.0).command == STAND_CMD
+    b.controller_switched("balance test", 0.1, from_state=FIXED_STAND)
+    assert b.step(0.25, 0.25) is None and b.step(0.3, 0.3).command == STAND_CMD   # 0.1 + SETTLE_S
+    b.controller_switched(FIXED_STAND, 0.35, from_state="balance test")
+    assert b.step(2.0, 2.0) is None and b.error_code == 1002
+
+
+def test_controller_switch_lines():
+    """controller のログ（UnitreeGuideController::update の "Switched from %s to %s"）。橋渡しのノードは /rosout の
+    行をすべて parse_switch で読み、切り替えなら controller_switched に渡す（ノードは rclpy と Jazzy の型が要るので、
+    ここでは読み方だけ確かめる）。"""
+    assert parse_switch("Switched from passive to fixed down") == (PASSIVE, FIXED_DOWN)
+    assert parse_switch("Switched from fixed down to fixed stand") == (FIXED_DOWN, FIXED_STAND)
+    assert parse_switch("Switched from fixed stand to trotting") == (FIXED_STAND, TROTTING)
+    assert parse_switch("Switched from trotting to fixed stand") == (TROTTING, FIXED_STAND)
+    assert parse_switch("Switched from fixed stand to free stand") == (FIXED_STAND, "free stand")
+    for text in ("Controller Manager Update Rate: 500 Hz", "受信: StandUp 1004", "Switched from passive", ""):
+        assert parse_switch(text) is None
+    node = (XACRO.parent / "gazebo_bridge.py").read_text(encoding="utf-8")
+    assert "parse_switch(msg.msg)" in node and "controller_switched(" in node

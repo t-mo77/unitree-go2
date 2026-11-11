@@ -22,8 +22,11 @@
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
 controller へ command を送る間隔はシミュレーションの時間（/clock）で数える（bridge_core.py の説明）。
-controller が本当に「歩く」に入った時刻は、controller が /rosout に出す "Switched from fixed stand to
-trotting" で知り、Move の速度はその 0.5 秒後（シミュレーションの時間）から入れる（Ruling R22）。
+controller の状態の切り替えは、controller が /rosout に出す "Switched from <a> to <b>" をすべて
+BridgeCore.controller_switched に渡して知らせる。橋渡しは確かめた状態からだけ次の command を送り
+（2026-11-11：見積もりで送った 4 が伏せの controller に残り、伏せたまま動かなかった）、controller が
+脱力・伏せの間は立ち・歩きの error_code を返さない。Move の速度は、歩くに入った知らせの 0.5 秒後
+（シミュレーションの時間）から入れる（Ruling R22）。
 位置はいつも Gazebo の本当の位置なので、距離は Gazebo の速さ（RTF）によらない。
 Humble 側の相手のノードの名前は分からない（Gid の長さの違い）ので使わない。
 
@@ -58,7 +61,7 @@ from go2_nl_control.actions import MOVE
 from gazebo.bridge_core import (OBJECT_SPAWN_Z, BoxWorld, BridgeCore, ControllerInput,
                                 ObjectMemory, StillGate, api_name, box_sdf, compose,
                                 drop_box_points, drop_ground_and_self_points, footprint_size,
-                                lidar_points_world, object_label, object_sdf)
+                                lidar_points_world, object_label, object_sdf, parse_switch)
 from sim.sim_core import BOX_HEIGHT
 from voice_ltl.objects import DEFAULT_LAYOUT, OBJECTS_HZ, OBJECTS_TOPIC
 
@@ -77,8 +80,7 @@ CONTROL_TOPIC = "/control_input"
 ODOM_TOPIC = f"/model/{MODEL_NAME}/odometry"
 RAW_CLOUD_TOPIC = "/gazebo/lidar/points"
 LOGICAL_CAMERA_TOPIC = "/gazebo/logical_camera"
-ROSOUT_TOPIC = "/rosout"
-TROT_SWITCH_LOG = "Switched from fixed stand to trotting"   # unitree_guide controller のログ
+ROSOUT_TOPIC = "/rosout"           # controller の "Switched from <a> to <b>"（bridge_core.parse_switch）
 CREATE_SERVICE = f"/world/{WORLD_NAME}/create"
 REMOVE_SERVICE = f"/world/{WORLD_NAME}/remove"
 
@@ -106,7 +108,7 @@ class GazeboBridge(Node):
     def __init__(self):
         super().__init__("go2_gazebo_bridge",
                          parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
-        self.core = BridgeCore(*self._now(), reports_trot_entry=True)
+        self.core = BridgeCore(*self._now(), reports_switches=True)
         self.boxes = BoxWorld()
         self.memory = ObjectMemory()   # logical camera が見た物（box_1・chair_1）
         self.still = StillGate()       # 胴が止まっている間の点群だけで物の大きさを測る
@@ -164,8 +166,16 @@ class GazeboBridge(Node):
             self._last_code = self.core.error_code
 
     def _on_log(self, msg: Log) -> None:
-        if msg.msg.startswith(TROT_SWITCH_LOG):
-            self.core.trot_entered(self._now()[1])
+        """controller の状態の切り替えを、1 行も落とさず橋渡しの中身に知らせる。時刻は受けたときの sim
+        （切り替えより少し後なので、次の command を送るのは見積もりより遅い側になる）。"""
+        if msg.name == self.get_logger().name:   # 自分のログ（ノートなど）は見ない
+            return
+        switch = parse_switch(msg.msg)
+        if switch is None:
+            return
+        self.get_logger().info(f"controller の切り替え: {switch[0]} → {switch[1]}")
+        self.core.controller_switched(switch[1], self._now()[1], from_state=switch[0])
+        self._log_notes()
 
     def _send(self, i: ControllerInput) -> None:
         self._control_pub.publish(Inputs(command=i.command, lx=float(i.lx), ly=float(i.ly),
