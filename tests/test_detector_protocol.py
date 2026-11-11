@@ -1,13 +1,15 @@
 """detector/protocol.py：検出器の取り替え口の約束（spec §11.10、design-detector §11・§16 "Protocol contract"）。
 
-約束のテストは、ここで使える実装すべてに流す（ScriptedDetector。Task 2.7 が OracleDetector を、
-Task 2.11 が YoloeDetector を `detector` の印つきで足す）。実装ごとの factory は、set_vocabulary の前の
-用意まで済ませた検出器を返す。
+約束のテストは、ここで使える実装すべてに流す（ScriptedDetector、Task 2.7 の OracleDetector、
+Task 2.11 の YoloeDetector。YoloeDetector は `detector` の印つきで、ultralytics のない所では飛ばす）。
+実装ごとの factory は、set_vocabulary の前の用意まで済ませた検出器を返す。
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -55,10 +57,20 @@ def make_oracle():
     return det
 
 
+def make_yoloe():
+    """The YOLOE-11s adapter with its embedding cache in a throwaway folder (the detector image only)."""
+    from detector.yoloe import YoloeDetector
+
+    return YoloeDetector(cache_dir=os.path.join(tempfile.gettempdir(), "go2-test-yoloe-cache"))
+
+
 IMPLEMENTATIONS = [
     pytest.param(make_scripted, id="scripted"),
     pytest.param(make_oracle, id="oracle"),
-    # Task 2.11: YoloeDetector (marked `detector`)
+    pytest.param(make_yoloe, id="yoloe", marks=[
+        pytest.mark.detector,
+        pytest.mark.skipif(importlib.util.find_spec("ultralytics") is None,
+                           reason="needs the detector image (ultralytics)")]),
 ]
 
 
