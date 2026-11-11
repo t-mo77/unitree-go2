@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "base": "https://fuel.gazebosim.org/1.0/OpenRobotics/models",
+  "models": [
+    {"folder": "Sofa", "version": 3, "bytes": 1311028,
+     "sha256": "6d19d1f109427626d88667de047ca80a2c175b3f8f12dc2d0e75ddb3b88a0db1",
+     "author": "Wan Yi Seow", "licence": "CC BY 4.0",
+     "licence_url": "https://creativecommons.org/licenses/by/4.0/"},
+    {"folder": "TrashBin", "version": 2, "bytes": 1045623,
+     "sha256": "ff38c8c7d7163145083e75166201a0d8c594c3170451ecf753fc77e173c00de3",
+     "author": "Roselle Carmen", "licence": "CC BY 4.0",
+     "licence_url": "https://creativecommons.org/licenses/by/4.0/"},
+    {"folder": "LampAndStand", "version": 3, "bytes": 676942,
+     "sha256": "f8610eb71132cc511634937e17fef21f6c15d9ddc9612dbedcd45979566485eb",
+     "author": "Roselle Carmen", "licence": "CC BY 4.0",
+     "licence_url": "https://creativecommons.org/licenses/by/4.0/"},
+    {"folder": "Table", "version": 4, "bytes": 899222,
+     "sha256": "3a720ef2a8e2f416e0ed017b2e13936f08f6f7c97829c9ea4b0d15380e36163d",
+     "author": "Nate Koenig", "licence": "CC0 1.0",
+     "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/"},
+    {"folder": "Suitcase1", "version": 2, "bytes": 1802850,
+     "sha256": null,
+     "author": null, "licence": "CC0 1.0",
+     "licence_url": "https://creativecommons.org/publicdomain/zero/1.0/"}
+  ]
+}
