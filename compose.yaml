@@ -49,8 +49,8 @@ services:
     profiles: ["gazebo"]
     build:
       context: ./docker
-      dockerfile: Dockerfile.gazebo
-    # patches 0001-0005 (docker/patches). The older images are kept on this Mac only:
+      dockerfile: Dockerfile.gazebo-fuel
+    # go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image patch-0005-fuel1 on top of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). The older images are kept on this Mac only:
     #   go2-voice-ltl-gazebo:patch-0004 (0001-0004: the gait phase still on the wall clock)
     #   go2-voice-ltl-gazebo:patch-0002 (0001-0002: the same image as the old :dev tag)
     # To go back to one:
@@ -58,14 +58,22 @@ services:
     #   GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up ...
     # It works only while that image exists locally; this tree cannot rebuild it. Never run
     # `build` (or `up` with the image missing) with GO2_GAZEBO_IMAGE set: compose would build
-    # 0001-0005 from this tree and put that image under the given tag.
-    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005}
+    # the thin Fuel image (Dockerfile.gazebo-fuel, on top of patch-0005) and put it under the given tag.
+    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel1}
     init: true
+    environment:
+      # who publishes /go2/objects: logical (the bridge, from the logical camera) or detector (the detector
+      # service: OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d);
+      # the bridge publishes the ground truth on /gazebo/objects_truth either way
+      OBJECTS_SOURCE: "${OBJECTS_SOURCE:-logical}"
+      # the objects the bridge spawns: gazebo/layouts/<name>.json
+      GO2_LAYOUT: "${GO2_LAYOUT:-household}"
     volumes:
       - ./:/work
       - /dev/null:/work/env.txt:ro   # the simulator never needs the token file
     ports:
-      - "127.0.0.1:6080:6080"
+      # the Gazebo screen (GO2_GAZEBO_PORT=<port> docker compose ... to change it)
+      - "127.0.0.1:${GO2_GAZEBO_PORT:-6080}:6080"
     # Go2 + unitree_guide controller + our bridge (gazebo/gazebo_bridge.py); LiDAR only, no rviz2
     command: ros2 launch /work/gazebo/launch/go2_gazebo.launch.py
 
