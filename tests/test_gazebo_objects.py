@@ -21,6 +21,12 @@ ROOT = Path(__file__).resolve().parent.parent
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
 LAUNCH = ROOT / "gazebo" / "launch" / "go2_gazebo.launch.py"
 README = ROOT / "README.md"
+# README keeps the commands only; the details moved to these docs
+SIMULATION = ROOT / "docs" / "simulation.md"
+VOCABULARY = ROOT / "docs" / "vocabulary.md"
+UNKNOWNS = ROOT / "docs" / "unknowns.md"
+USER_DOCS = (README, ROOT / "docs" / "overview.md", ROOT / "docs" / "setup.md", SIMULATION, VOCABULARY,
+             ROOT / "docs" / "real_robot.md", UNKNOWNS)
 DESIGN = ROOT / "docs" / "superpowers" / "specs" / "2026-11-05-go2-objects-design.md"
 
 
@@ -189,7 +195,7 @@ def test_launch_bridges_the_logical_camera():
 
 
 def test_the_readme_echo_shows_the_whole_objects_message():
-    """README §3: `ros2 topic echo` cuts strings at 128 characters unless --full-length is given
+    """README and docs/simulation.md: `ros2 topic echo` cuts strings at 128 characters unless --full-length is given
     (Humble ros2topic/verb/echo.py). The default /go2/objects message is longer, so chair_1 would not show."""
     from ros2topic.verb.echo import DEFAULT_TRUNCATE_LENGTH
     from rosidl_runtime_py import message_to_yaml
@@ -200,7 +206,7 @@ def test_the_readme_echo_shows_the_whole_objects_message():
     assert len(data) > DEFAULT_TRUNCATE_LENGTH
     assert "chair_1" not in message_to_yaml(String(data=data), truncate_length=DEFAULT_TRUNCATE_LENGTH)
     assert "chair_1" in message_to_yaml(String(data=data), truncate_length=None)    # what --full-length prints
-    commands = [line.split() for line in README.read_text(encoding="utf-8").splitlines()
+    commands = [line.split() for doc in (README, SIMULATION) for line in doc.read_text(encoding="utf-8").splitlines()
                 if "ros2 topic echo" in line and "/go2/objects" in line]
     assert commands
     for words in commands:
@@ -218,23 +224,25 @@ def test_the_docs_state_the_gazebo_lap_result():
     (part 6, image go2-voice-ltl-gazebo:patch-0005) counts the gait in simulation time: laps with
     Gazebo paused on purpose went 0/3 on patch-0004 and 3/3 on patch-0005; its acceptance set (on
     battery, RTF 0.89) was lap 5/5, chair 3/3, hello 1/1, with larger walk-start tilts in the chair
-    runs left unexplained. Before the patches the lap passed 2 of 5 (part 4). README §4 and §8 and design §2 and §12 say so, name what is still
-    unchecked, and README does not read as if the grid executor were checked on the real robot."""
-    readme = README.read_text(encoding="utf-8")
+    runs left unexplained. Before the patches the lap passed 2 of 5 (part 4). docs/vocabulary.md and docs/unknowns.md
+    (README sections 4 and 8 before the README kept only the commands) and design §2 and §12 say so, name what is
+    still unchecked, and the user docs do not read as if the grid executor were checked on the real robot."""
+    readme = "\n".join(doc.read_text(encoding="utf-8") for doc in USER_DOCS)
     assert "偽の Go2 と Gazebo でしか確かめていません" not in readme
     assert "確かめた範囲では転んでいません。" not in readme.replace("物を使わない指示で確かめた範囲では", "")
-    objects = readme[readme.index("### 物を使う指示（箱と椅子）"):readme.index("## 5.")]
+    vocabulary = VOCABULARY.read_text(encoding="utf-8")
+    objects = vocabulary[vocabulary.index("### 物を使う指示（箱と椅子）"):vocabulary.index("## 単語帳と状態遷移図の足し方")]
     lap_row = next(line for line in objects.splitlines() if line.startswith("| 箱の周りを一周して |"))
-    assert "controller のパッチ" in lap_row and "10 回のうち 9 回" in lap_row and "§8" in lap_row
+    assert "controller のパッチ" in lap_row and "10 回のうち 9 回" in lap_row and "[わかっていないこと](unknowns.md)" in lap_row
     assert "5 回のうち 5 回" not in lap_row and "Gazebo が止まった後に転んだ" in lap_row
     assert "まだ毎回は通らない" not in lap_row
     assert "0005 の後は 5 回とも通った" in lap_row and "わざと止めながらでも 3 回とも" in lap_row
     assert "Gazebo でも、controller のパッチ（0003・0004）の後に、設計書（物）§2 の合格の条件を満たしました" in objects
     assert "§2 の合格の条件をまだ満たしていません" not in objects
-    assert "0005 を足した後の組でも満たしました（一周 5/5・椅子 3/3・挨拶つき 1/1。§8）" in objects
+    assert "0005 を足した後の組でも満たしました（一周 5/5・椅子 3/3・挨拶つき 1/1。[わかっていないこと](unknowns.md)）" in objects
     near_row = next(line for line in objects.splitlines() if line.startswith("| `near_<id>` |"))
     assert "1.3 m" in near_row and "1.4 m" not in near_row
-    unknown = readme[readme.index("## 8. わかっていないこと"):]
+    unknown = UNKNOWNS.read_text(encoding="utf-8")
     gazebo = unknown[unknown.index("- **Gazebo での物を使う指示"):unknown.index("- **物を使う指示の実機での動き")]
     for words in ("満たしました", "一周 5/5", "一周 4/5", "RTF 0.99", "椅子 3/3", "低電力モード", "patch-0004",
                   "L4 の途中から電源", "静かな Mac", "371 回、転んだのは 1 回", "336 回で 6 回", "5 回のうち 2 回",

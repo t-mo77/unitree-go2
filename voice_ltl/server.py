@@ -63,7 +63,7 @@ UI_PORT = 8810        # the page's port on the host (GO2_UI_PORT, R25)
 CONTAINER_PORT = 8000  # inside the container when simulating; compose publishes it as UI_PORT
 WORKDIR = Path("/work/out")
 MAX_AUDIO_BYTES = 10 * 1024 * 1024  # [byte] the largest recording /api/audio takes (SEC-2): 413
-# Design §5: shown before motion (README 「安全の注意」). Logged on start-up; the page has it too.
+# Design §5: shown before motion (README and docs/real_robot.md 「安全の注意」). Logged on start-up; the page has it too.
 SAFETY_CAUTION = "前方 1 m と周りを空けてください。リモコンを持った人が、必ずそばにいてください。"
 REFUSED = "このページの外からの操作は受け付けません"
 _PAGE_HOST = re.compile(r"(?:localhost|127\.0\.0\.1)(?::([0-9]{1,5}))?", re.IGNORECASE | re.ASCII)
