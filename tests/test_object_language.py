@@ -3,6 +3,7 @@ reply field unresolved_objects, and translate() with a Scene (count messages, th
 
 import dataclasses
 import json
+import time
 
 import pytest
 
@@ -573,6 +574,45 @@ def test_kind_guard_refuses_another_kind():                # O35
         assert translate(instruction, llm_for("F around_box_1"), scene=SCENE).ok, instruction
     # formulas without objects are not guarded
     assert translate("ゴミ箱まで行って挨拶して", llm_for("F hello"), scene=SCENE).ok
+
+
+def test_a_place_word_before_another_object_word_is_a_landmark():   # spec §9.8 O35, fix round 1
+    # X の P の Y: the place word belongs to Y (「冷蔵庫の横の椅子まで」: the chair is named, the refrigerator is not)
+    assert going_targets("冷蔵庫の横の椅子まで行って") == {"chair": "椅子"}
+    assert going_targets("箱の横の椅子まで行って") == {"chair": "椅子"}
+    assert going_targets("椅子の前の箱の周りを回って") == {"box": "箱"}
+    assert going_targets("冷蔵庫 の 横 の　椅子 まで 行って") == {"chair": "椅子"}
+    assert going_targets("箱の横のゴミ箱まで行って") == {"trash_can": "ゴミ箱"}
+    # a place word followed by の and no object word still counts
+    assert going_targets("箱の前の方まで行って") == {"box": "箱"}
+    assert going_targets("箱の横まで行って、椅子の周りを回って") == {"box": "箱", "chair": "椅子"}
+    # the Go2 does not stand up for the landmark when the named kind is missing
+    only_a_box = Scene((DEFAULT_LAYOUT[0],), (0.0, 0.0, 0.0))
+    t = translate("箱の横の椅子まで行って", llm_for("F near_box_1"), scene=only_a_box)
+    assert not t.ok and t.formula is None and t.message == msg_not_found("chair", "椅子")
+    only_a_fridge = Scene((Obj("refrigerator_1", "refrigerator", 2.0, 0.0, (0.65, 0.65)),), (0.0, 0.0, 0.0))
+    t = translate("冷蔵庫の横の椅子まで行って", llm_for("F near_refrigerator_1"), scene=only_a_fridge)
+    assert not t.ok and t.formula is None and t.message == msg_not_found("chair", "椅子")
+    assert translate("冷蔵庫の横の椅子まで行って", llm_for("F near_chair_1"), scene=SCENE).ok
+    # an entry's said after の is an object word too; a word that is neither (窓) leaves X named
+    assert refusal_message("箱の横の窓まで行って", ["箱"], Scene()) == msg_not_found("box")
+    window = [{"said": "窓", "label": "window"}]
+    assert refusal_message("箱の横の窓まで行って", ["箱"], Scene(), window) == tango("箱", "窓")
+    assert going_targets("箱の横のテレビ台まで行って") == {}     # テレビ is a vocabulary word, テレビ台 no target
+    # the same clause test picks the count messages: the landmark alone keeps the 単語帳 message
+    assert refusal_message("冷蔵庫の横の椅子まで行って", ["冷蔵庫"], Scene()) == tango("冷蔵庫")
+    assert refusal_message("冷蔵庫の横の椅子まで行って", ["椅子"], Scene()) == msg_not_found("chair")
+    assert refusal_message("x", ["冷蔵庫の横"], Scene()) == msg_not_found("refrigerator", "冷蔵庫")
+
+
+def test_the_clause_test_stays_fast_for_long_chains_and_nested_saids():   # fix round 1 (minor)
+    # 「箱と」×100 and 10 nested saids (箱 / 箱と箱 / …): unmemoised, one item took ~n^4 steps (>60 s for 50 items)
+    instruction = "箱と" * 100 + "箱を押して"
+    unresolved = [{"said": "と".join(["箱"] * k), "label": "box"} for k in range(1, 11)]
+    start = time.perf_counter()
+    message = refusal_message(instruction, ["箱"] * 50, Scene(), unresolved)
+    assert time.perf_counter() - start < 3.0
+    assert message.startswith("「箱、箱、") and message.endswith(TANGO)
 
 
 def test_kind_guard_and_count_messages_ignore_spaces():  # Review Focus 4

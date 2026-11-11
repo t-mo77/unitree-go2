@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from voice_ltl import vocabulary
 from voice_ltl.grammar import check
 from voice_ltl.llm import LLM
-from voice_ltl.objects import (ID_RE, MAX_OBJECT_DISTANCE, Kind, Obj, Scene, direction, formula_object_props,
+from voice_ltl.objects import (ID_RE, MAX_OBJECT_DISTANCE, Obj, Scene, direction, formula_object_props,
                                kinds_in, labels_in, msg_ambiguous, msg_not_found, msg_not_listed, msg_too_far,
                                split_prop, word_end, word_start)
 from voice_ltl.prompt import SCHEMA, build_prompt
@@ -189,45 +189,72 @@ def _loose(said: str) -> re.Pattern:
     return re.compile(r"\s*".join(re.escape(ch) for ch in _plain(said)))
 
 
-def _going(clause: str) -> bool:
-    """The clause starts with a going or circling phrase that is more than a bare particle."""
-    return _GOING_TAIL.match(_squeezed(clause)).group() not in _BARE
+class _Clauses:
+    """spec §9.6 rule 3 over one instruction. `text` is its NFKC form with the white space kept, so positions
+    match `kinds` (kinds_in of that text). The object words are those vocabulary words and the entries' saids.
+    `passes` is memoised on (end, depth): a long chain of coordinated words or nested saids looks at each
+    word end once per step, not once per path (fix round 1)."""
 
+    def __init__(self, instruction: str, entries: Sequence[Entry] = ()):
+        self.text = _nfkc(instruction)
+        self.kinds = kinds_in(self.text)
+        self._saids = [_loose(e.said) for e in entries]
+        self._starts: dict[int, list[int]] = {}
+        for k in self.kinds:
+            self._starts.setdefault(k.start, []).append(k.end)
+        self._memo: dict[tuple[int, int], bool] = {}
 
-def _object_words_at(text: str, pos: int, kinds: Sequence[Kind], entries: Sequence[Entry]) -> list[int]:
-    """The ends of the object words (vocabulary words, entries' saids) that start at pos in text."""
-    ends = [k.end for k in kinds if k.start == pos]
-    for e in entries:
-        m = _loose(e.said).match(text, pos)
-        if m is not None and m.group():
-            ends.append(m.end())
-    return ends
+    def _after_spaces(self, pos: int) -> int:
+        while pos < len(self.text) and self.text[pos].isspace():
+            pos += 1
+        return pos
 
+    def _words_at(self, pos: int) -> list[int]:
+        """The ends of the object words that start at pos."""
+        ends = list(self._starts.get(pos, ()))
+        for said in self._saids:
+            m = said.match(self.text, pos)
+            if m is not None and m.group():
+                ends.append(m.end())
+        return ends
 
-def _passes(text: str, end: int, kinds: Sequence[Kind], entries: Sequence[Entry], depth: int = 0) -> bool:
-    """spec §9.6 rule 3 at one occurrence (the word ends at `end` in the NFKC text): its clause, up to the
-    next 、。,.，．！!？? and without white space, starts with a going or circling phrase, or with と・や・、・・
-    and another object word that passes the same test (MAX_COORDINATION steps at most)."""
-    after = text[end:]
-    if _going(_CLAUSE_END.split(after, maxsplit=1)[0]):
-        return True
-    rest = after.lstrip()
-    if depth >= MAX_COORDINATION or not rest or rest[0] not in _COORDINATORS:
-        return False
-    pos = end + len(after) - len(rest) + 1
-    while pos < len(text) and text[pos].isspace():
-        pos += 1
-    return any(_passes(text, e, kinds, entries, depth + 1) for e in _object_words_at(text, pos, kinds, entries))
+    def _going(self, end: int) -> bool:
+        """The clause after `end` (up to the next 、。,.，．！!？?, without white space) starts with a going or
+        circling phrase that is more than a bare particle, and that phrase is not followed by の and another
+        object word: in X の P の Y (「冷蔵庫の横の椅子まで」) the place word belongs to Y, so X is no target
+        (spec §9.8)."""
+        stop = _CLAUSE_END.search(self.text, end)
+        going = _GOING_TAIL.match(_squeezed(self.text[end:stop.start() if stop else len(self.text)])).group()
+        if going in _BARE:
+            return False
+        pos = end
+        for _ in going:                               # step over the matched letters and the spaces among them
+            pos = self._after_spaces(pos) + 1
+        pos = self._after_spaces(pos)
+        return not (self.text.startswith("の", pos) and self._words_at(self._after_spaces(pos + 1)))
+
+    def passes(self, end: int, depth: int = 0) -> bool:
+        """At one occurrence (the object word ends at `end`): its clause starts with a going or circling phrase,
+        or with と・や・、・・ and another object word that passes the same test (MAX_COORDINATION steps at most)."""
+        key = (end, depth)
+        if key not in self._memo:
+            self._memo[key] = self._going(end) or (depth < MAX_COORDINATION and self._coordinated(end, depth))
+        return self._memo[key]
+
+    def _coordinated(self, end: int, depth: int) -> bool:
+        pos = self._after_spaces(end)
+        if pos >= len(self.text) or self.text[pos] not in _COORDINATORS:
+            return False
+        return any(self.passes(e, depth + 1) for e in self._words_at(self._after_spaces(pos + 1)))
 
 
 def going_targets(instruction: str) -> dict[str, str]:
     """The kinds the instruction names as a place to go to or to circle (spec §9.6 rule 3, §9.8): label ->
     the user's vocabulary word (the first that passes, in the vocabulary's spelling), in instruction order."""
-    text = _nfkc(instruction)
-    kinds = kinds_in(text)
+    clauses = _Clauses(instruction)
     out: dict[str, str] = {}
-    for k in kinds:
-        if k.label not in out and _passes(text, k.end, kinds, ()):
+    for k in clauses.kinds:
+        if k.label not in out and clauses.passes(k.end):
             out[k.label] = k.word
     return out
 
@@ -242,9 +269,9 @@ def _said_kind(e: Entry) -> tuple[str, str | None] | None:
     return (e.label, None) if e.label is not None else None
 
 
-def _object_kind(item: str, entries: Sequence[Entry], instruction: str) -> tuple[str, str | None] | None:
+def _object_kind(item: str, entries: Sequence[Entry], clauses: _Clauses) -> tuple[str, str | None] | None:
     """spec §9.6 and §9.7: (label, the user's word or None for ja) when the item names an object to go to or to
-    circle, else None (the item keeps the 単語帳 message)."""
+    circle, else None (the item keeps the 単語帳 message). `clauses` is the instruction's, with the same entries."""
     if _handles_object(item):
         return None
     text = _nfkc(item)
@@ -260,13 +287,11 @@ def _object_kind(item: str, entries: Sequence[Entry], instruction: str) -> tuple
     if not _GOING_TAIL.fullmatch(rest):
         return None
     if not rest:                                      # a name alone: its clause in the instruction decides
-        whole = _nfkc(instruction)
-        whole_kinds = kinds_in(whole)
         if said is not None:
-            ends = [m.end() for m in _loose(said.said).finditer(whole) if m.group()]
+            ends = [m.end() for m in _loose(said.said).finditer(clauses.text) if m.group()]
         else:
-            ends = [k.end for k in whole_kinds if k.word == word.word]
-        if ends and not any(_passes(whole, e, whole_kinds, entries) for e in ends):
+            ends = [k.end for k in clauses.kinds if k.word == word.word]
+        if ends and not any(clauses.passes(e) for e in ends):
             return None                               # a word that is not in the instruction is trusted
     return _said_kind(said) if said is not None else (word.label, word.word)
 
@@ -300,8 +325,9 @@ def _object_messages(items: list[str], view: Scene | None, entries: Sequence[Ent
     messages: list[str] = []
     rest: list[str] = []
     told: set[str] = set()
+    clauses = _Clauses(instruction, entries)          # one memo for every item
     for item in items:
-        kind = _object_kind(item, entries, instruction)
+        kind = _object_kind(item, entries, clauses)
         if kind is None:
             rest.append(item)
             continue
