@@ -1,4 +1,5 @@
 import math
+import random
 import re
 from pathlib import Path
 
@@ -748,12 +749,12 @@ def test_stop_move_during_the_stand_holds_the_velocity_back():
 
 
 def test_stand_down_before_the_trot_goes_straight_down():
-    """BalanceStand の後、4 を送る前に StandDown：立つから 2 で伏せる。4 は送らない。controller が伏せに入ったと
-    知らされたら、StandDown の 2 秒を待たずに 1004 を返す。"""
+    """BalanceStand の後、4 を送る前に StandDown：立つから 2 で伏せる。4 は送らない。伏せへの 2 を送ったら（伏せに
+    入った知らせを待たずに。伏せかもしれない）、StandDown の 2 秒を待たずに 1004 を返す。"""
     rig = Rig().run(6.0, api=[(0.0, STAND_UP), (3.0, BALANCE_STAND), (3.6, STAND_DOWN)])
     assert rig.commands() == [(0.0, STAND_CMD), (2.05, STAND_CMD), (4.1, DOWN_CMD)]
     assert rig.ctl.state == FIXED_DOWN
-    assert [rig.code_at(t) for t in (3.6, 4.1, 4.15, 6.0)] == [1013, 1013, 1004, 1004]
+    assert [rig.code_at(t) for t in (3.6, 4.05, 4.1, 4.15, 6.0)] == [1013, 1013, 1004, 1004, 1004]
     assert not any("のままなので" in n for n in rig.b.notes)
     assert_honest(rig)
 
@@ -973,6 +974,87 @@ def test_stand_down_or_sit_while_the_standing_code_is_held_back(api_id, code):
     early = Rig(FakeController(hold={FIXED_DOWN: 2.4}), clock=lambda t: t / 2)
     early.run(4.0, api=[(0.0, STAND_UP), (2.5, api_id)])     # 窓口は 1002（UNKNOWN）：断る
     assert any("受け付けません（error_code 1001）" in n for n in early.b.notes)
+
+
+DOWN_UP = [(0.0, STAND_UP), (3.0, BALANCE_STAND), (10.5, STAND_DOWN), (12.65, STAND_UP), (14.65, BALANCE_STAND)]
+
+
+@pytest.mark.parametrize("ctl,api,commands,end", [
+    pytest.param(lambda: FakeController(lose_report=lambda k: k == 4), DOWN_UP,
+                 [(10.5, DOWN_CMD), (12.55, DOWN_CMD), (15.35, STAND_CMD), (17.4, TROT_CMD)], TROTTING, id="lost"),
+    pytest.param(lambda: FakeController(report_delay=lambda k: 6.0 if k == 4 else 0.05), DOWN_UP,
+                 [(10.5, DOWN_CMD), (12.6, DOWN_CMD), (15.4, STAND_CMD), (20.65, TROT_CMD)], TROTTING, id="late6"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k == 4), DOWN_UP[:4],
+                 [(10.5, DOWN_CMD), (12.55, DOWN_CMD), (15.35, STAND_CMD)], FIXED_STAND, id="lost-stand-up-only"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k >= 4), DOWN_UP,
+                 [(10.5, DOWN_CMD), (12.55, DOWN_CMD), (15.35, STAND_CMD), (20.95, STAND_CMD)], None,
+                 id="lost-from-then-on"),
+    pytest.param(lambda: FakeController(lose_report=lambda k: k >= 4), DOWN_UP[:4],
+                 [(10.5, DOWN_CMD), (12.55, DOWN_CMD), (15.35, STAND_CMD), (20.95, STAND_CMD)], None,
+                 id="lost-from-then-on-stand-up-only"),
+])
+def test_a_new_goal_before_the_down_report_does_not_trot_a_lying_controller(ctl, api, commands, end):
+    """歩いているところで StandDown（2・2 で歩く → 立つ → 伏せ）。2 通目の 2 の知らせ（立つ → 伏せ）が落ちた・6 秒遅れた
+    うちに StandUp・BalanceStand が来て、行きたい状態が立つ・歩くに変わった（レビュー）。送り直しの期限で、橋渡しは確かめた
+    状態（立つ）から 4 を送っていた：controller は伏せなので 4 が残り、2026-11-11 と同じく伏せのまま、窓口は 1002 のまま
+    あきらめていた。期限が来たら、送った 2 で伏せへ移ったかもしれないとして、4 でなく 2 を送る（StandUp だけでも 2 を送る）。
+    知らせを待つ間も、伏せへの command の知らせを待つ間も、立ちの error_code を返さない。その後も知らせが来なければ、
+    あきらめて、伏せかもしれないので伏せの code のまま。"""
+    rig = Rig(ctl()).run(60.0, api=api)
+    assert not stuck(rig) and no_trot_while_lying(rig)
+    assert_honest(rig)
+    assert [(t, c) for t, c in rig.commands() if t > 10.0] == commands
+    assert any("fixed down から command 2 を送り直します" in n for n in rig.b.notes)
+    gave_up = any("Gazebo を起動し直して" in n for n in rig.b.notes)
+    if end is None:
+        assert gave_up and rig.b.error_code not in STANDING_CODES and rig.ctl.state == FIXED_DOWN
+    else:
+        assert not gave_up and rig.ctl.state == end
+        assert rig.b.error_code == {TROTTING: 1013, FIXED_STAND: 1002}[end]
+
+
+# ---- でたらめな指令の列と、落ちる・遅れる知らせ（性質） ----
+LATE_MAX = 8.0   # 遅れる知らせの遅れの上限（sim）
+QUIET_S = 80.0   # 最後の指令の後に回す時間（実際の時間）
+# 橋渡しの送り直しが、知らせの来ていない切り替えの後に届いて controller を伏せさせることはある（知らせが落ちる・遅れる
+# と避けられない）。橋渡しが気づくのは、遅れた知らせが届くとき（LATE_MAX まで）か、落ちたなら次の送り直しの期限
+# （RESEND_S × 2^(MAX_SENDS − 1)、または遅れ × LAG_FACTOR + LAG_MARGIN_S まで）
+BLIND_S = LATE_MAX + max(RESEND_S * 2 ** (MAX_SENDS - 1), LAG_FACTOR * LATE_MAX + LAG_MARGIN_S)
+
+
+def random_run(seed: int) -> Rig:
+    """seed で決まるでたらめな流れ：StandUp の後に StandUp・BalanceStand・Move（0.5〜4 秒、10 Hz で送り直す）・
+    StopMove・StandDown を 3〜9 個（間は 0.1〜4 秒）。知らせは 1 割が落ち、2 割が 1〜LATE_MAX 秒（sim）遅れる（順には
+    届く）。Gazebo は実時間か、半分の速さ。最後の指令の後 QUIET_S 回す。"""
+    rnd = random.Random(seed)
+    events, t = [(0.0, STAND_UP, 0.0)], rnd.randint(2, 80) * 0.05
+    for _ in range(rnd.randint(3, 9)):
+        kind = rnd.choices((STAND_UP, BALANCE_STAND, MOVE, STOP_MOVE, STAND_DOWN), weights=(3, 3, 2, 1, 3))[0]
+        dur = round(rnd.randint(10, 80) * 0.05, 3) if kind == MOVE else 0.0
+        events.append((round(t, 3), kind, dur))
+        t += dur + rnd.randint(2, 80) * 0.05
+    lost = {k for k in range(40) if rnd.random() < 0.1}
+    delays = [rnd.uniform(1.0, LATE_MAX) if rnd.random() < 0.2 else 0.05 for _ in range(60)]
+    rtf = rnd.choice((1.0, 1.0, 0.5))
+    rig = Rig(FakeController(report_delay=lambda k: delays[k], lose_report=lambda k: k in lost),
+              clock=lambda t: t * rtf)
+    for at, kind, dur in events:
+        if kind == MOVE:
+            rig.run(at + dur, move=(at, at + dur, '{"x":0.3,"y":0,"z":0}'))
+        else:
+            rig.run(at, api=[(at, kind)])
+    return rig.run(rig.t + QUIET_S)
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_random_commands_with_lost_and_late_reports(seed):
+    """どんな指令の列でも、知らせが落ちても遅れても：
+    - 静かになった後、controller が伏せで 4 が残っている（2026-11-11）ことはない。4 を脱力・伏せの controller に送らない。
+    - controller が脱力・伏せにいるのに立ちの error_code を返すのは、BLIND_S（sim）の間だけ（返し続けない）。"""
+    rig = random_run(seed)
+    assert not stuck(rig)
+    assert no_trot_while_lying(rig)
+    assert_honest(rig, window=BLIND_S)
 
 
 def test_a_report_older_than_the_last_one_is_ignored():

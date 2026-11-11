@@ -27,7 +27,9 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
   知らされた状態から続ける。行きたい状態は StandUp などで決まり、それまで（起動直後）は何も送らない。
   知らせにはログを出した時刻（Log.stamp）も付く。知らせが遅れて、送り直しが切り替わりの後に届いたときは、
   その時刻で分かるので、送り直しが効く次の切り替えを待ち、その間は伏せかもしれないとして 4 を送らず、立ちの
-  error_code も返さない。遅れを測ったら、送り直す前にその分も待つ（LAG_FACTOR・LAG_MARGIN_S）。
+  error_code も返さない。知らせの来ないまま送り直すときも、送った command の行き先（伏せかもしれない）を覚えておき、
+  その間に行きたい状態が変わっても、確かめた状態から 4 を送らない（2 を送る）。
+  遅れを測ったら、送り直す前にその分も待つ（LAG_FACTOR・LAG_MARGIN_S）。
   それでも行きたい状態から MAX_REVERSALS 回遠ざかったら、あきらめてノートに書く。
   知らせ無し（テストと偽の道）は今までどおり、送った command から状態を見積もって送る。
 - 知らせ有りのとき、controller が脱力・伏せにいる（かもしれない）間は、立ち・歩きの error_code（1002・1013・1015）
@@ -264,7 +266,8 @@ class BridgeCore:
         self._lag = 0.0               # 最後に測った知らせの遅れ（受けた now − ログを出した now）
         self._last_logged = -math.inf  # 最後に使った知らせのログの時刻（now の時計）
         self._reversals = 0           # 行きたい状態から遠ざかる切り替えを知らされた回数
-        # 知らせが遅れて切り替わりの後に届いた command で、controller がもう移ったかもしれない状態（知らせ待ち）
+        # controller がもう移ったかもしれない状態（次の知らせまで）：知らせが遅れて切り替わりの後に届いた command の
+        # 行き先と、知らせの来ないまま送り直しの期限が来た command の行き先
         self._maybe: Optional[str] = None
         self._lying_code = 1001       # 立ち・歩きの error_code を控える間に返す code（立つ前の code）
         self._masked_since: Optional[float] = None   # 控え始めた時刻（sim）
@@ -373,28 +376,30 @@ class BridgeCore:
         """知らせ有り：確かめた状態から行きたい状態へ、command を 1 通ずつ。送った後は、その切り替えの知らせが
         来るまで何も送らない（速度も）。状態が行きたい状態（歩く）に着いていれば、待たせた速度を出す。
         送り直すのは、送って RESEND_S（sim。送り直すたびに倍）と、最後に測った知らせの遅れ × LAG_FACTOR +
-        LAG_MARGIN_S（now）の両方がたってから。伏せかもしれない（_maybe）controller には 4 でなく 2 を送る。"""
+        LAG_MARGIN_S（now）の両方がたってから。期限が来たら、送った command の行き先を _maybe にする。
+        伏せかもしれない（_maybe）controller には 4 でなく 2 を送る（_next_send）。"""
         if self._sent is not None:
             cmd, at, expected, at_now = self._sent
             wait = RESEND_S * 2 ** max(0, self._tries - 1)   # 2.8 → 5.6 → 11.2（遅れを知る前の送り直しを減らす）
             if sim < at + wait - _EPS or now < at_now + LAG_FACTOR * self._lag + LAG_MARGIN_S - _EPS:
                 return None
             self._sent = None
-            if self._toward() is not None:
+            if expected != self._conf:
+                # 知らせが落ちた・遅れているだけなら、送った command で controller はもう expected にいる。確かめた状態
+                # のままとは限らないので、次の知らせまで覚えておく（伏せなら 4 を送らず、立ちの error_code も返さない）
+                self._maybe = expected
+            again, base = self._next_send()
+            if again is not None:
                 if self._tries >= MAX_SENDS:
                     self._give_up(f"controller が {self._conf} から切り替わりません"
                                   f"（command {cmd} を {MAX_SENDS} 回送りました）")
                     return None
-                self._note(f"controller が {expected} に切り替わったことを {RESEND_S:g} 秒（シミュレーションの"
-                           f"時間）たっても /rosout で確かめられないので、{self._conf} から送り直します")
-        cmd = self._toward()
+                self._note(f"controller が {expected} に切り替わったことを {wait:g} 秒（シミュレーションの"
+                           f"時間）たっても /rosout で確かめられないので、{base} から command {again} を送り直します")
+        cmd, base = self._next_send()
         if cmd is not None:
             if sim < self._conf_since + HOLD_S.get(self._conf, 0.0) + SETTLE_S - _EPS:
                 return None
-            base = self._conf
-            if cmd == TROT_CMD and self._maybe in _LYING_STATES:
-                # 伏せかもしれない controller に 4 は送らない。2 なら伏せでも立つでも害が無い（たぶん伏せ → 立つ）
-                cmd, base = STAND_CMD, self._maybe
             self._sent = (cmd, sim, _after(base, cmd), now)
             self._tries += 1
             self._vel_sent = (0.0, 0.0, 0.0)        # 状態を変える入力は速度 0
@@ -405,6 +410,16 @@ class BridgeCore:
             return None
         return self._take_queued(sim)
 
+    def _next_send(self) -> Tuple[Optional[int], str]:
+        """次に送る command と、それを受ける（はずの）状態。ふつうは確かめた状態から _toward。controller が伏せ・脱力へ
+        移っているかもしれず（_maybe）、行きたい状態が立つ・歩くなら、4 でなく 2 を _maybe から送る：2 なら伏せでも立つでも
+        害が無い（伏せ → 立つ、立つ → 伏せ。次の知らせで分かる）。確かめた状態がもう行きたい状態（_toward が None）でも 2
+        を送り、伏せのまま待たない。"""
+        cmd, base = self._toward(), self._conf
+        if self._maybe in _LYING_STATES and self._ctl in (FIXED_STAND, TROTTING) and cmd != STAND_CMD:
+            cmd, base = STAND_CMD, self._maybe
+        return cmd, base
+
     def _toward(self) -> Optional[int]:
         """確かめた状態から行きたい状態へ向かう次の command（_route_cmd）。"""
         return _route_cmd(self._conf, self._ctl)
@@ -413,10 +428,11 @@ class BridgeCore:
         """送っても行きたい状態へ進まない。送るのをやめ、窓口は確かめた状態に合わせる（脱力・伏せなら
         立つ前の code、立つなら立ち固め 1002、歩くなら 1013）。歩くと確かめてあれば行きたい状態を歩くにして、
         Move の速度は送り続ける（窓口が 1015 なのに何も送らない、にしない）。ほかは行きたい状態を無くし、
-        次の StandUp・BalanceStand・StandDown などでまた初めから送る。"""
+        次の StandUp・BalanceStand・StandDown などでまた初めから送る。伏せかもしれない（_maybe）なら、次の知らせまで
+        立ちの error_code は返さず（_refresh_code）、次の StandUp などでは 2 から送る（_next_send）。"""
         self._note(f"{why}。Gazebo を起動し直してください")
         self._ctl = TROTTING if self._conf == TROTTING else None
-        self._done, self._sent, self._tries, self._reversals, self._maybe = None, None, 0, 0, None
+        self._done, self._sent, self._tries, self._reversals = None, None, 0, 0   # _maybe は次の知らせまで残す
         self._forget_motion()
         if self._conf in _LYING_STATES:
             if self._code in STANDING_CODES:
@@ -573,12 +589,14 @@ class BridgeCore:
 
     def _lying(self) -> Optional[str]:
         """知らせ有りで、controller が脱力・伏せにいる（かもしれない）なら、そのわけ（ノートの文）。ほかは None。
-        確かめた状態が脱力・伏せのときと、知らせが遅れて切り替わりの後に届いた command で伏せへ移ったかもしれない
-        とき（_maybe。次の知らせまで）。"""
+        確かめた状態が脱力・伏せのときと、伏せへ移ったかもしれないとき（_maybe。次の知らせまで）と、伏せへの command
+        の知らせを待つ間（StandDown の途中に StandUp が来て、窓口が先に 1002 になっても）。"""
         if self._conf in _LYING_STATES:
             return f"controller が {self._conf} のままな"
         if self._maybe in _LYING_STATES:
             return f"controller は {self._maybe} へ移っているかもしれない"
+        if self._sent is not None and self._sent[2] in _LYING_STATES:
+            return f"controller は {self._sent[2]} へ移っているかもしれない"
         return None
 
     # ---- 中身 ----
