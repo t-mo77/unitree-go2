@@ -12,6 +12,10 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+# The vocabulary (standard library only, like this module), read and checked at import: fail closed.
+# Relative, so every absolute import here stays a standard-library one (test_objects checks those).
+from . import vocabulary
+
 Pose = tuple[float, float, float]                       # (x [m], y [m], yaw [rad]), odom
 
 OBJECTS_TOPIC = "/go2/objects"
@@ -236,42 +240,11 @@ def msg_ambiguous(label: str, n: int) -> str:
 
 # ---- 内部 ----
 
-_KATAKANA = "ァ-ヺー"                     # the long-vowel mark too, but not the middle dot ・
-_HIRAGANA = "ぁ-ゖ"
-_KANJI = "々一-鿿"
-_PARTICLES_BEFORE = "のとやもをにへがはで"
-_PARTICLES_AFTER = "まで|から|[のとやもをにへがはで]"
-
-
-def _script(ch: str) -> str | None:
-    return next((name for name, chars in (("kata", _KATAKANA), ("hira", _HIRAGANA), ("kanji", _KANJI))
-                 if re.fullmatch(f"[{chars}]", ch)), None)
-
-
-# 語の境目は word_start / word_end の一か所だけで決める（助詞の一覧もここだけ）。
-
-def word_start(word: str) -> str:
-    """word の前に置く正規表現：word がそこで語として始まるときだけ当たる（長さ 0）。
-    カタカナで始まる語はカタカナの後ろでは始まらない。ひらがなで始まる語は、ひらがなでない字の後ろか
-    助詞の後ろで始まる（このいす は可、かわいすぎる は不可）。漢字で始まる語はどこでも始まる。
-    物の名前（label_in）と、ひらがなの「持つ・押す…」（translator の OBJECT_ACTION_KANA）が使う。"""
-    return {"kata": f"(?<![{_KATAKANA}])",
-            "hira": f"(?:(?<![{_HIRAGANA}])|(?<=[{_PARTICLES_BEFORE}]))"}.get(_script(word[0]), "")
-
-
-def word_end(word: str, after: str = _PARTICLES_AFTER) -> str:
-    """word の後ろに置く正規表現：word がそこで語として終わるときだけ当たる。カタカナで終わる語は
-    カタカナと続かない（チェアー は可）。ひらがなで終わる語は、ひらがなでない字か after（正規表現、
-    既定は助詞）と続く（いすまで は可、いすわる は不可）。漢字で終わる語は漢字と続かない（箱根 は不可）。"""
-    return {"kata": f"ー?(?![{_KATAKANA}])",
-            "hira": f"(?:(?={after})|(?![{_HIRAGANA}]))",
-            "kanji": f"(?![{_KANJI}])"}.get(_script(word[-1]), "")
-
-
-def _word_pattern(word: str) -> str:
-    """word が長い語の一部でないときだけ当たる正規表現。"""
-    return word_start(word) + re.escape(word) + word_end(word)
-
+# 語の境目（word_start / word_end と助詞の一覧）は vocabulary.py に移した。ここと translator はそれを使う。
+_KATAKANA, _HIRAGANA, _KANJI = vocabulary._KATAKANA, vocabulary._HIRAGANA, vocabulary._KANJI
+_PARTICLES_BEFORE, _PARTICLES_AFTER = vocabulary._PARTICLES_BEFORE, vocabulary._PARTICLES_AFTER
+_script, word_start, word_end = vocabulary._script, vocabulary.word_start, vocabulary.word_end
+_word_pattern = vocabulary._word_pattern
 
 _LABEL_RES = {label: re.compile("|".join(_word_pattern(w) for w in words)) for label, words in LABEL_WORDS.items()}
 

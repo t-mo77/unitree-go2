@@ -5,6 +5,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+from voice_ltl import vocabulary
 from voice_ltl.grammar import check
 from voice_ltl.llm import LLM
 from voice_ltl.objects import (MAX_OBJECT_DISTANCE, Scene, label_in, msg_ambiguous, msg_not_found, msg_too_far,
@@ -110,6 +111,10 @@ _NOT_HANDLING = re.compile("でもって|とお[さしすせそ]|にもつ")
 def _handles_object(item: str) -> bool:
     return (any(w in item for w in OBJECT_ACTION_WORDS)
             or _KANA_ACTION.search(_NOT_HANDLING.sub("・", item)) is not None)
+
+
+# No vocabulary word reads as a handling verb (open-objects spec §7.3 rule 6): checked at import, fail closed.
+vocabulary.check_words(vocabulary.VOCABULARY, lambda w: not _handles_object(w), 6, "reads as a handling verb")
 
 
 def _object_messages(unsupported: list[str], scene: Scene | None) -> tuple[list[str], list[str]]:
