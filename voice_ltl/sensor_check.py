@@ -1,4 +1,4 @@
-"""実機の LiDAR を確かめる道具（README §6）。
+"""実機の LiDAR を確かめる道具（docs/real_robot.md）。
 
 RosLink で /utlidar/cloud（と /sportmodestate）を受け、アプリと同じ判定（Sensing）の
 前方・後方の「あり / なし / 途切れ」と一番近い距離を、0.5 秒ごとに 1 行ずつ出す。Ctrl+C で終わる。

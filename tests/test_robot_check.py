@@ -1,4 +1,4 @@
-"""voice_ltl.robot_check: the wired real-Go2 check (README section 6). ROS is never started here."""
+"""voice_ltl.robot_check: the wired real-Go2 check (docs/real_robot.md). ROS is never started here."""
 
 import pytest
 

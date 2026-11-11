@@ -2,7 +2,7 @@
 
 rclpy's node, publisher and executor are replaced by fakes, so nothing goes on the network. What
 these fakes cannot show (real DDS discovery of other senders, StopMove reaching the Go2) is checked
-by hand on the robot (README section 6).
+by hand on the robot (docs/real_robot.md).
 """
 
 import fcntl

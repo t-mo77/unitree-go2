@@ -1,4 +1,4 @@
-"""実機の Go2 と有線でつながったかを、まとめて確かめる道具（README §6）。
+"""実機の Go2 と有線でつながったかを、まとめて確かめる道具（docs/real_robot.md）。
 
 Go2 には何も送らない。/api/sport/request の送り手も作らず、受け手と送り手の数を数えるだけ。
 サーバー（voice_ltl.server）を起動する前に流す（サーバーも送り手なので、動いていると「だめ」と出る）。
@@ -41,7 +41,7 @@ GO2_NET = ipaddress.ip_network("192.168.123.0/24")
 GO2_ADDRESS = "192.168.123.161"     # Go2 本体（公式 Quick Start）
 PC_EXAMPLE = "192.168.123.99/24"    # 公式 unitree_ros2 の例
 DEFAULT_SECONDS = 5.0
-HELP = "README §6 の「困ったとき」を見てください"
+HELP = "docs/real_robot.md の「8. 困ったとき」を見てください"
 
 OK, WARN, BAD = "ok", "warn", "bad"
 _LABEL = {OK: "［OK］", WARN: "［注意］", BAD: "［だめ］"}
@@ -168,7 +168,7 @@ def check_topics(seconds: float, n_state: int, n_cloud: int, error_code: Optiona
         text = f"error_code {error_code}（{POSTURE_JA[state]}）"
         if state == UNKNOWN:
             out.append(Check(WARN, f"{text}。アプリは姿勢がわからないので、計画を始められないことがあります。"
-                                   "リモコンで伏せさせてから、もう一度見ます（README §6 の error_code の表）"))
+                                   "リモコンで伏せさせてから、もう一度見ます（docs/real_robot.md の error_code の表）"))
         else:
             out.append(Check(OK, text))
     if n_cloud:

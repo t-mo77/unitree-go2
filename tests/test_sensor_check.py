@@ -1,4 +1,4 @@
-"""voice_ltl.sensor_check: the real-robot LiDAR check (README section 6). ROS is never started here."""
+"""voice_ltl.sensor_check: the real-robot LiDAR check (docs/real_robot.md). ROS is never started here."""
 
 import math
 
@@ -29,14 +29,14 @@ def _box_in_lidar(cfg: PerceptionConfig, x_body: float, n: int = 20) -> np.ndarr
     return body @ rot
 
 
-# the zip's placeholder mount, and the Go2 model's L1 (under the head, upside down; README section 6)
+# the zip's placeholder mount, and the Go2 model's L1 (under the head, upside down; docs/real_robot.md)
 MOUNTS = [PerceptionConfig(lidar_x=0.28, lidar_z=0.10, lidar_pitch=0.0),
           PerceptionConfig(lidar_x=0.28945, lidar_z=-0.046825, lidar_pitch=2.8782)]
 
 
 @pytest.mark.parametrize("cfg", MOUNTS, ids=["placeholder", "go2_description"])
 @pytest.mark.parametrize("x_body, line", [
-    # README section 6: a box 0.4 m ahead -> 前方 あり; 0.8 m -> なし (the distance is still shown)
+    # docs/real_robot.md: a box 0.4 m ahead -> 前方 あり; 0.8 m -> なし (the distance is still shown)
     (0.4, "前方 あり 0.40 m ｜ 後方 なし —"),
     (0.8, "前方 なし 0.80 m ｜ 後方 なし —"),
     # the same behind
