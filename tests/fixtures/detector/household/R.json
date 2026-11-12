@@ -1,0 +1,151 @@
+{
+ "version": 1,
+ "view": "R",
+ "image": "R.png",
+ "scan": "R_scan.npy",
+ "image_t": 50.5,
+ "cloud_t": 50.4,
+ "still_since": 49.8,
+ "image_pose": {
+  "pos": [
+   -0.02,
+   0.04,
+   0.35
+  ],
+  "quat": [
+   0.7009092642998509,
+   0.0,
+   0.0,
+   -0.7132504491541816
+  ]
+ },
+ "cloud_pose": {
+  "pos": [
+   -0.016,
+   0.037,
+   0.35
+  ],
+  "quat": [
+   0.7021530529951624,
+   0.0,
+   0.0,
+   -0.7120260459909965
+  ]
+ },
+ "camera_info": {
+  "k": [
+   184.836,
+   0.0,
+   320.0,
+   0.0,
+   184.836,
+   240.0,
+   0.0,
+   0.0,
+   1.0
+  ],
+  "width": 640,
+  "height": 480
+ },
+ "truth": {
+  "frame": "odom",
+  "stamp": 1800000001.0,
+  "source": "logical",
+  "layout": "household",
+  "objects": [
+   {
+    "id": "box_1",
+    "label": "box",
+    "x": 2.5,
+    "y": 1.5,
+    "size": [
+     0.5,
+     0.5
+    ],
+    "seen": 1800000000.0,
+    "visible": false
+   },
+   {
+    "id": "chair_1",
+    "label": "chair",
+    "x": 2.5,
+    "y": -1.5,
+    "size": [
+     0.45,
+     0.45
+    ],
+    "seen": 1800000000.0,
+    "visible": false
+   },
+   {
+    "id": "lamp_1",
+    "label": "lamp",
+    "x": 0.8,
+    "y": -4.4,
+    "size": [
+     0.622,
+     0.525
+    ],
+    "seen": 1800000001.0,
+    "visible": true
+   },
+   {
+    "id": "sofa_1",
+    "label": "sofa",
+    "x": -4.38,
+    "y": 0.0,
+    "size": [
+     1.044,
+     1.8
+    ],
+    "seen": 1800000000.0,
+    "visible": false
+   },
+   {
+    "id": "suitcase_1",
+    "label": "suitcase",
+    "x": -1.5,
+    "y": 1.5,
+    "size": [
+     0.6,
+     0.4
+    ],
+    "seen": 1800000000.0,
+    "visible": false
+   },
+   {
+    "id": "table_1",
+    "label": "table",
+    "x": -2.398,
+    "y": 4.4,
+    "size": [
+     1.5,
+     0.8
+    ],
+    "seen": 1800000000.0,
+    "visible": false
+   },
+   {
+    "id": "trash_can_1",
+    "label": "trash_can",
+    "x": -1.5,
+    "y": -1.5,
+    "size": [
+     0.266,
+     0.375
+    ],
+    "seen": 1800000001.0,
+    "visible": true
+   }
+  ]
+ },
+ "world": {
+  "boxes": [],
+  "collided": false
+ },
+ "status": null,
+ "layout": "household",
+ "shift": null,
+ "robot": null,
+ "moved": {}
+}
