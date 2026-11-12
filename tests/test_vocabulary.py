@@ -4,6 +4,8 @@ import ast
 import copy
 import itertools
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -267,6 +269,29 @@ def test_kinds_in_words_and_offsets():
     assert V.kinds_in("") == () and V.kinds_in(None) == ()
 
 
+def test_not_words_of_one_length_mask_in_file_order():   # 1.1 review, parked minor (a)
+    # two not_words of one length that overlap in a text: the one first in the file masks first, so the text
+    # reads the same whatever the hash seed (a set's order followed PYTHONHASHSEED)
+    words = {"椅子": "chair", "箱": "box"}
+    first, second = V._Matcher(words, ("車椅子", "椅子箱", "車椅子")), V._Matcher(words, ("椅子箱", "車椅子"))
+    assert first.not_words == ["車椅子", "椅子箱"] and second.not_words == ["椅子箱", "車椅子"]   # a repeat goes
+    assert first.kinds_in("車椅子箱") == (V.Kind("box", "箱", 3, 4),) and second.kinds_in("車椅子箱") == ()
+    # longer ones still mask first; one length keeps the file order
+    assert V._Matcher(words, ("子箱", "車椅子", "車椅", "椅子箱")).not_words == ["車椅子", "椅子箱", "子箱", "車椅"]
+
+
+def test_not_words_order_is_the_same_under_any_hash_seed():
+    not_words = ["kab", "zeb", "abq", "mox", "ret", "uly", "wonder", "pim", "dag", "kab"]
+    expected = ["wonder", "kab", "zeb", "abq", "mox", "ret", "uly", "pim", "dag"]
+    code = f"import voice_ltl.vocabulary as V; print(V._Matcher({{}}, {not_words!r}).not_words)"
+    root = str(Path(V.__file__).resolve().parent.parent)
+    for seed in range(8):
+        env = {**os.environ, "PYTHONPATH": root, "PYTHONHASHSEED": str(seed)}
+        out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True,
+                             check=True)
+        assert out.stdout.strip() == repr(expected), seed
+
+
 def test_hypernyms_and_living_beings_are_not_kinds():
     for w in ("家具", "家電", "物", "もの", "障害物", "何か", "人", "グリーン", "キッチン", "台所", "2階", "1本", "2台"):
         assert V.kinds_in(w) == (), w
@@ -293,7 +318,7 @@ def test_normalise_alias():
 def test_event_names_never_collide_for_label_pairs():   # spec §7.3 / §8, 1225 pairs
     labels = sorted(V.LABELS)
     pairs = list(itertools.combinations(labels, 2))
-    assert len(pairs) == len(labels) * (len(labels) - 1) // 2
+    assert len(pairs) == 1225
     for a, b in pairs:
         props = (f"near_{a}_1", f"around_{a}_1", f"around_cw_{a}_1", f"near_{b}_1", f"around_{b}_1", "standing")
         subsets = [frozenset(s) for k in range(4) for s in itertools.combinations(props, k)]

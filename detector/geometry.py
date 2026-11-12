@@ -29,9 +29,11 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     elongated object seen at an angle are lopsided, and 3 MAD + 0.1 m alone cut its far end; a lone stray
     return, or another object's cluster in a fused union, is still dropped, also for a large prior;
   - an observed depth is kept (filled False) in two cases: in a corner view (the depth axis is the face axis
-    nearer the ray), when the face along the depth axis is seen to its far end (a face lies on the far side,
-    or the end is seen at <= 60° incidence, by the camera or, for a union, by one of the single views passed as
-    footprint(views=...)) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
+    nearer the ray) of a real two-face L-shape (the observed width also >= FLAT_SPREAD, R-G4: a short strip of
+    one face, partly hidden, is thin on both axes but shows no depth), when the face along the depth axis is
+    seen to its far end (a face lies on the far side, or the end is seen at <= 60° incidence, by the camera
+    or, for a union, by one of the single views passed as footprint(views=...)) and
+    d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
     the prior's depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled
     is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
     sofa's side), so its last return says little about its end, however close the returns there lie (the
@@ -42,8 +44,11 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     the face (range x 1° / cos(incidence), up to 60°) where a face ends; beyond about 2.9 m the spacing exceeds
     EDGE_PAD.
 The depth rule is otherwise the design's, along the face axis that is thinner (one face seen) or nearer the ray
-(a corner): L if the observed width is < 0.7 L, else S. Its limit: a near-square kind (S > 0.7 L) seen on its
-short face gets S as its depth (listed in the test).
+(a corner): L if the observed width is < 0.7 L, else S; and L also when the observed width is <= S + EDGE_PAD
+(R-G3), since then it cannot exclude the short face: a near-square kind (S > 0.7 L - EDGE_PAD, like the
+0.4 x 0.3 air purifier) seen on its short face would otherwise get S and leave up to L - S of its far side out.
+A real two-face L-shape whose far end an occluder hides can still keep its observed depth (its last return is at
+the occluder's edge, seen at <= 60°): a documented limit, counted in the test.
 """
 
 from __future__ import annotations
@@ -393,11 +398,13 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
         if seen_by_view is not None:
             far_sampled, view_pad = True, seen_by_view
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
-    d_prior = big if w_obs < SHORT_FACE * big else small
+    # L when the width cannot be the long side's: < 0.7 L, or not wider than the short side (R-G3)
+    d_prior = big if w_obs < SHORT_FACE * big or w_obs <= small + EDGE_PAD else small
     # the observed depth: in a corner view (the depth axis nearer the ray, so the face along it is the more
-    # grazing one), that face seen to its far end, also for an object smaller than its prior; or, as for any
-    # view, a depth >= 0.6 S that reaches the prior's
-    if corner and far_sampled and d_obs >= min(seen, FLAT_SPREAD):
+    # grazing one) of a real two-face L-shape (R-G4: a short strip of one face is thin on both axes too), that
+    # face seen to its far end, also for an object smaller than its prior; or, as for any view, a depth
+    # >= 0.6 S that reaches the prior's
+    if corner and far_sampled and d_obs >= min(seen, FLAT_SPREAD) and w_obs >= FLAT_SPREAD:
         d, pad_far, filled = d_obs, max(pad_seen, view_pad), False
     elif d_obs >= seen and d_obs + pad_seen >= d_prior:
         d, pad_far, filled = d_obs, pad_seen, False

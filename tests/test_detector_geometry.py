@@ -537,20 +537,6 @@ COVER_SIZES = [(0.3, 0.3, 0.45), (0.5, 0.5, 0.5), (1.0, 1.0, 0.8), (2.0, 2.0, 0.
                (1.2, 0.4, 0.45), (1.8, 0.9, 0.85), (2.0, 1.0, 0.5), (0.4, 0.3, 0.7)]
 
 
-def _relative_yaw(yaw, bearing):
-    return abs((yaw - bearing + 90) % 180 - 90)          # the long axis against the ray, 0-90°
-
-
-# The cases where the cover check is allowed to fail, by rule (reported to the controller):
-COVER_EXCEPTIONS = {
-    # a near-square kind (S > 0.7 L, like the 0.4 x 0.3 air purifier) with its short face toward the camera
-    # (the long axis within 30° of the ray): the design's completion rule reads w_obs >= 0.7 L as "the long
-    # side faces us" and completes the depth with S, so up to L - S of the far side is outside
-    "near-square short face": lambda L, S, h, yaw, rng, bearing: (
-        0.7 * L < S < L and _relative_yaw(yaw, bearing) <= 30),
-}
-
-
 def _cover_cases():
     for L, S, h in COVER_SIZES:
         for yaw in range(0, 91, 15):
@@ -576,36 +562,144 @@ def _cover_case(L, S, h, yaw, rng, bearing, prior=None, lean_deg=0.0, noise=0.0,
 def test_published_footprint_covers_the_object():
     """O12: the published axis-aligned footprint contains the true footprint, for boxes of 0.3-2.0 m, yaws
     0-90° in 15° steps, near sides 1-5 m away, straight ahead and 30° to the left, from the returns of the
-    visible faces (the prior is the true size)."""
-    failed, excused = [], {reason: 0 for reason in COVER_EXCEPTIONS}
+    visible faces (the prior is the true size). No exceptions: a near-square kind seen on its short face is
+    completed with L since R-G3 (it was the one excused rule, 5 of 630, before)."""
+    failed = []
     n = 0
     for case in _cover_cases():
         s, fp = _cover_case(*case)
         n += 1
         assert fp is not None and not math.isnan(fp.x)
-        if covers(fp, s):
-            continue
-        reasons = [reason for reason, rule in COVER_EXCEPTIONS.items() if rule(*case)]
-        if reasons:
-            excused[reasons[0]] += 1
-        else:
+        if not covers(fp, s):
             failed.append(case)
     assert n == len(COVER_SIZES) * 7 * 5 * 2 == 630
     assert failed == []
-    assert 0 < excused["near-square short face"] <= 8      # the documented limit is real (5 of 630 today)
 
 
 @pytest.mark.parametrize("lean, noise", [(0.5, 0.0), (0.0, 0.002)], ids=["lean-0.5deg", "noise-2mm"])
 def test_published_footprint_covers_leaning_or_noisy_faces(lean, noise):
     """O12 without perfectly vertical faces (the Fuel meshes lean and curve): every side face leaning back 0.5°,
-    or 2 mm of range noise, so the rings of one column no longer share their XY. The same 630 views, and no
-    failure beyond the listed rule."""
+    or 2 mm of range noise, so the rings of one column no longer share their XY. The same 630 views, no
+    failure."""
     failed = []
     for i, case in enumerate(_cover_cases()):
         s, fp = _cover_case(*case, lean_deg=lean, noise=noise, seed=i)
-        if not covers(fp, s) and not any(rule(*case) for rule in COVER_EXCEPTIONS.values()):
+        if not covers(fp, s):
             failed.append(case)
     assert failed == []
+
+
+NEAR_SQUARE = (0.4, 0.3, 0.7)                     # the air purifier: S = 0.3 > 0.7 L = 0.28
+
+
+def test_a_near_square_kind_seen_on_its_short_face_gets_L():
+    """R-G3: the design's rule completes the depth with L when the observed width is < 0.7 L, else with S. A
+    near-square kind (S > 0.7 L - EDGE_PAD) seen on its short face has w_obs up to S >= 0.7 L, so the rule
+    alone gave it S and left up to L - S of its far side outside. The depth is L also when the observed width
+    cannot exclude the short face: w_obs <= S + EDGE_PAD."""
+    L, S, h = NEAR_SQUARE
+    # the short face toward the camera (the long axis within 30° of the ray), 1-5 m, straight ahead and 30°
+    # left: covered (turned, a corner seen to its far end keeps its observed depth); face-on, filled
+    for rng in (1.0, 2.0, 3.0, 4.0, 5.0):
+        for bearing in (0, 30):
+            for rel in (0, 15, 30):
+                s, fp = _cover_case(L, S, h, bearing + rel, rng, bearing)
+                assert covers(fp, s) and (fp.filled or rel), (rng, bearing, rel, fp)
+    # face-on, the depth along x: L + the near and far EDGE_PAD
+    s, fp = _cover_case(L, S, h, 0, 2.0, 0)
+    assert fp.size[0] == pytest.approx(L + 2 * g.EDGE_PAD, abs=1e-3)
+    # the threshold, on one face-on face of width w at 2 m: w <= S + EDGE_PAD -> L, above it S (w >= 0.7 L,
+    # so the old rule alone gives S on both sides of it)
+    for w, depth in ((S + g.EDGE_PAD - 0.005, L), (S + g.EDGE_PAD + 0.005, S)):
+        face = np.column_stack([np.full(41, 2.0), np.linspace(-w / 2, w / 2, 41)])
+        fp = g.footprint(face, (0.0, 0.0), (L, S))
+        assert w >= g.SHORT_FACE * L and fp.filled
+        assert fp.size[0] == pytest.approx(depth + 2 * g.EDGE_PAD, abs=1e-6), w
+    # the long face toward the camera still gets S near by (w_obs about L > S + EDGE_PAD). Farther away its
+    # sampled width falls by up to a point spacing per side, to <= S + EDGE_PAD from 2 m on for this kind: then
+    # the depth is L, the safe side (L - S = 0.1 m more than the object)
+    for rng, depth in ((1.0, S), (1.5, S), (2.0, L), (3.0, L), (5.0, L)):
+        s, fp = _cover_case(L, S, h, 90, rng, 0)
+        assert fp.filled and covers(fp, s)
+        assert fp.size[0] == pytest.approx(depth + 2 * g.EDGE_PAD, abs=1e-3), rng
+    # a kind with S + EDGE_PAD < 0.7 L (the sofa) is not affected: 0.7 L decides alone
+    L, S = vocabulary.size_of("sofa")
+    assert S + g.EDGE_PAD < g.SHORT_FACE * L
+
+
+def _behind_cabinet(label, centre, yaw, cabinet_y, cabinet_w):
+    """The object's own returns (XY) with a cabinet (0.45 m deep, cabinet_w wide, 1.2 m high, its front 1.375 m
+    ahead) between it and the Go2: what the seed and the growth keep of a partly hidden object."""
+    L, S = vocabulary.size_of(label)
+    obj = solid(*centre, L, S, yaw_deg=yaw, height=vocabulary.height_of(label))
+    cabinet = solid(1.6, cabinet_y, 0.45, cabinet_w, height=vocabulary.height_of("cabinet"))
+    pts, k = scan([obj, cabinet], which=True)
+    keep = (pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP) & (k == 0)
+    return obj, pts[keep][:, :2]
+
+
+def test_a_partly_hidden_single_face_keeps_the_prior():
+    """R-G4: a short strip of one face is no corner. A sofa turned 45° behind a cabinet shows 0.4 m of its long
+    face, its end seen at < 60° incidence. Both face axes look thin (< 0.6 S), so the strip took the corner
+    branch and was published as seen, 0.5 m square and filled False (the 2.1 review). The corner branch needs
+    a real two-face L-shape (w_obs >= FLAT_SPREAD): the strip gets the prior's depth (design §7.3's rule)."""
+    L, S = vocabulary.size_of("sofa")
+    sofa, strip = _behind_cabinet("sofa", (3.0, -0.5), 45.0, -0.4, 0.9)
+    # the scene: only the long face at +S/2 across the sofa's yaw, 0.35-0.45 m of it, seen at < 60° incidence
+    along = np.array([math.cos(math.radians(45.0)), math.sin(math.radians(45.0))])
+    normal = np.array([-along[1], along[0]])
+    q = strip - np.array(sofa[:2])
+    assert len(strip) >= 20 and np.allclose(q @ normal, S / 2, atol=1e-6)
+    assert 0.35 < float(np.ptp(q @ along)) < 0.45
+    rays = strip - np.array(cam_xy())
+    assert (np.abs(rays @ normal) / np.hypot(*rays.T) > 0.5).all()
+    fp = g.footprint(strip, cam_xy(), (L, S))
+    assert fp.filled
+    assert max(fp.size) >= g.SHORT_FACE * L                 # the prior's depth, not the strip
+    assert max(fp.observed[2:]) < g.SHORT_FACE * L          # the observed rectangle is the strip
+
+
+def test_partly_hidden_furniture_claims_no_small_seen_footprint():
+    """The 2.1 review's sweep: sofas and tables turned 35-55°, 2.5-3.5 m away, behind a cabinet 0.6 / 0.9 /
+    1.2 m wide at y -1.0..1.0. Before R-G4, 60 of these views published a footprint as seen (filled False)
+    below 0.7 L, all single-face strips; now none. The documented limit that is left: a real two-face L-shape
+    whose far end the cabinet hides (its last return is at the cabinet's edge, seen at <= 60°, not at the
+    face's end) keeps its observed depth and misses part of the object (84 views today, 144 before; no
+    single-face view among them)."""
+    small_seen, hidden_end, views = [], [], 0
+    for label in ("sofa", "table"):
+        L, S = vocabulary.size_of(label)
+        for yaw in range(35, 56, 5):
+            for dist in (2.5, 3.0, 3.5):
+                for width in (0.6, 0.9, 1.2):
+                    for y in np.round(np.arange(-1.0, 1.0001, 0.1), 2):
+                        obj, p = _behind_cabinet(label, (dist, 0.0), yaw, y, width)
+                        if len(p) < g.MIN_CLUSTER_POINTS:
+                            continue
+                        views += 1
+                        fp = g.footprint(p, cam_xy(), (L, S))
+                        if fp.filled:
+                            continue
+                        case = (label, yaw, dist, width, float(y))
+                        if max(fp.size) < g.SHORT_FACE * L:
+                            small_seen.append(case)
+                        if not covers(fp, obj):
+                            hidden_end.append((case, _faces_seen(obj, p)))
+    assert views == 1621
+    assert small_seen == []
+    assert all(faces == 2 for _, faces in hidden_end), hidden_end
+    assert len(hidden_end) <= 100                          # 84 today
+
+
+def _faces_seen(s, p, tol=1e-6):
+    """How many side faces of the solid s the returns p (XY) lie on, each by at least FLAT_SPREAD."""
+    cx, cy, sx, sy, yaw = s[:5]
+    a, b = np.array([math.cos(yaw), math.sin(yaw)]), np.array([-math.sin(yaw), math.cos(yaw)])
+    q = p - np.array([cx, cy])
+    u, v = q @ a, q @ b
+    faces = [(np.abs(u - side * sx / 2) <= tol, v) for side in (-1, 1)]
+    faces += [(np.abs(v - side * sy / 2) <= tol, u) for side in (-1, 1)]
+    return sum(1 for on, across in faces if on.sum() >= 2 and float(np.ptp(across[on])) >= g.FLAT_SPREAD)
 
 
 def test_footprint_covers_an_object_smaller_than_its_prior():
@@ -625,7 +719,7 @@ def test_footprint_covers_an_object_smaller_than_its_prior():
             failed.append(case)
     assert failed == []
     assert 0 < len(clamped) <= 32 and {case[:2] for case in clamped} == {(2.0, 2.0)}    # 28 of 630 today
-    assert kept >= 60                                                                   # 92 of 630 today
+    assert kept >= 60                                                                   # 85 of 630 today
     for yaw in range(0, 91, 15):
         for rng in (1.0, 3.0, 5.0):
             s, fp = _cover_case(0.3, 0.3, 0.45, yaw, rng, 0, prior=(0.5, 0.5))
