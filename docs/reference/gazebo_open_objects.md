@@ -167,3 +167,91 @@ collision は 8 頂点の箱のメッシュ（`*_Col.obj`）。比べのため�
 - 全部（`T tests nl_control/tests`）：2553 passed, 18 skipped, 29 deselected（287.6 秒）。`feat/open-objects` の `21e1a1f` と同じ数。
 - 変えたファイルは `docker/fuel_models.json`、`gazebo/layouts/household.json`、`tests/test_layout.py`、`tests/test_household.py`、
   この記録だけ。PR #4 のファイル（D12）には触れていない。
+
+## H7：遅いテスト（2026-11-12）
+
+- 枝：`objects2/h7-slow`（`feat/open-objects` の `fca0522` から）。worktree `~/work/physicalAI/.go2-worktrees/oo-h7`。ROS の domain は 67。
+- 場所：この Mac の Docker Desktop（VM は 8 CPU、7.7 GiB）。app のイメージ `go2-voice-ltl:dev`（`a35b9bb8c8d3`）を、計画の `TA` の形
+  （本体の checkout の compose project の `app` の `run --rm`、worktree を `/wt` に）で使った。Gazebo も compose project `go2oo` も使っていない。
+- 1 回で済んだ（前の試みはない）。コードもテストも変えていない。変えたのはこの記録だけ。
+
+### 結論
+
+**H7 の線はすべて満たした。** 遅いテスト 29 件（時間のテスト 3 件と、手前の全部の掃き出し 26 件）がすべて通った。
+ソファの手前の合成は 0.40 秒（線は 1 秒）、周回は 1.52 秒（線は 3 秒）。掃き出しは 1 つの CPU で 9 分 3 秒（計画の見込みは約 30 分）。
+
+| 線（計画 H7） | 結果 |
+|---|---|
+| D11 の門、ほかのこちらの container がない | 済み。3 回の記録のどれでも `docker ps` は空（`go2-gazebo-1` もなし） |
+| 時間のテスト（`nice` なし、CPU の固定なし）が通る | **3 passed**（26.77 秒） |
+| ・ソファの手前 ≤ 1 秒（設計書 §13.1） | **0.40 秒**（PLANT 3 144、SUP 6 180） |
+| ・ソファの周回 ≤ 3 秒（設計書 §13.1） | **1.52 秒**（PLANT 14 256、SUP 14 256） |
+| ・今の「式が大きすぎます」の断り < 25 秒 | **20.03 秒** |
+| ・Whisper の録音（`stand_hello.wav` に「挨拶」） | 通った（2.45 秒。`faster-whisper-small` は本体の `hf-cache` の volume に 2026-11-04 からあり、取りに行っていない） |
+| 手前の全部の掃き出し（M13：`nice -n 19`、CPU 0 だけ）が通る | **26 passed**（542.88 秒 = 9 分 3 秒） |
+| 2 つの時間と前後の CPU を記録 | この節 |
+
+### D11 の門と、ほかの container・電源
+
+どの回の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった。こちらのほかの重い段や `T` の回もなかった
+（host で `pytest` の process なし）。`load` は host の `sysctl -n vm.loadavg`（1・5・15 分）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` | load |
+|---|---|---|---|---|---|
+| 13:38:17 | 時間のテストの前 | なし | 電池、99%、discharging | 0 | 2.64 3.03 4.91 |
+| 13:39:02 | 時間のテストの後・掃き出しの前 | なし | 電池、99%、discharging | 0 | 3.15 3.08 4.82 |
+| 13:39 ごろ | 掃き出しの間（1 回だけ見た） | こちらの `go2-app-run-…` だけ、CPU 101.92 %、82.75 MiB | — | — | — |
+| 13:48:30 | 掃き出しの後 | なし | 電池、96%、discharging | 0 | 2.33 2.44 3.62 |
+
+- 掃き出しの間の 101.92 % は CPU 1 つ分で、`taskset -c 0` が効いていた。
+- 終わった後に残った container はない（`docker ps -a` も空）。ほかに動かしたのは、`hf-cache` の中を見るだけの使い捨ての
+  `docker run --rm --name oo-h7-hfcache-ls`（alpine、読むだけ）。
+
+### 時間のテスト
+
+```bash
+TA python3 -m pytest -q -m slow tests nl_control/tests --deselect tests/test_grid.py::test_near_keys_full_sweep --durations=0 -rP
+```
+
+- 計画の形に、時間を出すだけの `--durations=0 -rP` を足した（選ぶテストと測り方は変わらない）。13:38:26〜13:38:54、`real` 27.95 秒。
+- 選ばれたのは 3 件（2 597 deselected）：
+
+| テスト | 時間（`call`） | 中で測った値 | 線 |
+|---|---|---|---|
+| `tests/test_sim_household.py::test_sofa_synthesis_is_fast` | 1.94 秒 | `F near_sofa_1`：PLANT 3 144、SUP 6 180、0.40 秒。`F around_sofa_1`：PLANT 14 256、SUP 14 256、1.52 秒 | 1 秒・3 秒 |
+| `tests/test_synthesis_memory.py::test_latent_go2_formula_is_refused_in_time` | 20.03 秒 | 「式が大きすぎます」で断った | < 25 秒 |
+| `tests/test_stt.py::test_transcribes_japanese_fixture` | 2.45 秒 | 「挨拶」が出た | — |
+
+- ソファの数は試験の姿勢 B（`GO2_LAYOUT=household`、立って (0, 0)、向き π）から。設計書 §13.1 の【仮】の見込み（手前 約 0.45 秒、
+  周回 1.39 秒、どちらも混んだ Mac）に近い。周回は 0.13 秒多いが、線の半分ほど。
+- 断りの 20.03 秒は線 25 秒まで約 5 秒（20 %）。静かな Mac での値なので、混んだ Mac では線に近づきうる（今回は落ちていない。報告だけ）。
+
+### 手前の全部の掃き出し（M13、O32）
+
+```bash
+TA nice -n 19 taskset -c 0 python3 -m pytest -q -m slow tests/test_grid.py::test_near_keys_full_sweep --durations=0
+```
+
+- 計画の形に `--durations=0` だけを足した。13:39:07〜13:48:11、`real` 543.82 秒。
+- 1 つの大きさで 102 400 通り（0.025 m・0.25° の 72 400 通りと、乱数の 30 000 通り）、26 の大きさで 2 662 400 通り。1 通りの平均は
+  約 0.20 ms で、設計書 §10.10 の「1 通り約 1 ミリ秒」と計画の「約 30 分」より速かった。
+- 大きさごとの時間（`call`、秒）：
+
+| 大きさ | 秒 | 大きさ | 秒 | 大きさ | 秒 |
+|---|---|---|---|---|---|
+| 0.45 × 0.45 | 11.93 | 0.9 × 0.4 | 16.69 | 1.6 × 0.8 | 25.70 |
+| 0.5 × 0.5 | 12.17 | 0.914 × 0.914 | 16.70 | 1.8 × 0.9 | 27.00 |
+| 0.523 × 0.529 | 12.27 | 1.0 × 0.3 | 17.18 | 1.8 × 1.04 | 26.84 |
+| 0.6 × 0.6 | 12.64 | 1.2 × 0.4 | 17.96 | 1.8 × 0.4 | 27.20 |
+| 0.59 × 0.55 | 12.59 | 1.2 × 0.35 | 17.97 | 2.0 × 0.9 | 28.28 |
+| 0.65 × 0.65 | 15.75 | 1.2 × 0.75 | 18.05 | 2.0 × 1.0 | 28.33 |
+| 0.75 × 0.75 | 16.07 | 1.5 × 0.6 | 19.70 | 2.0 × 2.0 | 27.50 |
+| 0.8 × 0.35 | 16.35 | 1.5 × 0.4 | 24.15 | 3.0 × 0.5 | 35.82 |
+| — | — | 1.5 × 0.8 | 25.07 | 3.0 × 3.0 | 32.68 |
+
+- どの大きさも、どの置き方でもキーの数が `FULL_SWEEP_LEAST` 以上（大きい物 8 以上、椅子と箱 4、測った箱 5、0.6 m 角と 0.59 × 0.55 が 6）で、
+  どのキーも縁まで 0.65〜1.25 m だった。
+
+### 遅いテストの数
+
+- `T tests nl_control/tests`（`-m "not slow"`）の「29 deselected」が、この 29 件（3 + 26）。どれも通った。
