@@ -231,7 +231,9 @@ class _Matcher:
 
     def __init__(self, word_label: Mapping[str, str], not_words: Iterable[str]):
         self.word_label = dict(word_label)
-        self.not_words = sorted({w for w in not_words if isinstance(w, str) and w}, key=len, reverse=True)
+        # longest first; one length keeps the file order (dict, not set: no PYTHONHASHSEED dependence)
+        self.not_words = sorted(dict.fromkeys(w for w in not_words if isinstance(w, str) and w), key=len,
+                                reverse=True)
         words = sorted(self.word_label, key=len, reverse=True)
         self.pattern = re.compile("|".join(_word_pattern(w) for w in words) if words else r"(?!)")
 
