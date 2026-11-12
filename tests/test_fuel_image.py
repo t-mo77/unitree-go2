@@ -84,9 +84,10 @@ def test_dockerfile_pins_the_base_and_reads_the_list():
     header = [line for line in text.splitlines() if line.startswith("#")]
     assert text.startswith("#") and len(header) >= 2
     joined = "\n".join(header)
-    assert "go2-voice-ltl-gazebo:patch-0005-fuel1" in joined                 # the tag
-    assert ("docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel1 "
+    assert "go2-voice-ltl-gazebo:patch-0005-fuel2" in joined                 # the tag (R-H3g: the room fix)
+    assert ("docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel2 "
             "-f docker/Dockerfile.gazebo-fuel docker") in joined             # the build command (plan H1)
+    assert "-t go2-voice-ltl-gazebo:patch-0005-fuel1" not in joined          # fuel1 is kept, never built over
     for name in ("fuel_models.json", "fetch_fuel_models.py"):               # the COPY sources are in the context
         assert (ROOT / "docker" / name).is_file()
 

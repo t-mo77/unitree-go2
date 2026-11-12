@@ -314,9 +314,9 @@ def test_the_docs_state_the_gazebo_lap_result():
 def test_the_gazebo_image_carries_the_controller_patches():
     """Patches 0003-0004 (gazebo_objects_e2e.md part 5) and 0005 (part 6) are applied by
     Dockerfile.gazebo with 0001-0002 (go2-voice-ltl-gazebo:patch-0005, built first); compose builds and runs
-    the thin image go2-voice-ltl-gazebo:patch-0005-fuel1 on top of it (Dockerfile.gazebo-fuel: the pinned
-    Fuel models, open-objects spec §12.6); the older images (kept as go2-voice-ltl-gazebo:patch-0004 and
-    :patch-0002) are reached through GO2_GAZEBO_IMAGE, with a warning never to build with it set (compose
+    the thin image go2-voice-ltl-gazebo:patch-0005-fuel2 on top of it (Dockerfile.gazebo-fuel: the pinned
+    Fuel models, open-objects spec §12.6, R-H3g); the older images (kept as go2-voice-ltl-gazebo:patch-0005-fuel1,
+    :patch-0004 and :patch-0002) are reached through GO2_GAZEBO_IMAGE, with a warning never to build with it set (compose
     would build the thin Fuel image under that tag). 0003 drops the three lines that wrote the low-pass velocity back into the Kalman state and
     keeps feeding the filters; 0004 makes StateTrotting::enter() start from STANCE_ALL; 0005 makes the
     wave generator count the controller's update time (the simulation time) instead of the wall clock."""
@@ -348,7 +348,7 @@ def test_the_gazebo_image_carries_the_controller_patches():
     assert "for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose" in dockerfile
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     gazebo = compose[compose.index("\n  gazebo:"):compose.index("\nvolumes:")]
-    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel1}" in gazebo.splitlines()
+    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel2}" in gazebo.splitlines()
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
     assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
@@ -441,6 +441,7 @@ def test_bridge_settings_stop_before_spawning_with_one_line(tmp_path, monkeypatc
     note = str(e.value)
     assert all(f in note for f in ("LampAndStand", "Suitcase1", "Table", "TrashBin", "GZ_SIM_RESOURCE_PATH", "household"))
     assert "Sofa" not in note and str(tmp_path) not in note and "\n" not in note   # names the variable, not its value
+    assert "go2-voice-ltl-gazebo:patch-0005-fuel2" in note and "fuel1" not in note    # the image with the room
     (tmp_path / "sub").mkdir()
     for folder in ("LampAndStand", "Suitcase1", "Table", "TrashBin"):
         (tmp_path / "sub" / folder).mkdir()
@@ -550,16 +551,21 @@ def test_box_sdf_cardboard_only_in_detector_mode():
 def test_compose_gazebo_service():
     text = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     gazebo = yaml.safe_load(text)["services"]["gazebo"]
-    assert gazebo["image"] == "${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel1}"
+    assert gazebo["image"] == "${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel2}"
     assert gazebo["build"] == {"context": "./docker", "dockerfile": "Dockerfile.gazebo-fuel"}
     assert gazebo["environment"] == {"OBJECTS_SOURCE": "${OBJECTS_SOURCE:-logical}",
                                      "GO2_LAYOUT": "${GO2_LAYOUT:-household}"}
     assert gazebo["ports"] == ["127.0.0.1:${GO2_GAZEBO_PORT:-6080}:6080"]
     lines = text[text.index("\n  gazebo:"):text.index("\nvolumes:")].splitlines()
     assert ("    # go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with "
-            "docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image patch-0005-fuel1 on top "
+            "docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image patch-0005-fuel2 on top "
             "of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). The older images are kept on this Mac only:"
             in lines)
+    older = lines[lines.index("    # go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with "
+                              "docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image "
+                              "patch-0005-fuel2 on top of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). "
+                              "The older images are kept on this Mac only:") + 1]
+    assert older.startswith("    #   go2-voice-ltl-gazebo:patch-0005-fuel1 (")    # the first Fuel room, kept (R-H3g)
     assert "    # the thin Fuel image (Dockerfile.gazebo-fuel, on top of patch-0005) and put it under the given tag." in lines
     assert not any("# patches 0001-0005 (docker/patches)." in line for line in lines)
     assert "0001-0005 from this tree" not in "\n".join(lines)
