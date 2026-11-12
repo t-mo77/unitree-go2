@@ -6,7 +6,9 @@ format record_frames writes (<view>.json from pair_record, <view>_scan.npy in th
 (spec §11.11: renders of CC BY models stay out of the repository). make_frame() below made it, and
 test_fixtures_are_the_synthetic_frames checks that it still does:
 - the room is SCENE_LAYOUT, gazebo/layouts/household.json as Task 2.12 found it, frozen here so that a later edit of
-  the layout file (the detection preview H3 sets "detectable") does not change the fixtures or these tests;
+  the layout file (the detection preview H3 sets "detectable"; the room fix after it, R-H3b) does not change the
+  fixtures or these tests; FIXTURE_TARGETS are that room's detector targets and test poses (spec §12.3 then), frozen
+  with it, where detector_check.PREVIEW_TARGETS now holds the room proposal's (R-H3a, R-H3b);
 - the scan is the ray caster of tests/test_detector_geometry.py (the Gazebo LiDAR's pattern, faces only, no floor:
   /utlidar/cloud has the ground removed) at the scan's pose, which differs from the image's by CLOUD_DELTA (within
   the core's 0.02 m / 1° pairing limit);
@@ -72,6 +74,7 @@ SCENE_LAYOUT = {"version": 1, "objects": [
      "footprint": {"offset": [0.002, 0.0], "size": [1.5, 0.8]}, "height": 1.015, "detectable": False,
      "accept": ["table", "desk"]}]}
 LAYOUT = layouts.parse(SCENE_LAYOUT, "household", FOLDERS)
+FIXTURE_TARGETS = {"trash_can_1": "B", "suitcase_1": "B", "sofa_1": "B", "lamp_1": "R"}   # SCENE_LAYOUT's test poses
 IMAGE_T, CLOUD_T, STILL_SINCE = 50.5, 50.4, 49.8
 CLOUD_DELTA = (0.004, -0.003, 0.2)            # the scan's pose - the image's (m, m, deg)
 SEEN = 1.8e9                                  # the bridge's time.time() of the truth rows
@@ -602,7 +605,7 @@ def oracle():
 def test_replay_with_the_oracle_passes_accuracy(tmp_path):
     frames = detector_check.load_frames(fixture_set(tmp_path))
     assert [f.view for f in frames] == ["B", "B_s1", "L", "R", "spawn", "spawn_lying"]
-    out = {r.view: r for r in detector_check.replay(frames, oracle(), LAYOUT)}
+    out = {r.view: r for r in detector_check.replay(frames, oracle(), LAYOUT, FIXTURE_TARGETS)}
     scored = sorted(v for v, r in out.items() if r.accuracy.get("in_scope"))
     assert scored == ["B", "B_s1", "R"]                              # a detectable truth within 5 m
     for view in scored:
@@ -631,13 +634,26 @@ def test_replay_with_the_oracle_passes_accuracy(tmp_path):
         got = detector_check.frame_line(out[view])["set_failures"]
         assert [f.split(":")[0] for f in got] == list(known), (view, got)
 
-    line = detector_check.set_line(list(out.values()), "household", "oracle", LAYOUT, detector_check.PREVIEW_TARGETS)
+    line = detector_check.set_line(list(out.values()), "household", "oracle", LAYOUT, FIXTURE_TARGETS)
     assert line["scored"] == scored and line["no_recall"] == ["L", "spawn", "spawn_lying"] and line["errors"] == []
     assert line["failed"] == sorted(KNOWN_ORACLE_FAILURES) and line["passed"] is False
     assert line["passed_frames"] == ["B", "B_s1", "R", "spawn", "spawn_lying"]
     assert line["frames"] == 6 and set(line["confusion"]) == {"by_label", "by_truth"}
     rest = [r for v, r in out.items() if v not in KNOWN_ORACLE_FAILURES]
-    assert detector_check.set_line(rest, "household", "oracle", LAYOUT)["passed"] is True
+    assert detector_check.set_line(rest, "household", "oracle", LAYOUT, FIXTURE_TARGETS)["passed"] is True
+
+
+def test_preview_targets_are_the_rooms_detector_targets():
+    # R-H3a, R-H3b (the room proposal after the H3 screening): the sofa and the suitcase from Bf (B plus one
+    # F moved_forward), the traffic cone from R5 (R plus five); B, L and R are no longer detector test poses
+    assert detector_check.PREVIEW_TARGETS == {"sofa_1": "Bf", "suitcase_1": "Bf", "traffic_cone_1": "R5"}
+    house = layouts.load("household")
+    assert set(detector_check.PREVIEW_TARGETS) == {e.id for e in house.entries if e.detectable}   # Part B passed
+    assert all(house.find(t).accept == (t.rsplit("_", 1)[0],) for t in detector_check.PREVIEW_TARGETS)
+    views = ("Bf", "Bf_s1", "Bf_s4", "R5", "R5_s2", "spawn", "spawn_lying", "B")
+    assert [detector_check.pose_of(v) for v in views] == ["Bf", "Bf", "Bf", "R5", "R5", "spawn", "spawn_lying", "B"]
+    for view in views + ("R5_s3", "Bf_s2"):                                # names record_frames --view takes
+        assert record_frames._parse(["frames", "--view", view]).view == view
 
 
 def test_set_failures_drop_only_the_missing_recall_line():
