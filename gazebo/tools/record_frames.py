@@ -9,8 +9,8 @@ no OpenCV and no verified PIL, so the PNG is written with gazebo/tools/png_rgb.p
     python3 gazebo/tools/record_frames.py <out_dir> --view <name> [--shift dx,dy,dyaw_deg] [--layout household]
 
 It waits until the Go2 has stood still for the bridge's StillGate (bridge_core.StillGate: each angular rate
-<= 0.1 rad/s and speed <= 0.05 m/s for >= 0.3 s, sim time), then pairs the newest image and the newest scan of that
-still interval (odometry reaching both stamps, the poses at the two stamps within 0.02 m and 1 deg, like
+<= 0.1 rad/s and speed <= 0.05 m/s for >= 0.3 s, sim time), then pairs the first image kept in that still interval
+and its newest scan (odometry reaching both stamps, the poses at the two stamps within 0.02 m and 1 deg, like
 detector/core.py) and the first /gazebo/objects_truth that arrived at least TRUTH_AFTER_S after the image, and saves
 into <out_dir>:
 - <view>.png: /gazebo/front_camera/image as RGB (png_rgb.write_png);
@@ -24,11 +24,13 @@ It prints one JSON line ({"view", "files", ...} or {"error"}) and exits 0 (saved
 --shift dx,dy,dyaw_deg emulates the Go2 standing at its pose moved by (dx, dy) m and dyaw degrees in its own frame
 (dx forward, dy left, dyaw counter-clockwise; plan H3's four shifts are (±0.1, ±0.1, ±5)). The Go2 does not move:
 every model of the layout is moved by the inverse of that shift about the Go2 (shifted_pose) with
-`gz service -s /world/empty/set_pose`, the way the camera spike moved its room. The pair counts only once the move
-has settled (SHIFT_SETTLE_S of sim time) and the truth shows every visible moved model where it was put
-(SHIFT_CHECK_M), so a set_pose that Gazebo ignored fails instead of recording the unmoved room. Afterwards every
-model goes back to its layout pose, also after an error or Ctrl-C. A model turned by dyaw keeps its layout footprint
-in the truth (the bridge's axis-aligned size), a small error at 5 deg.
+`gz service -s /world/empty/set_pose`, the way the camera spike moved its room. Before the first move it drops
+every image, scan and truth it kept and keeps none until the move has settled: SHIFT_FRESH_ODOM odometry messages
+arrived after the last set_pose returned (more than DDS may still hold from before it), and images and scans count
+from their latest stamp + SHIFT_SETTLE_S (sim) on. The pair also needs a truth that shows every visible moved model
+where it was put (SHIFT_CHECK_M), so a set_pose that Gazebo ignored fails instead of recording the unmoved room.
+Afterwards every model goes back to its layout pose, also after an error or Ctrl-C. A model turned by dyaw keeps its
+layout footprint in the truth (the bridge's axis-aligned size), a small error at 5 deg.
 
 rclpy and the message types are imported inside main() only; the module imports the standard library, numpy and
 this repository, so its pure parts (shifted_pose, pair_record, image_rgb, Recorder) are tested in the app image.
@@ -77,6 +79,8 @@ NODE_NAME = "go2_record_frames"
 WAIT_S = 60.0                              # --timeout default (wall)
 TRUTH_AFTER_S = 0.5                        # wall: the truth (2 Hz) must arrive this long after the image
 SHIFT_SETTLE_S = 1.0                       # sim: after the models moved, images and scans count from this on
+SHIFT_FRESH_ODOM = 10                      # odometry messages after the moves before their stamp counts as after
+                                           # them (more than the sensor-data QoS depth 5 that may hold older ones)
 SHIFT_CHECK_M = 0.05                       # a visible moved model's truth centre must be this close to its place
 GZ_TIMEOUT_MS = 3000
 GZ_WAIT_S = 10.0                           # wall, for one `gz service` call
@@ -219,8 +223,9 @@ class _Kept:
 
 
 class Recorder:
-    """The waiting of record_frames without ROS: feed it the messages, ask pair(). Set not_before (sim) and expect
-    ({id: truth centre}) for a shifted view."""
+    """The waiting of record_frames without ROS: feed it the messages, ask pair(). For a shifted view: hold() before
+    the first set_pose, moved(wall) after the last, then settle() until it opens not_before (sim; images and scans
+    count from it on), and set expect ({id: truth centre})."""
 
     def __init__(self) -> None:
         self.gate = StillGate()
@@ -235,18 +240,55 @@ class Recorder:
         self._cloud: _Kept | None = None
         self._truth: deque[tuple[float, object]] = deque(maxlen=32)
         self.latest_t: float | None = None
+        self._moved_wall: float | None = None          # moved(): when the last set_pose returned (wall)
+        self._fresh_odom = 0                           # odometry received from then on
 
-    def on_odom(self, t: float, pos, quat, linear, angular) -> None:
+    def on_odom(self, t: float, pos, quat, linear, angular, wall: float | None = None) -> None:
+        """One odometry message; wall: its arrival (wall), which settle() counts after moved()."""
         self.gate.observe(float(t), tuple(linear), tuple(angular))
         self.poses.add(t, pos, quat)
         self.latest_t = self.poses.latest()
+        if self._moved_wall is not None and wall is not None and float(wall) >= self._moved_wall - 1e-9:
+            self._fresh_odom += 1
+
+    def hold(self) -> None:
+        """Before a --shift moves the room: drop the kept image, scan and truths, and keep no image or scan until
+        settle() opens not_before."""
+        self._image = self._cloud = None
+        self._truth.clear()
+        self.mismatch = []
+        self.not_before = math.inf
+        self._moved_wall, self._fresh_odom = None, 0
+
+    def moved(self, wall: float) -> None:
+        """The last set_pose returned at wall: settle() counts the odometry that arrives from then on."""
+        self._moved_wall, self._fresh_odom = float(wall), 0
+
+    def settle(self) -> bool:
+        """Whether not_before is open. After moved(), it opens once SHIFT_FRESH_ODOM odometry messages arrived:
+        not_before = the latest odometry stamp + SHIFT_SETTLE_S (an odometry stamp is the only sim time here)."""
+        if self.not_before is None or math.isfinite(self.not_before):
+            return True
+        if self._moved_wall is None or self._fresh_odom < SHIFT_FRESH_ODOM or self.latest_t is None:
+            return False
+        self.not_before = self.latest_t + SHIFT_SETTLE_S
+        return True
+
+    def _after(self, t: float) -> bool:
+        return self.not_before is None or t >= self.not_before - 1e-9
 
     def _keeps(self, t: float) -> bool:
-        return self.gate.allows(t) and (self.not_before is None or t >= self.not_before - 1e-9)
+        return self.gate.allows(t) and self._after(t)
+
+    def _current(self, kept: _Kept | None) -> bool:
+        """kept belongs to the open still interval and to the time after not_before."""
+        return kept is not None and kept.still_since == self.gate.still_since and self._after(kept.t)
 
     def on_image(self, t: float, rgb: np.ndarray, wall: float) -> None:
+        """Keep the first image of a still interval (after not_before): the truth is due TRUTH_AFTER_S after it,
+        and a newer image would push that past the next truth at an RTF near 1."""
         t = float(t)
-        if self._keeps(t):
+        if self._keeps(t) and not self._current(self._image):
             self._image = _Kept(t, rgb, self.gate.still_since, float(wall))
 
     def on_cloud(self, t: float, points: np.ndarray) -> None:
@@ -280,9 +322,9 @@ class Recorder:
     def pair(self) -> Pair | None:
         """The pair to save, or None while something is missing (missing() says what)."""
         img, cloud = self._image, self._cloud
+        if self.gate.still_since is None or not (self._current(img) and self._current(cloud)):
+            return None                                   # also anything kept before not_before was set
         since = self.gate.still_since
-        if img is None or cloud is None or since is None or img.still_since != since or cloud.still_since != since:
-            return None
         pi, pc = self.poses.at(img.t), self.poses.at(cloud.t)
         if pi is None or pc is None:
             return None
@@ -310,17 +352,20 @@ class Recorder:
             out.append(f"odometry ({ODOM_TOPIC})")
         elif not self.still():
             out.append("a still Go2 (the still gate is closed)")
-        since = self.gate.still_since
-        if self._image is None or self._image.still_since != since:
+        if self.not_before == math.inf:
+            out.append(f"odometry after the shift moved the room ({ODOM_TOPIC})")
+        if not self._current(self._image):
             out.append(f"an image in the open still gate ({IMAGE_TOPIC}"
                        + (", after the shift settled)" if self.not_before is not None else ")"))
-        if self._cloud is None or self._cloud.still_since != since:
-            out.append(f"a scan in the open still gate ({CLOUD_TOPIC})")
+        if not self._current(self._cloud):
+            out.append(f"a scan in the open still gate ({CLOUD_TOPIC}"
+                       + (", after the shift settled)" if self.not_before is not None else ")"))
         if self.camera_info is None:
             out.append(f"CameraInfo ({CAMERA_INFO_TOPIC})")
         if self.mismatch:
             out.append(f"{TRUTH_TOPIC} showing {', '.join(self.mismatch)} moved by the shift (set_pose ignored?)")
-        elif self._image is not None and not any(w >= self._image.wall + TRUTH_AFTER_S - 1e-9 for w, _ in self._truth):
+        elif self._current(self._image) and not any(w >= self._image.wall + TRUTH_AFTER_S - 1e-9
+                                                    for w, _ in self._truth):
             out.append(f"{TRUTH_TOPIC} after the image")
         return out
 
@@ -448,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
     def on_odom(msg) -> None:
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         v, w = msg.twist.twist.linear, msg.twist.twist.angular
-        rec.on_odom(_stamp(msg.header), (p.x, p.y, p.z), (q.w, q.x, q.y, q.z), (v.x, v.y, v.z), (w.x, w.y, w.z))
+        rec.on_odom(_stamp(msg.header), (p.x, p.y, p.z), (q.w, q.x, q.y, q.z), (v.x, v.y, v.z), (w.x, w.y, w.z),
+                    wall=time.monotonic())
 
     def on_image(msg) -> None:
         try:
@@ -493,14 +539,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise _Failure(f"no still Go2 within {args.timeout:g} s to shift about "
                                f"(missing: {'; '.join(rec.missing())})")
             robot = rec.robot()
+            rec.hold()                                     # nothing kept before the moves can pair
             for obj_id, home, pose, centre in layout_moves(lay, args.shift, robot):
                 restore.append((obj_id, home))
                 if not _gz_set_pose(obj_id, pose):
                     raise _Failure(f"gz service {SET_POSE_SERVICE} failed for {obj_id}")
                 moved[obj_id] = (pose[0], pose[1], pose[3])
                 rec.expect[obj_id] = centre
-            rclpy.spin_once(node, timeout_sec=SPIN_S)
-            rec.not_before = (rec.latest_t or 0.0) + SHIFT_SETTLE_S
+            rec.moved(time.monotonic())
+            if not spin_until(rec.settle):
+                raise _Failure(f"no odometry after the shift within {args.timeout:g} s "
+                               f"(missing: {'; '.join(rec.missing())})")
         if not spin_until(lambda: rec.pair() is not None):
             raise _Failure(f"no still pair within {args.timeout:g} s (missing: {'; '.join(rec.missing())})")
         pair = rec.pair()

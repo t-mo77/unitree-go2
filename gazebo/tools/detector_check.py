@@ -19,12 +19,15 @@ get the same detections; the latency is that one call's.
 
 Output: one JSON line per frame, the accuracy result of objects_check.accuracy_check (detector rows vs the frame's
 /gazebo/objects_truth, the layout's detectable / accept, /sim/world's button boxes, the base position for the robot,
-the status for filled and still_inferences), plus "view", "code", "reason" (the status), "latency_ms" and "hits" (the
-detections at or above the detector's sighting threshold). Its targets (the 0.15 m line) are the PREVIEW_TARGETS of
-the frame's pose (spec §12.3: "B_s2" is pose B). Then one line for the set: the frames scored (with a detectable truth
-in range), passed and failed, the unscored ones (accuracy's recall line has nothing to count there), data errors,
-confusion() and preview(). Exit 0 when every scored frame passes (and one at least), 1 otherwise, 2 for data errors
-(no set, an unreadable record, a frame without truth for the layout, a detector that cannot load).
+the status for filled and still_inferences), plus "view", "code", "reason" (the status), "latency_ms", "hits" (the
+detections at or above the detector's sighting threshold) and "set_failures" (set_failures(): the failures that count
+for the set). Its targets (the 0.15 m line) are the PREVIEW_TARGETS of the frame's pose (spec §12.3: "B_s2" is pose
+B). Then one line for the set: the frames scored (with a detectable truth in range, so with a recall line), the
+no_recall ones (no detectable truth in range: accuracy's recall line has nothing to count there and is n/a, but their
+position, size, label and false-positive lines still count), passed and failed (a frame fails on any of its
+set_failures), data errors, confusion() and preview(). Exit 0 when no frame fails and one at least is scored, 1
+otherwise, 2 for data errors (no set, an unreadable record, a frame without truth for the layout, a detector that
+cannot load).
 
 confusion(frames): which label hit which truth object, with confidences (the tuning table of spec §12.8 step 4).
 preview(frames, targets, confirm): the detection preview's rule (spec §12.8 step 3, plan H3, review M4 and M8).
@@ -79,6 +82,7 @@ SPAWN_LABELS = frozenset({"box", "chair"})
 IGNORED_VIEWS = frozenset({"spawn_lying"})  # replayed and printed; preview never looks at it (review M4)
 CONFUSION_IOU = 0.3                        # confusion(): a hit belongs to the truth box it overlaps most, from 0.3
 NO_TRUTH = "-"                             # confusion()'s key for hits on no truth object
+NO_RECALL = "min_recall: no detectable truth in range"   # objects_check.accuracy's failure for an empty scope
 _SHIFTED = re.compile(r"(?P<pose>.+)_s(?P<k>[1-9][0-9]*)")
 _ZERO = (0.0, 0.0, 0.0)
 
@@ -141,12 +145,19 @@ def replay(frames: Sequence[Frame], detector: Detector, lay: layouts.Layout,
     return [_replay(f, once, lay, targets) for f in frames]
 
 
+def set_failures(accuracy: Mapping) -> list[str]:
+    """The failures of one frame's accuracy result that count for the set: every one but NO_RECALL, the recall line
+    of a frame without a detectable truth in range, which is n/a there (its other lines still hold or fail)."""
+    return [f for f in accuracy.get("failures", ()) if f != NO_RECALL]
+
+
 def frame_line(r: Replayed) -> dict:
     """The JSON line of one frame."""
     return {"view": r.view, "code": r.code, **r.accuracy, "reason": r.health.get("reason"),
             "latency_ms": r.latency_ms,
             "hits": [{"label": d.label, "confidence": round(float(d.confidence), 3),
-                      "box": [round(float(v), 1) for v in d.box]} for d in r.hits]}
+                      "box": [round(float(v), 1) for v in d.box]} for d in r.hits],
+            "set_failures": set_failures(r.accuracy)}
 
 
 def truth_boxes(frame: Replayed) -> dict[str, tuple[float, float, float, float]]:
@@ -253,13 +264,15 @@ def set_line(frames: Sequence[Replayed], set_name: str, detector_name: str, lay:
              targets: Mapping[str, str] = PREVIEW_TARGETS, confirm: float = 0.35) -> dict:
     """The set's JSON line (see the module docstring)."""
     errors = sorted(f.view for f in frames if f.code == 2)
-    scored = sorted(f.view for f in frames if f.code != 2 and f.accuracy.get("in_scope"))
-    failed = sorted(f.view for f in frames if f.view in scored and not f.accuracy.get("passed"))
-    unscored = sorted(f.view for f in frames if f.code != 2 and f.view not in scored)
+    judged = [f for f in frames if f.code != 2]
+    scored = sorted(f.view for f in judged if f.accuracy.get("in_scope"))
+    no_recall = sorted(f.view for f in judged if not f.accuracy.get("in_scope"))
+    failed = sorted(f.view for f in judged if set_failures(f.accuracy))
     latencies = [f.latency_ms for f in frames if f.latency_ms is not None]
     return {"set": set_name, "detector": detector_name, "layout": lay.name, "frames": len(frames),
-            "scored": scored, "passed_frames": sorted(set(scored) - set(failed)), "failed": failed,
-            "unscored": unscored, "errors": errors, "passed": bool(scored) and not failed and not errors,
+            "scored": scored, "no_recall": no_recall,
+            "passed_frames": sorted(f.view for f in judged if f.view not in failed), "failed": failed,
+            "errors": errors, "passed": bool(scored) and not failed and not errors,
             "latency_ms_p50": round(statistics.median(latencies), 1) if latencies else None,
             "latency_ms_max": round(max(latencies), 1) if latencies else None,
             "confusion": confusion(frames), "preview": preview(frames, targets, confirm)}

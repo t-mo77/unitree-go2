@@ -36,7 +36,7 @@ from detector.oracle import OracleDetector, project_box
 from detector.protocol import YOLOE_THRESHOLDS, Detection, vocabulary_prompts
 from detector.scripted import ScriptedDetector
 from gazebo.bridge_core import ObjectMemory, logical_rows
-from gazebo.tools import detector_check, record_frames
+from gazebo.tools import detector_check, objects_check, record_frames
 from gazebo.tools.png_rgb import read_png, write_png
 from test_detector_core import to_lidar
 from test_detector_geometry import scan, solid, yaw_q
@@ -85,6 +85,11 @@ POSE_R = ((-0.02, 0.04, STAND), -91.0)
 FIXTURE_VIEWS = (("spawn", SPAWN, None), ("spawn_lying", ((0.0, 0.0, LYING), 0.0), None), ("B", POSE_B, None),
                  ("B_s1", POSE_B, SHIFTS["s1"]), ("L", POSE_L, None), ("R", POSE_R, None))
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# The oracle's known failures on the fixture set, until the controller rules on Task 2.12's concern 1 (the oracle
+# draws every truth row, and the core's ground-ray fallback places a box cut by the image edge short; Tasks 2.7 and
+# 2.1): at pose L box_1 (bearing -58 deg, image columns 603-640) pairs 0.725 m from its truth. view -> the lines
+# that fail there (detector_check.set_failures), in order.
+KNOWN_ORACLE_FAILURES = {"L": ("max_pos_err",)}
 
 
 # --- the synthetic frames ------------------------------------------------------------------------------------------
@@ -406,9 +411,9 @@ def test_image_rgb_reads_the_camera_encodings():
             record_frames.image_rgb(*args)
 
 
-def _feed_still(rec, t0, t1, pos=(0.0, 0.0, STAND), quat=(1.0, 0.0, 0.0, 0.0), speed=0.0):
+def _feed_still(rec, t0, t1, pos=(0.0, 0.0, STAND), quat=(1.0, 0.0, 0.0, 0.0), speed=0.0, wall=None):
     for k in range(int(round((t1 - t0) / 0.02)) + 1):
-        rec.on_odom(round(t0 + 0.02 * k, 6), pos, quat, (speed, 0.0, 0.0), (0.0, 0.0, 0.0))
+        rec.on_odom(round(t0 + 0.02 * k, 6), pos, quat, (speed, 0.0, 0.0), (0.0, 0.0, 0.0), wall=wall)
 
 
 def test_recorder_pairs_a_still_image_and_scan():
@@ -460,6 +465,108 @@ def test_recorder_waits_for_the_shift_to_settle_and_show_in_the_truth():
     rec.on_truth(fresh, wall=3.1)
     pair = rec.pair()
     assert pair is not None and pair.truth == fresh and pair.image_t == 21.5 and rec.mismatch == []
+
+
+def sofa_truth(x, y):
+    """A truth message with sofa_1 visible at (x, y)."""
+    return {"frame": "odom", "stamp": SEEN, "source": "logical", "layout": "household",
+            "objects": [{"id": "sofa_1", "label": "sofa", "x": x, "y": y, "size": [1.044, 1.8], "seen": SEEN,
+                         "visible": True}]}
+
+
+def test_recorder_never_pairs_an_image_or_scan_kept_before_not_before():
+    # rclpy may run an image callback that was ready before the moves only after them: what was kept while
+    # not_before was still None must not pair once not_before is set (fix round 1)
+    rec = record_frames.Recorder()
+    rec.on_camera_info(CAMERA_INFO)
+    _feed_still(rec, 20.0, 21.0)
+    old, new, cloud = marker_image(1), marker_image(2), np.ones((5, 3), np.float32)
+    rec.on_image(20.9, old, wall=1.0)                                # kept while not_before is None
+    rec.on_cloud(20.9, cloud)
+    rec.not_before = 22.0
+    rec.expect = {"sofa_1": (-4.28, 0.2)}
+    _feed_still(rec, 21.02, 22.2)
+    rec.on_truth(sofa_truth(-4.28, 0.2), wall=2.0)                   # a truth that shows the move
+    assert rec.pair() is None
+    missing = " ".join(rec.missing())
+    assert "an image in the open still gate" in missing and "after the shift settled" in missing
+    assert "a scan in the open still gate" in missing
+    rec.on_cloud(22.1, cloud)                                        # a scan after not_before alone is not enough
+    assert rec.pair() is None and "a scan" not in " ".join(rec.missing())
+    rec.on_image(22.0, new, wall=2.5)
+    rec.on_truth(sofa_truth(-4.28, 0.2), wall=3.0)
+    pair = rec.pair()
+    assert pair is not None and (pair.image_t, pair.cloud_t) == (22.0, 22.1) and pair.image is new
+
+
+def test_recorder_holds_the_shift_until_odometry_after_the_moves():
+    # main(): hold() before the first set_pose, moved() after the last; settle() opens not_before only once
+    # SHIFT_FRESH_ODOM odometry messages arrived after the moves (more than DDS may still hold from before them)
+    n = record_frames.SHIFT_FRESH_ODOM
+    assert n > 5                                                     # the sensor-data QoS depth
+    rec = record_frames.Recorder()
+    rec.on_camera_info(CAMERA_INFO)
+    old, new, cloud = marker_image(1), marker_image(2), np.ones((5, 3), np.float32)
+    _feed_still(rec, 20.0, 21.0, wall=1.0)
+    rec.on_image(20.9, old, wall=1.0)                                # kept before the shift
+    rec.on_cloud(20.9, cloud)
+    rec.on_truth(sofa_truth(-4.38, 0.0), wall=1.0)
+    assert rec.still()
+    rec.hold()
+    assert rec.not_before == math.inf and rec.pair() is None and not rec.settle()
+    rec.expect = {"sofa_1": (-4.28, 0.2)}
+    rec.moved(wall=2.0)
+    # what DDS still held from before the moves arrives now: n - 1 odometry messages, an image and a scan
+    stamps = [round(21.02 + 0.02 * k, 6) for k in range(n + 100)]
+    for t in stamps[:n - 1]:
+        rec.on_odom(t, (0.0, 0.0, STAND), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), wall=2.01)
+    rec.on_image(21.1, old, wall=2.01)
+    rec.on_cloud(21.1, cloud)
+    assert not rec.settle() and rec.not_before == math.inf and rec.pair() is None
+    assert any("odometry after the shift" in m for m in rec.missing())
+    rec.on_odom(stamps[n - 1], (0.0, 0.0, STAND), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), wall=2.05)
+    assert rec.settle() and rec.settle()                             # once open, it stays open
+    settle_at = stamps[n - 1] + record_frames.SHIFT_SETTLE_S
+    assert rec.not_before == pytest.approx(settle_at)
+    assert not any("odometry after the shift" in m for m in rec.missing())
+    for t in stamps[n:]:
+        rec.on_odom(t, (0.0, 0.0, STAND), (1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), wall=3.0)
+    rec.on_image(settle_at - 0.1, old, wall=3.0)                     # before the move settled: not kept
+    rec.on_cloud(settle_at - 0.1, cloud)
+    rec.on_truth(sofa_truth(-4.28, 0.2), wall=3.6)
+    assert rec.pair() is None                                        # nothing from before the moves pairs
+    rec.on_image(settle_at + 0.2, new, wall=3.7)
+    rec.on_cloud(settle_at + 0.3, cloud)
+    rec.on_truth(sofa_truth(-4.28, 0.2), wall=4.2)
+    pair = rec.pair()
+    assert pair is not None and pair.image is new
+    assert (pair.image_t, pair.cloud_t) == pytest.approx((settle_at + 0.2, settle_at + 0.3))
+
+
+def test_recorder_keeps_the_first_image_while_the_truth_is_due():
+    # the camera (2 Hz sim) against the truth (2 Hz wall) at an RTF of 1: a truth lands 0.45 s after each image,
+    # never TRUTH_AFTER_S after the newest one, but it does after the interval's first image
+    rec = record_frames.Recorder()
+    rec.on_camera_info(CAMERA_INFO)
+    cloud = np.ones((5, 3), np.float32)
+    _feed_still(rec, 30.0, 33.0)
+    truth = sofa_truth(-4.38, 0.0)
+    for k, t in enumerate((31.0, 31.5, 32.0, 32.5)):
+        rec.on_image(t, marker_image(k + 1), wall=1.0 + 0.5 * k)
+        rec.on_cloud(t + 0.05, cloud)
+        rec.on_truth(truth, wall=1.45 + 0.5 * k)
+    pair = rec.pair()
+    assert pair is not None and pair.image_t == 31.0 and int(pair.image[0, 0, 0]) == 1 and pair.cloud_t == 32.55
+    # a new still interval keeps a new image
+    _feed_still(rec, 33.02, 33.2, speed=0.3)
+    _feed_still(rec, 33.22, 34.0)
+    rec.on_image(33.8, marker_image(9), wall=4.0)
+    assert rec.pair() is None                                        # the scan is of the last interval
+    rec.on_cloud(33.85, cloud)
+    rec.on_image(33.9, marker_image(10), wall=4.3)
+    rec.on_truth(truth, wall=4.5)
+    pair = rec.pair()
+    assert pair is not None and pair.image_t == 33.8 and int(pair.image[0, 0, 0]) == 9
 
 
 def test_record_frames_imports_without_rclpy():
@@ -515,20 +622,49 @@ def test_replay_with_the_oracle_passes_accuracy(tmp_path):
     moved = {p["truth"]: p["pos_err"] for p in out["B_s1"].accuracy["pairs"]}
     assert moved and max(moved.values()) <= 0.15
 
+    # a frame without a detectable truth in range has no recall line, but its other lines still count (fix round 1)
+    assert sorted(v for v, r in out.items() if not r.accuracy.get("in_scope")) == ["L", "spawn", "spawn_lying"]
+    for view in ("spawn", "spawn_lying"):
+        assert out[view].accuracy["failures"] == [detector_check.NO_RECALL]
+        assert detector_check.frame_line(out[view])["set_failures"] == []
+    for view, known in KNOWN_ORACLE_FAILURES.items():
+        got = detector_check.frame_line(out[view])["set_failures"]
+        assert [f.split(":")[0] for f in got] == list(known), (view, got)
+
     line = detector_check.set_line(list(out.values()), "household", "oracle", LAYOUT, detector_check.PREVIEW_TARGETS)
-    assert line["passed"] is True and line["scored"] == scored and line["failed"] == [] and line["errors"] == []
-    assert line["unscored"] == ["L", "spawn", "spawn_lying"]
+    assert line["scored"] == scored and line["no_recall"] == ["L", "spawn", "spawn_lying"] and line["errors"] == []
+    assert line["failed"] == sorted(KNOWN_ORACLE_FAILURES) and line["passed"] is False
+    assert line["passed_frames"] == ["B", "B_s1", "R", "spawn", "spawn_lying"]
     assert line["frames"] == 6 and set(line["confusion"]) == {"by_label", "by_truth"}
+    rest = [r for v, r in out.items() if v not in KNOWN_ORACLE_FAILURES]
+    assert detector_check.set_line(rest, "household", "oracle", LAYOUT)["passed"] is True
+
+
+def test_set_failures_drop_only_the_missing_recall_line():
+    assert objects_check.accuracy([], [], LAYOUT, [], (0.0, 0.0), [])["failures"] == [detector_check.NO_RECALL]
+    assert detector_check.set_failures({"failures": [detector_check.NO_RECALL]}) == []
+    assert detector_check.set_failures({"failures": ["max_pos_err: 0.725 > 0.35", detector_check.NO_RECALL]}) == \
+        ["max_pos_err: 0.725 > 0.35"]
+    assert detector_check.set_failures({"failures": ["min_recall: 0.500 < 0.6", "max_false_pos: 2 > 1"]}) == \
+        ["min_recall: 0.500 < 0.6", "max_false_pos: 2 > 1"]
+    assert detector_check.set_failures({"error": "no /go2/objects"}) == []
 
 
 def test_detector_check_command_line_with_the_oracle(tmp_path, capsys):
     set_dir = fixture_set(tmp_path)
-    assert detector_check.main([str(set_dir), "--detector", "oracle", "--layout", "household"]) == 0
+    assert detector_check.main([str(set_dir), "--detector", "oracle", "--layout", "household"]) == 1
     lines = [json.loads(s) for s in capsys.readouterr().out.splitlines()]
     assert [line.get("view") for line in lines[:-1]] == ["B", "B_s1", "L", "R", "spawn", "spawn_lying"]
-    assert all({"code", "passed", "pairs", "hits", "latency_ms"} <= set(line) for line in lines[:-1])
-    assert lines[-1]["set"] == "household" and lines[-1]["detector"] == "oracle" and lines[-1]["passed"] is True
+    assert all({"code", "passed", "pairs", "hits", "latency_ms", "set_failures"} <= set(line) for line in lines[:-1])
+    assert lines[-1]["set"] == "household" and lines[-1]["detector"] == "oracle" and lines[-1]["passed"] is False
+    assert lines[-1]["failed"] == sorted(KNOWN_ORACLE_FAILURES)
     assert {"confusion", "preview"} <= set(lines[-1])
+    for view in KNOWN_ORACLE_FAILURES:                               # without them the set passes: exit 0
+        for name in (f"{view}.json", f"{view}.png", f"{view}_scan.npy"):
+            (set_dir / name).unlink()
+    assert detector_check.main([str(set_dir), "--detector", "oracle", "--layout", "household"]) == 0
+    last = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert last["passed"] is True and last["failed"] == [] and last["no_recall"] == ["spawn", "spawn_lying"]
 
     assert detector_check.main([str(tmp_path / "missing"), "--detector", "oracle"]) == 2
     assert "error" in json.loads(capsys.readouterr().out.splitlines()[-1])
