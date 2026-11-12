@@ -358,7 +358,9 @@ def test_the_gazebo_image_carries_the_controller_patches():
 # ---- open-objects Task 2.3: the layout, the truth topic, the source switch and the sizing ----
 
 def household_like_layout() -> layout.Layout:
-    """The spec §12.5 household rows (gazebo/layouts/household.json itself belongs to Task 2.5)."""
+    """The spec §12.5 household rows (gazebo/layouts/household.json itself belongs to Task 2.5), with the model
+    folders of that time, so that a later room change (R-H3b: TrashBin and LampAndStand left docker/fuel_models.json)
+    does not move these bridge tests."""
     def row(obj_id, model, x, y, size, height, offset=(0.0, 0.0), detectable=False, accept=None):
         return {"id": obj_id, "model": model, "x": x, "y": y, "yaw_deg": 0,
                 "footprint": {"offset": list(offset), "size": list(size)}, "height": height,
@@ -372,7 +374,7 @@ def household_like_layout() -> layout.Layout:
         row("lamp_1", "model://LampAndStand", 0.8, -4.4, (0.622, 0.525), 1.021, detectable=True),
         row("table_1", "model://Table", -2.4, 4.4, (1.5, 0.8), 1.015, offset=(0.002, 0.0),
             accept=["table", "desk"]),
-    ]}, "household_like")
+    ]}, "household_like", folders=frozenset({"Sofa", "TrashBin", "LampAndStand", "Table", "Suitcase1"}))
 
 
 def one_entry(**changes) -> layout.Entry:

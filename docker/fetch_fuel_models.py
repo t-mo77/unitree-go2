@@ -3,8 +3,10 @@
 
 docker/Dockerfile.gazebo-fuel が、イメージを作るときに 1 回だけ動かす:
     python3 /opt/go2_fuel/fetch_fuel_models.py /opt/go2_fuel/fuel_models.json /opt/go2_models
-モデルごとに {base}/{folder}/{version}/{folder}.zip を取り、zip の sha256 を固定の値と比べ（null の固定か違いなら止まる）、
-<dest>/<folder> に開く。固定はどれも、取る前に確かめる。どこかで外れたら 0 でない終了コードで終わるので、build も止まる。
+モデルごとに {base}/{名前}/{version}/{名前}.zip を取り（名前は Fuel のモデルの名前で、URL の形に符号化する。一覧に
+name がなければ folder と同じ。例：Construction Cone は name "Construction Cone"、folder construction_cone）、
+zip の sha256 を固定の値と比べ（null の固定か違いなら止まる）、<dest>/<folder> に開く。固定はどれも、取る前に確かめる。
+どこかで外れたら 0 でない終了コードで終わるので、build も止まる。
 開くときは、絶対パスと .. を断り、zip の上に 1 つだけフォルダがあればそれを外し（Fuel の zip は上に
 model.config と model.sdf がそのまま並ぶ）、model.config と model.sdf を求め、model.sdf の model://<名前> が
 フォルダの名前と同じことを確かめる（Gazebo は GZ_SIM_RESOURCE_PATH/<名前> でファイルを探す）。
@@ -31,11 +33,12 @@ from typing import Callable
 
 TIMEOUT_S = 60.0
 ATTEMPTS = 3                        # a dropped connection or a 5xx is tried again; a 4xx or a wrong sha256 is not
-MAX_ZIP_BYTES = 64 * 1024 * 1024    # the five pinned zips are 0.7-1.8 MB
+MAX_ZIP_BYTES = 64 * 1024 * 1024    # the four pinned zips are 0.6-1.8 MB
 MAX_UNPACKED_BYTES = 512 * 1024 * 1024
 MODEL_FILES = ("model.config", "model.sdf")
 
 _FOLDER_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")      # the same shape as voice_ltl/layout.py
+_NAME_SHAPE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 _.-]*[A-Za-z0-9_.-])?")   # a Fuel name: inner spaces allowed
 _SHA256_SHAPE = re.compile(r"[0-9a-f]{64}")
 _DRIVE = re.compile(r"[A-Za-z]:")
 _MODEL_URI = re.compile(rb"model://([^/<>\"'\s]*)")
@@ -50,6 +53,12 @@ class Model:
     folder: str
     version: int
     sha256: str | None
+    name: str | None = None                 # the Fuel name when it is not the folder ("Construction Cone")
+
+    @property
+    def fuel_name(self) -> str:
+        """The model's name on Fuel, as the zip's URL needs it: name, else the folder."""
+        return self.folder if self.name is None else self.name
 
 
 @dataclass(frozen=True)
@@ -156,7 +165,8 @@ def extract(zip_path, dest: Path, folder: str) -> Path:
 
 
 def read_list(list_path) -> FuelList:
-    """Read docker/fuel_models.json: an https base and models with a folder, a version and a sha256 (or null).
+    """Read docker/fuel_models.json: an https base and models with a folder, a version and a sha256 (or null),
+    and a name when the Fuel name is not the folder (one plain name: letters, digits, _ . - and inner spaces).
 
     Other fields (bytes, author, licence) are for the docs and are not read here."""
     list_path = Path(list_path)
@@ -188,15 +198,20 @@ def read_list(list_path) -> FuelList:
         sha256 = m.get("sha256")
         if not (sha256 is None or (isinstance(sha256, str) and _SHA256_SHAPE.fullmatch(sha256))):
             raise FuelError(f"{list_path}: {folder}: sha256 {sha256!r} is null or 64 lowercase hex characters")
+        name = m.get("name")
+        if not (name is None or (isinstance(name, str) and _NAME_SHAPE.fullmatch(name))):
+            raise FuelError(f"{list_path}: {folder}: name {name!r} is null or one Fuel model name "
+                            f"(letters, digits, _ . - and inner spaces)")
         if any(x.folder == folder for x in models):
             raise FuelError(f"{list_path}: {folder}: the folder is listed twice")
-        models.append(Model(folder, version, sha256))
+        models.append(Model(folder, version, sha256, name))
     return FuelList(base, tuple(models))
 
 
 def zip_url(base: str, model: Model) -> str:
-    """Fuel's REST form {base}/{folder}/{version}/{folder}.zip (spec §12.2)."""
-    name = urllib.parse.quote(model.folder)
+    """Fuel's REST form {base}/{name}/{version}/{name}.zip with the Fuel name URL-encoded (spec §12.2, §12.6):
+    the folder, or the list's name ("Construction Cone" -> Construction%20Cone; the folder's URL gives HTTP 404)."""
+    name = urllib.parse.quote(model.fuel_name, safe="")
     return f"{base}/{name}/{model.version}/{name}.zip"
 
 

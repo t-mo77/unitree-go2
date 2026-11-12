@@ -215,7 +215,8 @@ def test_paths_and_names():
 
 def test_fuel_models_list_is_the_spec_pins():
     m = {x["folder"]: x for x in json.loads(layout.FUEL_MODELS.read_text())["models"]}
-    assert {k: v["version"] for k, v in m.items()} == {"Sofa": 3, "TrashBin": 2, "LampAndStand": 3, "Table": 4, "Suitcase1": 2}
+    # R-H3b/R-H3c: TrashBin and LampAndStand left the room, Construction Cone came in (the H3 screening's room)
+    assert {k: v["version"] for k, v in m.items()} == {"Sofa": 3, "Table": 4, "Suitcase1": 2, "construction_cone": 3}
     assert m["Sofa"]["sha256"] == "6d19d1f109427626d88667de047ca80a2c175b3f8f12dc2d0e75ddb3b88a0db1"
     assert layout.model_folders() == frozenset(m)
 
@@ -229,17 +230,19 @@ def test_fuel_models_list_pins_every_field():          # spec §12.2, §12.7
             for x in data["models"]] == [
         ("Sofa", 3, 1311028, "6d19d1f109427626d88667de047ca80a2c175b3f8f12dc2d0e75ddb3b88a0db1", "Wan Yi Seow",
          "CC BY 4.0", by),
-        ("TrashBin", 2, 1045623, "ff38c8c7d7163145083e75166201a0d8c594c3170451ecf753fc77e173c00de3", "Roselle Carmen",
-         "CC BY 4.0", by),
-        ("LampAndStand", 3, 676942, "f8610eb71132cc511634937e17fef21f6c15d9ddc9612dbedcd45979566485eb",
-         "Roselle Carmen", "CC BY 4.0", by),
         ("Table", 4, 899222, "3a720ef2a8e2f416e0ed017b2e13936f08f6f7c97829c9ea4b0d15380e36163d", "Nate Koenig",
          "CC0 1.0", zero),
         ("Suitcase1", 2, 1802850, "8e0c23b7c34cd19f443253eecf7185ca1a949f955aba278f01029775972f8fe7",
          "Wan Yi Seow", "CC0 1.0", zero),                          # H1: the zip's sha256, model.config's author
+        # the H3 screening (room proposal): the zip's sha256 and bytes, model.config's two authors, Fuel's licence
+        ("construction_cone", 3, 622427, "a6962fb5f787ba0ee21d0a9f1e96d95dde5160146852abcc45df35b33a46a34e",
+         "Cole Biesemeyer, Nate Koenig", "CC0 1.0", zero),
     ]
-    assert all(set(x) == {"folder", "version", "bytes", "sha256", "author", "licence", "licence_url"}
-               for x in data["models"])
+    fields = {"folder", "version", "bytes", "sha256", "author", "licence", "licence_url"}
+    assert all(set(x) == fields for x in data["models"] if x["folder"] != "construction_cone")
+    # the one Fuel name that is not its folder: the zip's URL needs it (spec §12.6)
+    cone = data["models"][-1]
+    assert set(cone) == fields | {"name"} and cone["name"] == "Construction Cone"
 
 
 def test_compose_passes_go2_layout_to_the_fake_go2():   # sim service only
