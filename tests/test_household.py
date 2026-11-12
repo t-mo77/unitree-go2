@@ -104,21 +104,22 @@ def test_household_layout_loads():
     assert got == [
         ("box_1", "box", "primitive:box", 2.5, 1.5, 0, (0.0, 0.0), (0.5, 0.5), 0.5, 0.0, False, ("box",)),
         ("chair_1", "chair", "primitive:chair", 2.5, -1.5, 0, (0.0, 0.0), (0.45, 0.45), 0.9, 0.0, False, ("chair",)),
-        ("trash_can_1", "trash_can", "model://TrashBin", -1.5, -1.5, 0, (0.0, 0.0), (0.266, 0.375), 0.446, 0.0,
-         False, ("trash_can",)),
-        ("suitcase_1", "suitcase", "model://Suitcase1", -1.5, 1.5, 90, (0.0, 0.0), (0.291, 0.468), 0.752, 0.0,
-         False, ("suitcase",)),                               # H1: measured in the image, turned to fit 0.6 x 0.4
-        ("sofa_1", "sofa", "model://Sofa", -4.4, 0.0, 0, (0.02, 0.0), (1.044, 1.8), 0.943, 0.0, True, ("sofa",)),
-        ("lamp_1", "lamp", "model://LampAndStand", 0.8, -4.4, 0, (0.0, 0.0), (0.622, 0.525), 1.021, 0.0, True,
-         ("lamp",)),
+        # the room proposal after the H3 screening (R-H3b): Suitcase1 re-placed for Bf (yaw 90 kept, H1's measured
+        # footprint), Construction Cone new (model_extent.py, collision: 0.50292 x 0.50292, height 1.088889,
+        # z_min 0), the sofa 0.2 m back; TrashBin and LampAndStand left the room (R-H3c). detectable = Part B passed
+        ("suitcase_1", "suitcase", "model://Suitcase1", -1.62, -1.14, 90, (0.0, 0.0), (0.291, 0.468), 0.752, 0.0,
+         True, ("suitcase",)),
+        ("traffic_cone_1", "traffic_cone", "model://construction_cone", -0.3, -4.45, 0, (0.0, 0.0), (0.503, 0.503),
+         1.089, 0.0, True, ("traffic_cone",)),
+        ("sofa_1", "sofa", "model://Sofa", -4.6, 0.0, 0, (0.02, 0.0), (1.044, 1.8), 0.943, 0.0, True, ("sofa",)),
         ("table_1", "table", "model://Table", -2.4, 4.4, 0, (0.002, 0.0), (1.5, 0.8), 1.015, 0.0, False,
          ("table", "desk")),
     ]
     world = {e.id: (e.centre(), e.world_size()) for e in lay.entries}
-    assert world["sofa_1"][0] == pytest.approx((-4.38, 0.0)) and world["sofa_1"][1] == (1.044, 1.8)
+    assert world["sofa_1"][0] == pytest.approx((-4.58, 0.0)) and world["sofa_1"][1] == (1.044, 1.8)
     assert world["table_1"][0] == pytest.approx((-2.398, 4.4)) and world["table_1"][1] == (1.5, 0.8)
-    assert world["suitcase_1"] == ((-1.5, 1.5), (0.468, 0.291))     # within the planned 0.6 x 0.4 (spec §12.3)
-    for obj_id in ("box_1", "chair_1", "trash_can_1", "lamp_1"):
+    assert world["suitcase_1"] == ((-1.62, -1.14), (0.468, 0.291))  # within the planned 0.6 x 0.4 (spec §12.3)
+    for obj_id in ("box_1", "chair_1", "traffic_cone_1"):
         e = lay.find(obj_id)
         assert world[obj_id] == ((e.x, e.y), e.size)
     assert lay.objs()[:2] == DEFAULT_LAYOUT                      # the box and the chair as in the default layout
