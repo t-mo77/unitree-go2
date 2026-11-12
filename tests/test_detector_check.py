@@ -666,11 +666,19 @@ def test_set_failures_drop_only_the_missing_recall_line():
     assert detector_check.set_failures({"error": "no /go2/objects"}) == []
 
 
-def test_detector_check_command_line_with_the_oracle(tmp_path, capsys):
+def test_detector_check_command_line_with_the_oracle(tmp_path, capsys, monkeypatch):
+    # R-H3d: the command line reads the frozen room of the fixtures (SCENE_LAYOUT and its targets), as the header
+    # promises, not gazebo/layouts/household.json, which the room fix changed
+    real_load = layouts.load
+    monkeypatch.setattr(layouts, "load", lambda name: LAYOUT if name == "household" else real_load(name))
+    monkeypatch.setattr(detector_check, "PREVIEW_TARGETS", FIXTURE_TARGETS)
     set_dir = fixture_set(tmp_path)
     assert detector_check.main([str(set_dir), "--detector", "oracle", "--layout", "household"]) == 1
     lines = [json.loads(s) for s in capsys.readouterr().out.splitlines()]
     assert [line.get("view") for line in lines[:-1]] == ["B", "B_s1", "L", "R", "spawn", "spawn_lying"]
+    by_view = {line["view"]: line for line in lines[:-1]}
+    assert by_view["B"]["targets"] == ["sofa_1", "suitcase_1", "trash_can_1"] and by_view["R"]["targets"] == ["lamp_1"]
+    assert lines[-1]["layout"] == "household" and set(lines[-1]["preview"]["targets"]) == set(FIXTURE_TARGETS)
     assert all({"code", "passed", "pairs", "hits", "latency_ms", "set_failures"} <= set(line) for line in lines[:-1])
     assert lines[-1]["set"] == "household" and lines[-1]["detector"] == "oracle" and lines[-1]["passed"] is False
     assert lines[-1]["failed"] == sorted(KNOWN_ORACLE_FAILURES)
