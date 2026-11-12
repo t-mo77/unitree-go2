@@ -235,7 +235,8 @@ def test_fuel_models_list_pins_every_field():          # spec §12.2, §12.7
          "Roselle Carmen", "CC BY 4.0", by),
         ("Table", 4, 899222, "3a720ef2a8e2f416e0ed017b2e13936f08f6f7c97829c9ea4b0d15380e36163d", "Nate Koenig",
          "CC0 1.0", zero),
-        ("Suitcase1", 2, 1802850, None, None, "CC0 1.0", zero),    # sha256 and author recorded at H1
+        ("Suitcase1", 2, 1802850, "8e0c23b7c34cd19f443253eecf7185ca1a949f955aba278f01029775972f8fe7",
+         "Wan Yi Seow", "CC0 1.0", zero),                          # H1: the zip's sha256, model.config's author
     ]
     assert all(set(x) == {"folder", "version", "bytes", "sha256", "author", "licence", "licence_url"}
                for x in data["models"])

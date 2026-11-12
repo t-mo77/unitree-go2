@@ -10,7 +10,9 @@ only (no synthesis):
 Three §12.4 rows and three §12.3 gaps come out of the code differently from the spec. The spec computed them with
 the sofa and the table at their model origins. The layout carries their footprint offsets, (0.02, 0) and
 (0.002, 0), and every user takes the footprint centre from the layout. The pins below are the code's numbers, and
-each such pin names the spec's number beside it.
+each such pin names the spec's number beside it. The spec also used the planned 0.6 x 0.4 bound for the suitcase;
+H1 measured Suitcase1 in the Fuel image (0.291 x 0.468 in model axes, turned 90° so 0.468 x 0.291 in the world),
+which moves one more row (the suitcase lap's PLANT) and the suitcase's, the sofa's and the table's gaps.
 """
 
 import functools
@@ -104,8 +106,8 @@ def test_household_layout_loads():
         ("chair_1", "chair", "primitive:chair", 2.5, -1.5, 0, (0.0, 0.0), (0.45, 0.45), 0.9, 0.0, False, ("chair",)),
         ("trash_can_1", "trash_can", "model://TrashBin", -1.5, -1.5, 0, (0.0, 0.0), (0.266, 0.375), 0.446, 0.0,
          False, ("trash_can",)),
-        ("suitcase_1", "suitcase", "model://Suitcase1", -1.5, 1.5, 0, (0.0, 0.0), (0.6, 0.4), 0.8, 0.0, False,
-         ("suitcase",)),
+        ("suitcase_1", "suitcase", "model://Suitcase1", -1.5, 1.5, 90, (0.0, 0.0), (0.291, 0.468), 0.752, 0.0,
+         False, ("suitcase",)),                               # H1: measured in the image, turned to fit 0.6 x 0.4
         ("sofa_1", "sofa", "model://Sofa", -4.4, 0.0, 0, (0.02, 0.0), (1.044, 1.8), 0.943, 0.0, True, ("sofa",)),
         ("lamp_1", "lamp", "model://LampAndStand", 0.8, -4.4, 0, (0.0, 0.0), (0.622, 0.525), 1.021, 0.0, True,
          ("lamp",)),
@@ -115,7 +117,8 @@ def test_household_layout_loads():
     world = {e.id: (e.centre(), e.world_size()) for e in lay.entries}
     assert world["sofa_1"][0] == pytest.approx((-4.38, 0.0)) and world["sofa_1"][1] == (1.044, 1.8)
     assert world["table_1"][0] == pytest.approx((-2.398, 4.4)) and world["table_1"][1] == (1.5, 0.8)
-    for obj_id in ("box_1", "chair_1", "trash_can_1", "suitcase_1", "lamp_1"):
+    assert world["suitcase_1"] == ((-1.5, 1.5), (0.468, 0.291))     # within the planned 0.6 x 0.4 (spec §12.3)
+    for obj_id in ("box_1", "chair_1", "trash_can_1", "lamp_1"):
         e = lay.find(obj_id)
         assert world[obj_id] == ((e.x, e.y), e.size)
     assert lay.objs()[:2] == DEFAULT_LAYOUT                      # the box and the chair as in the default layout
@@ -158,7 +161,7 @@ TEST_FORMULAS = [
     ("F near_trash_can_1", "B", 64, 4, 12, 1416, 72),
     ("F around_trash_can_1", "B", 81, 23, None, 6912, 100),
     ("F near_suitcase_1", "B", 64, 4, 8, 1320, 72),
-    ("F around_suitcase_1", "B", 121, 39, None, 8736, 121),
+    ("F around_suitcase_1", "B", 121, 39, None, 8064, 110),  # spec 8 736 / 121 (the 0.6 x 0.4 bound; H1 measured)
     ("F near_sofa_1", "B", 165, 6, 18, 3144, 165),
     ("F around_sofa_1", "B", 221, 50, None, 14256, 238),    # spec 14 448 (the sofa at its origin, x -4.4)
     ("F near_lamp_1", "R", 112, 7, 15, 2328, 120),
@@ -220,6 +223,7 @@ def test_inflated_sizes_lose_the_sofa_lap():
 def test_nearest_footprint_gaps():
     objs = scene()
     nearest = {o.id: min(footprint_gap(o, p) for p in objs if p.id != o.id) for o in objs if o.id in NEW_IDS}
-    # spec §12.3: 2.28, 2.12, 2.12, 2.68, 2.30 (the sofa at its origin); its 0.02 m offset brings it closer
-    assert nearest == pytest.approx({"trash_can_1": 2.26, "suitcase_1": 2.10, "sofa_1": 2.10, "lamp_1": 2.68,
-                                     "table_1": 2.30}, abs=0.01)
+    # spec §12.3: 2.28, 2.12, 2.12, 2.68, 2.30 (the sofa at its origin, the suitcase at the 0.6 x 0.4 bound); the
+    # sofa's 0.02 m offset brings it closer, the suitcase measured at H1 (0.468 x 0.291 in the world) moves away
+    assert nearest == pytest.approx({"trash_can_1": 2.26, "suitcase_1": 2.17, "sofa_1": 2.17, "lamp_1": 2.68,
+                                     "table_1": 2.35}, abs=0.01)
