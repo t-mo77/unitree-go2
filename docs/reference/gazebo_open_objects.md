@@ -255,3 +255,115 @@ TA nice -n 19 taskset -c 0 python3 -m pytest -q -m slow tests/test_grid.py::test
 ### 遅いテストの数
 
 - `T tests nl_control/tests`（`-m "not slow"`）の「29 deselected」が、この 29 件（3 + 26）。どれも通った。
+
+## H2：検出器のイメージを作り、イメージの中でテストを流した（2026-11-12）
+
+- 枝：`objects2/h2-detector`（`feat/open-objects` の `1ecb696` から）。worktree `~/work/physicalAI/.go2-worktrees/oo-h2`。ROS の domain は 62。
+- 場所：この Mac の Docker Desktop（VM は 8 CPU、7.7 GiB）。Gazebo も compose project `go2oo` も使っていない（H2 は Gazebo を動かさない）。
+- 1 回で済んだ（前の試みの worktree・枝・イメージはなかった）。コードもテストも変えていない。変えたのはこの記録だけ。
+
+### 結論
+
+**H2 の線はすべて満たした。** `go2-voice-ltl-detector:yoloe-11s` を 700.6 秒（11 分 41 秒）で作った。`docker image ls` の大きさは 4.51 GB
+（content 1.32 GB）。重み 2 つは build の中で固定の sha256 と合った。A1：ultralytics 8.4.210 の `save_prompt_embeddings` /
+`load_prompt_embeddings` がそのまま動き、検出器はその道で埋め込みを取っておき、読み戻した（`get_text_pe` の代わりの道も動くことを
+別に確かめた）。イメージの中のテストは 15 passed と 192 passed で、落ちたもの・飛ばしたものはない。`detector/yoloe.py` は直していない。
+
+| 線（計画 H2） | 結果 |
+|---|---|
+| build が通る。時間と `docker image ls` の大きさを記録 | 通った。700.6 秒、4.51 GB（下の「build」） |
+| A1：`TD -m detector tests/test_detector_yoloe.py -k embedding_cache` | **1 passed**（20.0 秒）。道は ultralytics の save/load |
+| ・どちらの道も動かなければ `detector/yoloe.py` を直して流し直す | 要らなかった（どちらの道も動いた） |
+| `TD -m detector tests/test_detector_yoloe.py tests/test_detector_protocol.py` | **15 passed**, 80 deselected（54.0 秒） |
+| `TD -m "not slow" tests/test_detector_geometry.py tests/test_detector_tracker.py tests/test_detector_core.py tests/test_detector_oracle.py tests/test_detector_check.py`（numpy 2.x） | **192 passed**（6.0 秒） |
+| 直したものと記録を commit | 直したものはない。この記録だけ |
+
+### D11 の門と、ほかの container・電源
+
+どの回の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった。こちらのほかの重い段もなかった
+（host で `docker build`・`pytest` の process なし）。`load` は host の `sysctl -n vm.loadavg`（1・5・15 分）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` | load |
+|---|---|---|---|---|---|
+| 13:57:30 | build の前 | なし | 電池、94%、discharging | 0 | 2.23 2.24 2.95 |
+| 14:09:49 | build の後・テストの前 | なし | 電池、92%、discharging | 0 | 2.46 2.21 2.45 |
+| 14:12:29 | テストの後 | なし | 電池、92%、discharging | 0 | 3.22 2.73 2.63 |
+
+- 動かしたのは、build と、計画の `TD`（`docker run --rm`、worktree を `/work` に、`env.txt` を `/dev/null` で隠す）と、名前を付けた
+  使い捨ての `docker run --rm --name oo-h2-…`（A1 の確かめと、イメージの中を読むだけのもの）だけ。終わった後に残った container はない
+  （`docker ps -a` も空）。
+
+### build
+
+```bash
+docker build -t go2-voice-ltl-detector:yoloe-11s -f docker/Dockerfile.detector docker
+```
+
+- 計画の形に、段ごとの時間を出すだけの `--progress=plain` を足した。13:57:41〜14:09:22、`real` 700.55 秒。build の注意（warning）はない。
+- 元の `ros:jazzy-ros-base-noble`（`sha256:8eed0a4669bb…`）は手元にあった（CACHED）。ほかの段は新しく作った：
+
+| 段 | 秒 | 層の大きさ |
+|---|---|---|
+| `apt-get install`（`python3-venv libgl1 libglib2.0-0t64 ros-jazzy-rmw-cyclonedds-cpp curl ca-certificates`） | 42.0 | 211 MB |
+| venv `/opt/det`（`--system-site-packages`） | 1.6 | 16.1 MB |
+| torch 2.14.1+cpu・torchvision 0.29.1+cpu（CPU の wheel の index） | 42.5 | 843 MB |
+| ultralytics 8.4.210・clip（`7ffa84b3…`）・pytest 8.4.2 | 114.1 | 492 MB |
+| 重み 2 つ（`curl` と `sha256sum -c`） | 473.4 | 628 MB |
+| `yolo settings weights_dir=/opt/yoloe sync=False` | 1.0 | 24.6 kB |
+| 書き出し | 25.3 | — |
+
+- 時間のほとんどは重みを取る段（`mobileclip_blt.ts` が 600 MB）。`sha256sum -c` の出力は `yoloe-11s-seg.pt: OK` と `mobileclip_blt.ts: OK`。
+  イメージの中の大きさは 27 803 986 B と 599 764 649 B で、設計書 §11.1 と同じ。
+- pip が入れた主なもの：numpy 2.5.4、opencv-python 5.0.0.93、pillow 13.0.0、matplotlib 3.11.2、polars 2.1.0、clip 1.0。Python は 3.12.3。
+- できたイメージ：`go2-voice-ltl-detector:yoloe-11s`（`sha256:016348e47306…`、2026-11-12 14:08:56）。`docker image ls` で
+  DISK USAGE 4.51 GB、CONTENT SIZE 1.32 GB。設計書 §11.1 の見込み「約 3.5 GB」より大きい（線ではない。試しのイメージは重み 5 つで 4.8 GB）。
+- イメージの中：`/opt/yoloe` には `yoloe-11s-seg.pt` と `mobileclip_blt.ts` と `config` だけ。ultralytics の設定は `weights_dir` が
+  `/opt/yoloe`、`sync` が False。いつもの入り口（Jazzy を読み込む ENTRYPOINT）で、numpy は venv の 2.5.4（`/opt/det/…`）、
+  ultralytics も venv から、rclpy は `/opt/ros/jazzy` から読まれた。
+
+### A1：文字の埋め込みを取っておく道
+
+```bash
+TD -m detector tests/test_detector_yoloe.py -k embedding_cache -rA --log-level=INFO
+```
+
+- 計画の形に、ログを出すだけの `-rA --log-level=INFO` を足した（選ぶテストは変わらない）。**1 passed**, 23 deselected（20.02 秒）。
+- 検出器のログ（90 の言葉。そのうち捨てる言葉 3）：1 回目の起動は符号化器で 9.44 秒（はじめのファイルの読み込みを含む）、
+  2 回目の起動は取っておいたもので 0.00 秒、言葉の順を逆にした 3 回目は符号化器で 6.46 秒。モデルを読むのは 0.45・0.05・0.04 秒。
+- どの道か：`detector/yoloe.py` は ultralytics の `save_prompt_embeddings` / `load_prompt_embeddings` を先に試し、失敗すると
+  `not cached in … (ultralytics)` / `not loaded (ultralytics)` を warning で書いてから自分の npz の道に移る。そのログは 1 つも出なかった。
+  `embedding_source` は "encoder" と "cache" だけを分けるので、どちらの道かは、このログと次の確かめから読んだ。
+- 確かめ（作業用の場所の使い捨てのスクリプト。リポジトリには入れていない。`docker run --rm --name oo-h2-a1-probe`、worktree は読むだけ）：
+  - ultralytics 8.4.210 の `YOLOE` に `save_prompt_embeddings` と `load_prompt_embeddings` がある。
+  - 1 回目の起動で呼ばれたのは `save_prompt_embeddings`（成功）だけ、2 回目は `load_prompt_embeddings`（成功）だけ。検出器の
+    自分の npz の読み書き（`_load_npz`・`_save_npz`）は呼ばれなかった。
+  - できたファイル `yoloe-pe-<鍵>.npz` の中は `embeddings`（float32、1 × 90 × 512）、`names`（90）、`model`（モデルの名前）。
+  - `set_vocabulary` 全体（空の絵の predict を含む）：符号化器で 6.62 秒、取っておいたもので 0.38 秒。その後のスレッドは
+    torch 1・interop 1・cv2 1。
+  - 代わりの道も 8.4.210 で動く：`model.get_text_pe(names)` が torch.float32 の 1 × 90 × 512 を 6.22 秒で返し、
+    `model.set_classes(names, pe)` で 90 の名前が付いた。自分の npz に書いて新しいモデルで読み戻しても同じ。
+- だから `detector/yoloe.py` はそのまま（ultralytics の道を先に、自分の npz を後に）。
+- 符号化器の時間（90 の言葉、静かな Mac。はじめの 9.44 秒の後は、この節と次の節の 10 回で 6.09〜6.49 秒）は、設計書 §11.1 の【仮】（63 の言葉で 2.3〜2.9 秒、Gazebo の横で
+  5.3〜8.5 秒）より長い。線ではない。取っておけば起動のたびにはかからない（単語帳の `detect` を変えた後の 1 回だけ）。
+
+### イメージの中のテスト
+
+```bash
+TD -m detector tests/test_detector_yoloe.py tests/test_detector_protocol.py -rA --log-level=INFO
+TD -m "not slow" tests/test_detector_geometry.py tests/test_detector_tracker.py tests/test_detector_core.py \
+    tests/test_detector_oracle.py tests/test_detector_check.py -rfEs
+```
+
+- 1 つ目（14:10:50〜14:11:45）：**15 passed**, 80 deselected（54.01 秒）。`test_detector_yoloe.py` の `detector` の 5 つ
+  （`test_prompts_of_one_label_merge`、`test_ignore_classes_are_dropped_and_still_suppress`、`test_agnostic_nms_is_on`、
+  `test_threads_are_1_after_warm_up`、`test_embedding_cache_skips_the_encoder`）と、`test_detector_protocol.py` の `[yoloe]` の 10。
+  埋め込みは符号化器から 8 回（90 の言葉で 7 回、6.09〜6.49 秒。3 つの言葉の 1 回は 1.17 秒）、取っておいたものから 10 回。
+  検出器の warning はない。
+  出た注意は torch の `torch.jit.load` の FutureWarning（ultralytics が `mobileclip_blt.ts` を読むところ）だけで、結果には関わらない。
+- 2 つ目（14:11:56〜14:12:03）：**192 passed**（5.99 秒）。飛ばしたもの・選ばれなかったものはない。numpy 2.5.4 の上で、幾何・追跡・
+  検出の核・正解の検出器・記録と流し直しの道具のテストが通った。
+
+### 変えたもの
+
+- この記録だけ。`detector/yoloe.py` を含めてコード・テスト・固定は変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない（ultralytics と torch は検出器のイメージの中だけ）。
