@@ -967,3 +967,41 @@ suitcase_1 0.09 mm、traffic_cone_1 0.11 mm、sofa_1 ずれ x 1.07 mm、table_1 
 
 **テスト。** `T tests/test_layout.py tests/test_fuel_image.py tests/test_household.py`：122 passed（44.7 秒。受け入れの PLANT と、Bf・R5・L
 からの目標の数の固定はこの中）。全部のテストは流していない（依頼が求めていない。木は 1 回目と同じで、1 回目は 0 failed）。
+
+### 3 回目：部屋の直しの見直しの後に作り直した（2026-11-13 17:47〜17:52）
+
+- わけ：見直しの直し（`bfdc636`、`feat/open-objects` の `206fe97`）が `docker/fetch_fuel_models.py` を変えた（`zip_url` が `""`・`.`・`..` を
+  断る。5 行足し、1 行直し）。`docker/fuel_models.json` と `docker/Dockerfile.gazebo-fuel` は同じ。イメージはこのファイルを `COPY` するので作り直した。
+- `feat/open-objects` の `206fe97` を `objects2/h1b-fuel` に `--no-ff` で merge した（`0a39c77`）。違いはこの記録だけ。
+- 結論：**線はすべて、もう一度満たした。** 固定は 1 つも動かない。変えたのはこの記録だけ。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` |
+|---|---|---|---|---|
+| 17:47:22 | 始め（門） | なし | — | — |
+| 17:47:47 | build の直前 | なし | 電池、90%、discharging | 0 |
+| 17:51:52 | テストの後 | なし | 電池、89%、discharging | 0 |
+
+- `go2-gazebo-1` はどの時も動いていなかった（待たなかった）。眠りは 16:41:33〜16:56:54（蓋を閉じた。この回の前）で、その後はない。
+- 動かしたのは、名前を付けた使い捨ての container（`oo-h1b3-check`、`oo-h1b3-extent`、`oo-h1b3-bridge`、`oo-h1b3-bridge1`。`--rm`、
+  `--network none`）と `T` だけ。終わった後に残った container はない。compose project `go2oo` は使っていない。
+
+**build**（同じ命令、17:48:25〜17:48:36）：`FROM` は CACHED、`COPY` と `RUN` は流れ直し、`RUN` が 4 つの zip を取り直した。4 つとも固定の
+sha256 と大きさに同じ（上の表と同じ値）。できたイメージは一覧の ID `c40a28c22024`（linux/arm64 の manifest `0e747c2aaaf1`）、17:48:36、
+7.28 GB。層は 24 で、はじめの 22 は `patch-0005` と同じ。足したのは `COPY`（32.8 kB）と `RUN`（5.05 MB）と `ENV` だけ。注意は同じ
+`UndefinedVar` の 1 つ。`patch-0005` と `patch-0005-fuel1` には触れていない。
+
+**確かめ**（2 回目と同じ。zip は作業用の新しい空のフォルダに 1 回ずつ取り直し、host では開いていない。大きさと sha256 は固定と同じ）：
+
+- `/opt/go2_models` は 4 つのフォルダだけ（隠れたファイルも zip もない）。`/opt/go2_fuel` の 2 つのファイルは枝のものと sha256 が同じ
+  （新しい `fetch_fuel_models.py` が入った）。
+- どのフォルダのどのファイルも zip の中の同じ名前のファイルと sha256 が同じで、余分も不足もない（Sofa 10、Table 11、Suitcase1 15、
+  `construction_cone` 11）。作者は 4 つとも固定と同じ。`<plugin` 0 個、「licen」0 個。
+- `GZ_SIM_RESOURCE_PATH`：値は表示せず、`--entrypoint python3` で 1 項目、最後が `/opt/go2_models`。いつもの入り口では 2 項目で、
+  `/opt/go2_models` はその 1 つ。
+- 橋渡しの止まる確かめ（`household`、`logical`）：`patch-0005-fuel2` では 6 つの物を置き、足りないフォルダはない。`patch-0005-fuel1` では
+  「`construction_cone` がない」の 1 行で止まる。
+- `model_extent.py` の出力は 1 回目・2 回目と 1 文字も違わない。
+
+**テスト。** build の前に `T tests/test_layout.py tests/test_fuel_image.py`：95 passed。後に `T tests/test_layout.py tests/test_fuel_image.py
+tests/test_household.py`：125 passed（39.1 秒）。2 回目より 1 つと 3 つ多いのは、見直しが足したテストの分。全部のテストは流していない
+（依頼が求めていない。見直しの直しの `bfdc636` で 2564 passed・18 skipped・29 deselected・0 failed）。
