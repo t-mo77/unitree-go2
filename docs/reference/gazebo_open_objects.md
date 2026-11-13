@@ -908,3 +908,62 @@ docker run --rm -v ~/work/physicalAI/.go2-worktrees/oo-h1b:/wt:ro -w /wt --entry
   Bf・R5・L からの目標の数の固定（R-H3g）はこの中にある。
 - 全部（`T tests nl_control/tests`）：2561 passed, 18 skipped, 29 deselected（317.1 秒）。`feat/open-objects` の `49a4158` の merge と同じ数。
 - 変えたファイルはこの記録だけ。PR #4 のファイル（D12）には触れていない。
+
+### 2 回目：同じ依頼がもう一度来た（2026-11-13 16:16〜16:20）
+
+- 依頼は「`objects2/room-fix` の今の先から `objects2/h1b-fuel` を切る。前の試みのものがあれば使う」。worktree `oo-h1b` と枝
+  `objects2/h1b-fuel` は 1 回目のもの（`d5c957a`、`feat/open-objects` に `051fdb5` で merge 済み）があったので、そのまま使った。
+- **作った元は `objects2/room-fix` の `68122c3`**（16:16 の時の枝の先）。部屋の直しの見直しは同時に動いているので、その後に枝に足される
+  commit は入っていない。1 回目の元の `49a4158` は `e8c40aa` に `68122c3` を merge したもので、`git diff 68122c3 49a4158` は空（木が同じ）。
+  だから 1 回目も 2 回目も、`68122c3` のファイルから作ったのと同じ。
+- 結論：**線はすべて、もう一度満たした。** 固定は 1 つも動かない。変えたのはこの記録だけ。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` |
+|---|---|---|---|---|
+| 16:16:30 | 始め（門） | なし | AC、100%、charged | 0 |
+| 16:18:17 | build とイメージの中の確かめの後 | `go2-app-run-d54c9d2d2af7` 100.10%、124.6 MiB（ほかの仕事の `T`。私のものではない） | AC、100%、charged | 0 |
+| 16:19:18 | テストの後 | `go2-app-run-adf75cbea411` 15.73%、53.5 MiB（同じく、私のものではない） | AC、100%、charged | 0 |
+
+- `go2-gazebo-1` はどの時も動いていなかった（待たなかった）。`pmset -g log` に、14:43 の後の眠りはない。
+- 動かしたのは、名前を付けた使い捨ての container（`oo-h1b2-check`、`oo-h1b2-extent`。`--rm`、`--network none`）と `T` だけ。
+  終わった後に、私の container は残っていない。compose project `go2oo` は使っていない。
+
+**build。** 同じ命令（`docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel2
+-f docker/Dockerfile.gazebo-fuel docker`）で 0.6 秒。`COPY` も `RUN` も CACHED だった。だから build に渡した
+`fuel_models.json` と `fetch_fuel_models.py` は 1 回目と 1 バイトも違わず、build は zip を取っていない。
+
+- config は `sha256:64551a7a3c5a…` のまま、作った時刻も 15:57:17 のまま。層は 24 で、はじめの 22 は `patch-0005` と同じ。
+- 一覧の ID だけが `a67719c022bc` から `14c50167b0b8` に変わった。新しい build が、中身の同じイメージに新しい attestation の manifest を
+  書いたため。中身（config と層）は 1 回目と同じ。
+- `patch-0005`（`39fd601dc2a3`）と `patch-0005-fuel1`（`5ee232801b4e`）には触れていない。
+- `docker history --no-trunc` で層を見たとき、Dockerfile の `ENV` の行（値は Dockerfile に書いた `/opt/go2_models`）が出た。
+  ほかの環境の値は出していない。
+
+**zip。** 固定した 4 つの zip だけを、作業用の新しい空のフォルダに 1 回ずつ取った（R-H3b が認めたもの。host では開いていない）。
+URL は `https://fuel.gazebosim.org/1.0/OpenRobotics/models/<Fuel の名前>/<版>/<Fuel の名前>.zip`（Construction Cone は `Construction%20Cone`）。
+
+| フォルダ | 大きさ | sha256 | 固定と |
+|---|---|---|---|
+| Sofa | 1 311 028 B | `6d19d1f109427626d88667de047ca80a2c175b3f8f12dc2d0e75ddb3b88a0db1` | 同じ |
+| Table | 899 222 B | `3a720ef2a8e2f416e0ed017b2e13936f08f6f7c97829c9ea4b0d15380e36163d` | 同じ |
+| Suitcase1 | 1 802 850 B | `8e0c23b7c34cd19f443253eecf7185ca1a949f955aba278f01029775972f8fe7` | 同じ |
+| construction_cone | 622 427 B | `a6962fb5f787ba0ee21d0a9f1e96d95dde5160146852abcc45df35b33a46a34e` | 同じ |
+
+**イメージの中の確かめ**（使い捨ての container、zip は読むだけで mount、作業用の小さいスクリプトを `python3 -I`。モデルの中の物は何も実行しない）：
+
+- 4 つの zip の sha256 と大きさを、イメージの中の `fetch_fuel_models.verify` でも固定と比べた：同じ。
+- **どのモデルも、フォルダのどのファイルも、zip の中の同じ名前のファイルと sha256 が同じで、余分なファイルはない**（Sofa 10、Table 11、
+  Suitcase1 15、`construction_cone` 11 のファイル。zip の上のフォルダは `fetch_fuel_models` と同じ決まりで外した）。1 回目は Sofa と Table を
+  `patch-0005-fuel1` のフォルダと比べただけだったので、2 回目は 4 つとも zip と比べた。
+- `/opt/go2_models` には 4 つのフォルダだけ（隠れたファイルも zip もない）。`/opt/go2_fuel` の 2 つのファイルは枝のファイルと sha256 が同じ。
+- 作者：`model.config` の `<author>` の名前（2 人なら `, ` でつなぐ）が、4 つとも固定と同じ。どの `.sdf` にも `<plugin` は 0 個。
+- ライセンス：1 回目と同じく、モデルのファイルにライセンスの字はない（「licen」は 0 個）。固定のライセンスは、設計書 §12.2（Sofa CC BY 4.0、
+  Table CC0 1.0、Suitcase1 CC0 1.0）と §12.9・H3 の下見（Construction Cone CC0 1.0）と同じ。
+- `GZ_SIM_RESOURCE_PATH`：値は表示せず、`--entrypoint python3` で 1 項目、最後が `/opt/go2_models`（はい）だけを確かめた。
+
+**測った（`model_extent.py`、上の「4 つのモデルを測った」と同じ命令）。** 出力は 1 回目と 1 文字も違わない。配置との違いのいちばん大きいところ：
+suitcase_1 0.09 mm、traffic_cone_1 0.11 mm、sofa_1 ずれ x 1.07 mm、table_1 ずれ x 2.00 mm。どれも許す違いの中なので、R-H1a のような
+固定の直しは要らない。配置にない Fuel のモデルはイメージにない。
+
+**テスト。** `T tests/test_layout.py tests/test_fuel_image.py tests/test_household.py`：122 passed（44.7 秒。受け入れの PLANT と、Bf・R5・L
+からの目標の数の固定はこの中）。全部のテストは流していない（依頼が求めていない。木は 1 回目と同じで、1 回目は 0 failed）。
