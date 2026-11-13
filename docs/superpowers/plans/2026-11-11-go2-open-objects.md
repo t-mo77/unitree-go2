@@ -1401,11 +1401,15 @@ Every step: the D11 gate first; one step at a time; Gazebo and the detector rest
   - **L** (logical only): `F turned_left`.
   The turns overshoot: one turn is about ±96°, two about 191.5° (R-H3e). The grid numbers of every target formula from these poses are pinned in `tests/test_household.py`, nominal and measured.
 - The preview set is `spawn_lying`, `spawn`, `Bf`, `Bf_s1` … `Bf_s4`, `R5`, `R5_s1` … `R5_s4`. A shift that starts with a minus is written `--shift=-0.1,0.1,-5` (R-H3f).
-- Thin margins (room proposal; `tests/test_household.py`):
+- Thin margins (room proposal; `tests/test_household.py`). R-H3b's ±35° is measured from the image centre, which is the camera, 0.327 m ahead of the base; the room proposal's bearings and distances are base → footprint centre. The numbers below come from H3's Bf (−0.506, −0.062, −169.2°) and the box of measured Bf poses (its corners); the R5 pose in `MEASURED_POSES` is derived (H3's R plus five 0.55 m steps), and the 4 real R5 runs make up the box:
   - the cone's IoU with its truth box is 0.51–0.57 at R5, because its shadow falls inside the box;
-  - at `Bf_s4` the suitcase was called trash_can in both runs;
-  - the suitcase's bearing follows the turn: +29…+36°;
+  - at `Bf_s4` the suitcase was called trash_can in both runs, so its preview rests on `Bf` and two of `Bf_s1`, `Bf_s2` and `Bf_s3`, and `Bf_s2` is the clipped view below;
+  - the suitcase's bearing follows the turn. Its centre is +41.3° from the camera at H3's Bf and +35.8…+47.2° over the measured box (from the base: +33.3°, and +28.5…+38.1°; the screening's runs gave +29…+36°). So it is outside ±35° at every measured pose. The −172.4° run, which gave 36°, is the least overshoot (187.6° turned), not the most-turned;
+  - in `Bf_s2` (dyaw −5°) the suitcase's box is cut by the left image edge at every measured heading (its footprint reaches +61.2…+70.9°, past the 60° edge). A miss in `Bf_s2` reads as clipping, not as a detector fault. In `Bf` its left edge is at u 6–108 px;
+  - the suitcase is 1.457–1.556 m from the base (1.184–1.308 m from the camera), under R-H3b's 1.5 m in part of the measured range;
+  - table_1 stays at least 2.3° outside every Bf view at the measured headings (the corner (−0.506, −0.054, −172.4°) with s3). At a nominal 180° Bf it enters the pose view and the s2 and s3 views. Re-run the view check (`test_no_undetectable_model_in_a_detector_test_view`) if the turn controller changes;
   - the sofa lap from Bf is lost from one corner of the measured box jittered by (+0.1, +0.1, +5°).
+  H3b is the gate for all of these (R-H3h (4)); the placement stands as R-H3h accepted it.
 
 ### H1 `[HEAVY]`: Build the Fuel image and record Suitcase1 (branch `objects2/h1-fuel`; after Task 2.6)
 
@@ -1522,6 +1526,11 @@ It needs Task 2.5's `test_sofa_synthesis_is_fast` (spec §13.1's synthesis-time 
 - `docs/design.md`: the grid lines (blocking from the footprint, bands A and B, size messages), the language lines (vocabulary file, `unresolved_objects`, kind guard, the five object messages), R16 rewritten and R-new (spec §9.8); a short licence paragraph (spec §11.2 puts the licence facts in both `docs/design.md` and `docs/simulation.md`, review M5): the detector container uses ultralytics, the YOLOE weights and the CLIP tokenizer fork under AGPL-3.0; the MobileCLIP text encoder weights are under Apple's research-only, non-commercial terms (the user accepted research use); ultralytics stays out of the app and gazebo images and behind `detector/protocol.py`; adding a LICENSE file to the repo is a separate decision for the user; a pointer to the spec.
 - `docs/vocabulary.md`: the object section for every kind (how to add a kind, spec §7.5) and the messages table; keep or move the pinned anchors together with `tests/test_gazebo_objects.py`.
 - The objects design: one line pointing readers to the spec. The spec: numbers measured in H1–H7 that differ, each with its reason (spec §15), including §12.8's view count (16 views used by the preview, as listed in H3).
+- The spec's household room after the room fix (R-H3e, R-H3h (5), R-H3i; the numbers are pinned in `tests/test_household.py`):
+  - the measured headings: two left turns −166.6…−172.4°, R5 −95.1…−97.6°. The R5 pose in `MEASURED_POSES` is derived (H3's R plus five 0.55 m steps along −95.8°), not a run's;
+  - bearings and distances in both frames, each named: from the base to the footprint centre (the room proposal's), and from the camera, which is what R-H3b's ±35° of the image centre means. For the suitcase from Bf: +28.5…+38.1° and 1.457–1.556 m from the base, +35.8…+47.2° and 1.184–1.308 m from the camera. It is outside ±35° and partly under 1.5 m, accepted for v1 by R-H3h (4) with H3b as the gate; in `Bf_s2` its box is cut by the left image edge;
+  - R-H3c holds at the measured headings only. At a nominal 180° Bf, table_1 enters the pose view and the s2 and s3 views (both −5°). At the measured headings it stays at least 2.3° outside. Re-run the view check if the turn controller changes;
+  - the right edge of §12.1 as a footprint edge, about y ≤ −4.2 (the cone's is −4.1985): every new footprint is at least 0.7 m from every acceptance cell centre (the screening's line; cone 0.768 m, suitcase 0.701 m), and the acceptance PLANTs are unchanged (the rule). The room proposal's y ≤ −4.5 is the centre line of a 0.6 m object, not the edge and not every object's centre (at y −4.0 the cone changed `F near_chair_1`).
 - [ ] **Step 1: Write the failing tests** in `tests/test_docs_open_objects.py`: the AGPL-3.0 sentence, the MobileCLIP research-only sentence and the LICENSE-file sentence, each in both `docs/simulation.md` and `docs/design.md`; every Fuel model's name, version, URL and licence; the Q4 sentence; the detector start command (in README and `docs/simulation.md`); `GO2_LAYOUT`; and no `/Users/` in any doc.
 - [ ] **Step 2: Run them to see them fail.** Run: `T tests/test_docs_open_objects.py tests/test_gazebo_objects.py`. Expected: FAIL.
 - [ ] **Step 3: Write the docs** (Japanese, like the existing ones).

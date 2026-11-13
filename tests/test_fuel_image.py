@@ -254,6 +254,37 @@ def test_a_fuel_name_apart_from_the_folder(tmp_path, capsys):
     assert fetch.main(lst, tmp_path / "other", fetch=lambda url: cone) != 0
     assert "model://construction_cone" in capsys.readouterr().err
     assert every_file(tmp_path / "other") == []
+    # a name that points at another Fuel model: the other model's zip is fetched, and the sha256 pin stops it
+    sofa = zip_bytes({"model.config": CONFIG, "model.sdf": SDF})
+    lst = write_list(tmp_path / "list.json", [
+        {"folder": "construction_cone", "name": "Sofa", "version": 3, "sha256": hashlib.sha256(cone).hexdigest()}])
+    urls = []
+
+    def other_model(url):
+        urls.append(url)
+        return sofa
+
+    assert fetch.main(lst, tmp_path / "third", fetch=other_model) != 0
+    assert urls == ["https://fuel.example.test/1.0/Owner/models/Sofa/3/Sofa.zip"]
+    assert "sha256 mismatch" in capsys.readouterr().err
+    assert every_file(tmp_path / "third") == []                         # nothing unpacked, the zip not kept
+
+
+def test_zip_url_keeps_the_name_in_one_path_segment():
+    pin = "0" * 64
+    base = "https://fuel.example.test/1.0/Owner/models"
+    # quote(safe=""): a slash, a query, a fragment and the rest are encoded, so the name stays one segment of the
+    # Fuel path (read_list refuses such names before main gets here; this pins the encoding on its own)
+    assert fetch.zip_url(base, fetch.Model("A", 1, pin, "a/b?c")) == f"{base}/a%2Fb%3Fc/1/a%2Fb%3Fc.zip"
+    assert fetch.zip_url(base, fetch.Model("A", 2, pin, "//e.example/x#f&g")) == \
+        f"{base}/%2F%2Fe.example%2Fx%23f%26g/2/%2F%2Fe.example%2Fx%23f%26g.zip"
+    # quote leaves "." and ".." as they are (unreserved characters): a dot segment would leave the owner's path, so
+    # zip_url refuses it too, and an empty name, whatever read_list did
+    for name in ("", ".", ".."):
+        with pytest.raises(fetch.FuelError, match="one path segment"):
+            fetch.zip_url(base, fetch.Model("A", 1, pin, name))
+    with pytest.raises(fetch.FuelError, match="one path segment"):
+        fetch.zip_url(base, fetch.Model("..", 1, pin))                  # no name: the folder is the Fuel name
 
 
 def test_main_checks_every_pin_before_downloading(tmp_path, capsys):
@@ -318,9 +349,7 @@ def test_main_refuses_a_bad_list(tmp_path, capsys):
                                                                              "sha256": "abc"}]}),
         json.dumps({"base": "https://fuel.example.test/models", "models": [
             {"folder": "A", "version": 1, "sha256": pin}, {"folder": "A", "version": 2, "sha256": pin}]}),
-    ] + [json.dumps({"base": "https://fuel.example.test/models", "models": [
-        {"folder": "A", "name": name, "version": 1, "sha256": pin}]})          # a Fuel name is one plain name
-        for name in ("", " Cone", "Cone ", "a/b", "../A", "..", "Cone\n", "%2e%2e", 3, ["A"], True)]
+    ]
     for text in bad_lists:
         path = tmp_path / "list.json"
         path.write_text(text, encoding="utf-8")
@@ -329,6 +358,17 @@ def test_main_refuses_a_bad_list(tmp_path, capsys):
         assert calls == []
         assert "list.json" in capsys.readouterr().err
     assert fetch.main(tmp_path / "missing.json", tmp_path / "models", fetch=calls.append) != 0
+    # a Fuel name is one plain name: no path, URL, query, fragment or other host, and the error names the field
+    bad_names = ("", " Cone", "Cone ", "a/b", "../A", "..", ".", "Cone\n", "%2e%2e", "https://evil.example/x",
+                 "https://evil.example/x.zip", "//evil.example/x", "Cone?x=1", "Cone#f", "a&b", "user@evil.example",
+                 "C:x", "a\\b", 3, ["A"], True)
+    for name in bad_names:
+        path = write_list(tmp_path / "list.json", [{"folder": "A", "name": name, "version": 1, "sha256": pin}])
+        calls = []
+        assert fetch.main(path, tmp_path / "models", fetch=calls.append) != 0, name
+        assert calls == []
+        err = capsys.readouterr().err
+        assert "list.json" in err and f": A: name {name!r} is null or one Fuel model name" in err, name
 
 
 def test_the_pinned_list_gives_the_fuel_urls():
