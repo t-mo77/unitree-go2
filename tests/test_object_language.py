@@ -605,6 +605,48 @@ def test_a_place_word_before_another_object_word_is_a_landmark():   # spec §9.8
     assert refusal_message("x", ["冷蔵庫の横"], Scene()) == msg_not_found("refrigerator", "冷蔵庫")
 
 
+# The phrasings the pre-final review found walking to box_1 (F1), the listed one, and the name alone
+UNLISTED_GOING = ("ゴミ箱に行け", "ゴミ箱へ進め", "ゴミ箱に向かえ", "ゴミ箱に行きなさい", "ゴミ箱に移動して", "ゴミ箱に寄って",
+                  "ゴミ箱に近寄って", "ゴミ箱のほうへ行って", "ゴミ箱のほうに行って", "ゴミ箱のとこまで行って",
+                  "ゴミ箱を目指して進んで", "ゴミ箱に向けて歩いて", "ゴミ箱へ来て", "ゴミ箱まで行って", "ゴミ箱")
+
+
+def test_kind_guard_fails_closed_on_a_phrasing_off_the_list():   # pre-final review F1 (spec §9.8 O35)
+    # a missed phrasing must not walk the Go2 to another kind: every kind the instruction names counts
+    for instruction in UNLISTED_GOING:
+        t = translate(instruction, llm_for("F near_box_1"), scene=SCENE)
+        assert not t.ok and t.formula is None and t.message == msg_not_found("trash_can", "ゴミ箱"), instruction
+    # a named kind that is in the Scene passes with any phrasing (Claude sees it in the list)
+    for instruction in ("箱に行け", "箱に移動して", "箱のほうへ行って", "箱"):
+        assert translate(instruction, llm_for("F near_box_1"), scene=SCENE).ok, instruction
+    assert translate("ゴミ箱に行け", llm_for("F near_box_1"), scene=WITH_A_TRASH_CAN).ok
+    # X の Y and X の P の Y: X describes Y, so a missing X refuses nothing and a missing Y refuses another kind
+    assert translate("冷蔵庫の横の椅子に行け", llm_for("F near_chair_1"), scene=SCENE).ok
+    assert translate("冷蔵庫の椅子に寄って", llm_for("F near_chair_1"), scene=SCENE).ok
+    assert translate("冷蔵庫 の 隣 の　椅子 に 行け", llm_for("F near_chair_1"), scene=SCENE).ok
+    only_a_chair = Scene((DEFAULT_LAYOUT[1],), (0.0, 0.0, 0.0))
+    for instruction in ("椅子の上の箱に行け", "椅子の上の箱まで行って", "椅子の箱に行け"):
+        t = translate(instruction, llm_for("F near_chair_1"), scene=only_a_chair)
+        assert not t.ok and t.formula is None and t.message == msg_not_found("box", "箱"), instruction
+    only_a_fridge = Scene((Obj("refrigerator_1", "refrigerator", 2.0, 0.0, (0.65, 0.65)),), (0.0, 0.0, 0.0))
+    t = translate("冷蔵庫の横の椅子に行け", llm_for("F near_refrigerator_1"), scene=only_a_fridge)
+    assert not t.ok and t.message == msg_not_found("chair", "椅子")
+    # every missing kind is told once, in the instruction's order; a kind in the Scene is not
+    t = translate("ゴミ箱と冷蔵庫と箱に行け", llm_for("F near_chair_1"), scene=SCENE)
+    assert t.message == msg_not_found("trash_can", "ゴミ箱") + msg_not_found("refrigerator", "冷蔵庫")
+    # an entry's said after X の P の is an object word, so X is no target (O8 already guards the entry's kind)
+    plants = Scene((Obj("potted_plant_1", "potted_plant", 2.0, 0.0, (0.4, 0.4)),), (0.0, 0.0, 0.0))
+    green = [{"said": "グリーン", "label": "potted_plant"}]
+    reply = {"formula": "F near_potted_plant_1", "unsupported": [], "unresolved_objects": green}
+    assert translate("テーブルの横のグリーンまで行って", FakeLLM([reply]), scene=plants).ok
+    assert translate("テーブルの横のグリーンに行け", FakeLLM([reply]), scene=plants).ok
+    # unchanged: no vocabulary word, a formula without objects, and the count messages' closed list
+    for instruction in ("家具に行け", "障害物のほうへ行って", "グリーンに寄って"):
+        assert translate(instruction, llm_for("F near_box_1"), scene=SCENE).ok, instruction
+    assert translate("ゴミ箱に行け、そして挨拶して", llm_for("F hello"), scene=SCENE).ok
+    assert going_targets("ゴミ箱に行け") == {} and refusal_message("ゴミ箱に行け", ["ゴミ箱"], SCENE) == tango("ゴミ箱")
+
+
 def test_the_clause_test_stays_fast_for_long_chains_and_nested_saids():   # fix round 1 (minor)
     # 「箱と」×100 and 10 nested saids (箱 / 箱と箱 / …): unmemoised, one item took ~n^4 steps (>60 s for 50 items)
     instruction = "箱と" * 100 + "箱を押して"

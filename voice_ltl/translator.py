@@ -173,6 +173,7 @@ _GOING_TAIL = re.compile(
 _BARE = ("", "を", "に", "へ")                  # spec §9.6 rule 3: a bare particle is no going phrase
 _CLAUSE_END = re.compile(r"[、。,.，．！!？?]")
 _COORDINATORS = "とや、・"
+_DESCRIBED = re.compile(r"[^\s、。,.，．！!？?の]{1,6}\s*の\s*")   # P の in X の P の Y (named_kinds)
 MAX_COORDINATION = 4
 
 
@@ -247,14 +248,38 @@ class _Clauses:
             return False
         return any(self.passes(e, depth + 1) for e in self._words_at(self._after_spaces(pos + 1)))
 
+    def describes(self, end: int) -> bool:
+        """The object word that ends at `end` is followed by の and another object word, or by の, a short word
+        P (no clause end, no の) and の and another object word: X の Y, X の P の Y (「椅子の上の箱」)."""
+        pos = self._after_spaces(end)
+        if not self.text.startswith("の", pos):
+            return False
+        pos = self._after_spaces(pos + 1)
+        if self._words_at(pos):
+            return True
+        between = _DESCRIBED.match(self.text, pos)
+        return between is not None and bool(self._words_at(between.end()))
 
-def going_targets(instruction: str) -> dict[str, str]:
+
+def going_targets(instruction: str, entries: Sequence[Entry] = ()) -> dict[str, str]:
     """The kinds the instruction names as a place to go to or to circle (spec §9.6 rule 3, §9.8): label ->
     the user's vocabulary word (the first that passes, in the vocabulary's spelling), in instruction order."""
-    clauses = _Clauses(instruction)
+    clauses = _Clauses(instruction, entries)
     out: dict[str, str] = {}
     for k in clauses.kinds:
         if k.label not in out and clauses.passes(k.end):
+            out[k.label] = k.word
+    return out
+
+
+def named_kinds(instruction: str, entries: Sequence[Entry] = ()) -> dict[str, str]:
+    """Every kind the instruction names, whatever the phrasing (the kind guard fails closed; pre-final review
+    F1): label -> the user's first such word, in instruction order. Only a word that describes another object
+    word (X の Y, X の P の Y: 「冷蔵庫の横の椅子」 names the chair) is left out."""
+    clauses = _Clauses(instruction, entries)
+    out: dict[str, str] = {}
+    for k in clauses.kinds:
+        if k.label not in out and not clauses.describes(k.end):
             out[k.label] = k.word
     return out
 
@@ -368,15 +393,18 @@ def _formula_labels(formula: str) -> set[str]:
     return out
 
 
-def _kind_guard(formula: str, view: Scene | None, instruction: str) -> list[str]:
-    """O35 (spec §9.8): when the formula uses an object whose kind is not a named target and some named target
-    has no object in the Scene, the 見つかりません message of each such target, once; [] if fine."""
+def _kind_guard(formula: str, view: Scene | None, instruction: str, entries: Sequence[Entry] = ()) -> list[str]:
+    """O35 (spec §9.8): when the formula uses an object whose kind is not a named target (going_targets, §9.6's
+    closed list) and some kind the instruction names (named_kinds, any phrasing) has no object in the Scene,
+    the 見つかりません message of each such kind, once; [] if fine. A phrasing off the closed list therefore
+    refuses rather than walks to another kind (fails closed; pre-final review F1)."""
     if view is None:
         return []
-    targets = going_targets(instruction)
-    if not targets or all(label in targets for label in _formula_labels(formula)):
+    named = named_kinds(instruction, entries)
+    targets = going_targets(instruction, entries)
+    if not named or all(label in targets for label in _formula_labels(formula)):
         return []
-    return [msg_not_found(label, word) for label, word in targets.items()
+    return [msg_not_found(label, word) for label, word in named.items()
             if not any(o.label == label for o in view.objects)]
 
 
@@ -442,7 +470,7 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | Non
             if open_items:
                 return Translation(False, None, open_items, attempts,
                                    _unsupported_message(open_items, view, entries, instruction), scene=scene)
-            missing = _kind_guard(formula, view, instruction)                                    # O35
+            missing = _kind_guard(formula, view, instruction, entries)                           # O35
             if missing:
                 return Translation(False, None, [], attempts, "".join(missing), scene=scene)
             far = _too_far(formula, view)
