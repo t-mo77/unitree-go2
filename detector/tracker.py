@@ -95,7 +95,8 @@ class _Track:
         self.filled = False
         self.measured = False                   # the geometry comes from LiDAR-supported hits
         self.cam_xy = (0.0, 0.0)                # the newest view
-        # the last TRACK_POINT_FRAMES supported hits: (thinned points N x 2, the camera XY of that view)
+        # the last TRACK_POINT_FRAMES supported hits: (raw points N x 2, at most MAX_TRACK_POINTS, the camera XY
+        # of that view). Only their union is thinned: geometry's pads are sized for raw returns
         self.point_frames: deque[tuple[np.ndarray, tuple[float, float]]] = deque(maxlen=TRACK_POINT_FRAMES)
         self.hits: deque[_Hit] = deque(maxlen=RELABEL_HITS)
         self.votes: dict[str, float] = {}       # label -> summed confidence, every hit (the tentative label)
@@ -121,8 +122,9 @@ class Tracker:
                  fuse: Callable[..., object | None]) -> None:
         """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior, views=[(points, cam_xy),
         ...]) returns an object with x, y, size and filled (geometry.footprint), or None. points_xy is the union
-        of the track's last hits, cam_xy the newest camera and views those hits one by one, so a far end that an
-        older view saw keeps its observed depth (spec §11.6; pre-final review F3)."""
+        of the track's last hits (thinned), cam_xy the newest camera and views those hits one by one (raw, at most
+        MAX_TRACK_POINTS each), so a far end that an older view saw keeps its observed depth (spec §11.6;
+        pre-final review F3 and round 2)."""
         check_thresholds(thresholds, vocabulary.LABELS)
         self._th = thresholds
         self._priors = dict(priors)
@@ -251,7 +253,7 @@ class Tracker:
             track.label = max(track.votes, key=track.votes.__getitem__)   # ties: the label seen first
         cam = _xy(o.cam_xy)
         if o.supported and points is not None and len(points):
-            track.point_frames.append((_thin(points), cam))
+            track.point_frames.append((_cap(points), cam))
             track.cam_xy = cam
             track.measured = True
             views = list(track.point_frames)
@@ -471,10 +473,16 @@ def _thin(points: np.ndarray) -> np.ndarray:
         return points
     keys = np.floor(points / THIN_CELL).astype(np.int64)
     _unique, first = np.unique(keys, axis=0, return_index=True)
-    out = points[np.sort(first)]
-    if len(out) > MAX_TRACK_POINTS:
-        out = out[np.linspace(0, len(out) - 1, MAX_TRACK_POINTS).round().astype(np.int64)]
-    return out
+    return _cap(points[np.sort(first)])
+
+
+def _cap(points: np.ndarray) -> np.ndarray:
+    """At most MAX_TRACK_POINTS points, evenly spaced (a single view kept for footprint's views: not thinned,
+    since thinning moves the extreme point up to one cell inward and geometry's pads are sized for raw returns;
+    pre-final review round 2)."""
+    if len(points) > MAX_TRACK_POINTS:
+        return points[np.linspace(0, len(points) - 1, MAX_TRACK_POINTS).round().astype(np.int64)]
+    return points
 
 
 def _spaced(hits: list[_Hit]) -> int:
