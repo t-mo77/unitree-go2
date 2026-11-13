@@ -352,6 +352,8 @@ def test_the_gazebo_image_carries_the_controller_patches():
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
     assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
+    for tag in ("patch-0004", "patch-0002"):          # those images have no Fuel models (pre-final review F6)
+        assert f"GO2_LAYOUT=default GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:{tag} docker compose" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in gazebo
 
 
