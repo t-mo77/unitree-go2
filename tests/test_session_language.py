@@ -79,6 +79,18 @@ def test_kind_guard_on_a_phrasing_off_the_list_does_not_stand_up(tmp_path):   # 
         assert link.sim.accepted == [] and snap["formula"] is None
 
 
+def test_kind_guard_with_the_particle_dropped_does_not_stand_up(tmp_path):   # pre-final review round 2, finding 1
+    # before: status done, F near_box_1 accepted and the Go2 at (1.99, 0.48) beside box_1
+    for instruction in ("ゴミ箱行って", "ゴミ箱向かって"):
+        sess, link = make(tmp_path, FakeLLM([{"formula": "F near_box_1", "unsupported": []}]))
+        drive(sess, link, 0.2)
+        sess.submit_text(instruction)
+        drive(sess, link, 1.0)
+        snap = sess.snapshot()
+        assert snap["status"] == "error" and snap["message"] == msg_not_found("trash_can", "ゴミ箱"), instruction
+        assert link.sim.accepted == [] and snap["formula"] is None
+
+
 def test_snapshot_redacts_unresolved_said(tmp_path):
     reply = {"formula": None, "unsupported": ["箱"], "substitutions": [],
              "unresolved_objects": [{"said": FAKE_TOKEN, "label": "box"}]}

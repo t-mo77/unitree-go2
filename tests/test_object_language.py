@@ -659,6 +659,111 @@ def test_kind_guard_fails_closed_on_a_phrasing_off_the_list():   # pre-final rev
     assert going_targets("ゴミ箱に行け") == {} and refusal_message("ゴミ箱に行け", ["ゴミ箱"], SCENE) == tango("ゴミ箱")
 
 
+# A word that ends in kanji, then a kanji verb with the particle dropped (pre-final review round 2, finding 1).
+# kinds_in (§9.5) finds no word there, since a kanji word does not end before a kanji (箱根 is not 箱). One
+# phrasing per stem of vocabulary.GOING_STEMS.
+PARTICLE_DROPPED = ("ゴミ箱行って", "ゴミ箱行け", "ゴミ箱向かって", "ゴミ箱寄って", "ゴミ箱移動して", "ゴミ箱進んで",
+                    "ゴミ箱歩いて行って", "ゴミ箱近くまで行って", "ゴミ箱回って", "ゴミ箱目指して", "ゴミ箱来て",
+                    "ゴミ箱前まで行って", "ゴミ箱横まで行って", "ゴミ箱周りを回って")
+
+
+def test_kind_guard_names_a_kanji_word_before_a_kanji_verb():   # pre-final review round 2, finding 1 (O35)
+    for instruction in PARTICLE_DROPPED:
+        t = translate(instruction, llm_for("F near_box_1"), scene=SCENE)
+        assert not t.ok and t.formula is None and t.message == msg_not_found("trash_can", "ゴミ箱"), instruction
+    for instruction, label, word in (("冷蔵庫行って", "refrigerator", "冷蔵庫"), ("机行って", "desk", "机"),
+                                     # these were refused already: the word ends in kana
+                                     ("ゴミ箱いって", "trash_can", "ゴミ箱"), ("くずかご行って", "trash_can", "くずかご"),
+                                     ("ダストボックス行って", "trash_can", "ダストボックス")):
+        t = translate(instruction, llm_for("F near_box_1"), scene=SCENE)
+        assert not t.ok and t.message == msg_not_found(label, word), instruction
+    # a named kind that is in the Scene passes
+    for instruction, formula in (("箱行って", "F near_box_1"), ("椅子向かって", "F near_chair_1"),
+                                 ("箱周りを回って", "F around_box_1")):
+        assert translate(instruction, llm_for(formula), scene=SCENE).ok, instruction
+    assert translate("ゴミ箱行って", llm_for("F near_trash_can_1"), scene=WITH_A_TRASH_CAN).ok
+    # only the refusal set looks again: kinds_in, going targets and the count messages keep §9.5's word ends
+    assert translator.named_kinds("ゴミ箱行って") == {"trash_can": "ゴミ箱"}
+    assert vocabulary.kinds_in("ゴミ箱行って") == () and going_targets("ゴミ箱行って") == {}
+    assert refusal_message("ゴミ箱行って", ["ゴミ箱行って"], SCENE) == tango("ゴミ箱行って")
+    # a stem off the closed list, and a not_word, name nothing
+    for instruction in ("箱根まで行って", "車椅子行って", "長椅子目指して"):
+        assert translator.named_kinds(instruction) == {}, instruction
+    assert vocabulary.named_in("箱根") == () and vocabulary.named_in("机上") == ()
+
+
+def test_an_entry_named_as_a_place_to_go_is_a_going_target():   # pre-final review round 2, finding 2 (D3)
+    # a word resolved through unresolved_objects is exempt as a vocabulary word is, so an absent landmark that
+    # names no place to go does not refuse it
+    plants = Scene((Obj("potted_plant_1", "potted_plant", 2.0, 0.0, (0.4, 0.4)),), (0.0, 0.0, 0.0))
+    green = [{"said": "グリーン", "label": "potted_plant"}]
+    reply = {"formula": "F near_potted_plant_1", "unsupported": [], "unresolved_objects": green}
+    for instruction in ("冷蔵庫と棚の間のグリーンまで行って", "ソファを避けてグリーンまで行って", "机じゃなくてグリーンまで行って"):
+        assert translate(instruction, FakeLLM([reply]), scene=plants).ok, instruction
+    beans = Scene((Obj("bean_bag_1", "bean_bag", 2.0, 0.0, (0.8, 0.8)),), (0.0, 0.0, 0.0))
+    cushion = {"formula": "F near_bean_bag_1", "unsupported": [],
+               "unresolved_objects": [{"said": "クッション", "label": "bean_bag"}]}
+    for instruction in ("ソファにあるクッションまで行って", "ソファの上にあるクッションまで行って"):
+        assert translate(instruction, FakeLLM([cushion]), scene=beans).ok, instruction
+    # as with a vocabulary word
+    for instruction in ("冷蔵庫と棚の間の椅子まで行って", "ソファを避けて椅子まで行って"):
+        assert translate(instruction, llm_for("F near_chair_1"), scene=SCENE).ok, instruction
+    # the entry's kind by §9.7, in instruction order; only an occurrence that passes the clause test counts
+    entry = translator.Entry
+    assert going_targets("ソファを避けてグリーンまで行って", [entry("グリーン", "potted_plant")]) == {
+        "potted_plant": "グリーン"}
+    assert going_targets("グリーンと箱まで行って", [entry("グリーン", "potted_plant")]) == {
+        "potted_plant": "グリーン", "box": "箱"}
+    assert going_targets("グリーンを見て", [entry("グリーン", "potted_plant")]) == {}
+    assert going_targets("グリーンまで行って", [entry("グリーン", None)]) == {}       # no accepted kind
+    t = translate("ソファを避けてグリーンを見て", FakeLLM([reply]), scene=plants)
+    assert not t.ok and t.message == msg_not_found("sofa", "ソファ")
+
+
+# Going phrases off §9.6's list (pre-final review round 2, finding 3): the guard's exemption takes them too, so a
+# landmark named some other way (にある, の間の, じゃなくて, から離れて) that is not in the Scene refuses nothing
+GUARD_ONLY_GOING = ("に行け", "に行きなさい", "へ進め", "に向かえ", "に近づけ", "まで歩け", "の周りを回れ", "に移動",
+                    "に移動して", "に移動する", "に寄って", "に寄れ", "に近寄って", "に近寄れ", "へ来て", "を目指して",
+                    "を目指せ", "に向けて歩いて", "のほうへ行って", "のとこまで行って")
+
+
+def test_the_guard_exempts_a_target_named_off_the_count_list():   # pre-final review round 2, finding 3 (O35)
+    for instruction in ("冷蔵庫にある椅子に寄って", "冷蔵庫と棚の間の椅子に寄って", "冷蔵庫に近い椅子に寄って",
+                        "冷蔵庫より手前の椅子に寄って", "冷蔵庫の右の奥の椅子に寄って", "冷蔵庫のちょうど反対側の椅子に寄って",
+                        "冷蔵庫の、横の椅子に寄って", "冷蔵庫の上にある椅子に寄って", "机じゃなくて椅子に寄って",
+                        "ソファから離れて椅子に寄って"):
+        assert translate(instruction, llm_for("F near_chair_1"), scene=SCENE).ok, instruction
+    assert translate("冷蔵庫ではなく箱に移動して", llm_for("F near_box_1"), scene=SCENE).ok
+    for tail in GUARD_ONLY_GOING:
+        instruction = "ゴミ箱じゃなくて椅子" + tail
+        assert translate(instruction, llm_for("F near_chair_1"), scene=SCENE).ok, instruction
+        # the guard's tail is not a going phrase for the landmark either
+        t = translate("ゴミ箱を見てから椅子" + tail, llm_for("F near_box_1"), scene=SCENE)
+        assert not t.ok and t.message == msg_not_found("trash_can", "ゴミ箱"), tail
+    # a target is still only what is named as one: the F1 refusals hold
+    only_a_chair = Scene((DEFAULT_LAYOUT[1],), (0.0, 0.0, 0.0))
+    for instruction in ("椅子の上の箱に寄って", "椅子の上の箱に移動して", "椅子の箱を目指して"):
+        t = translate(instruction, llm_for("F near_chair_1"), scene=only_a_chair)
+        assert not t.ok and t.message == msg_not_found("box", "箱"), instruction
+    # §9.6's list for the count messages is unchanged
+    assert going_targets("ゴミ箱に行け") == {} and going_targets("ゴミ箱に寄って") == {}
+    assert refusal_message("ゴミ箱に寄って", ["ゴミ箱"], SCENE) == tango("ゴミ箱")
+    # accepted (spec §9.8: O35 checks a substituted kind, not a named target the formula drops), as for
+    # 「椅子まで行ってからゴミ箱に寄って」
+    assert translate("椅子に寄ってからゴミ箱に行け", llm_for("F near_chair_1"), scene=SCENE).ok
+
+
+def test_a_said_that_is_a_going_phrase_is_no_object_word():   # pre-final review round 2, finding 4 (O35)
+    # a place word Claude labels as the substituted kind does not make X a describer of it (X の Y)
+    for instruction, said in (("ゴミ箱の前まで行って", "前"), ("ゴミ箱のところに行って", "ところ"),
+                              ("ゴミ箱のそばに行って", "そば"), ("ゴミ箱の横に寄って", "横"), ("ゴミ箱のほうに行って", "ほう"),
+                              ("ゴミ箱のとこまで行って", "とこ"), ("ゴミ箱の前まで行って", "前まで行って")):
+        reply = {"formula": "F near_box_1", "unsupported": [], "unresolved_objects": [{"said": said, "label": "box"}]}
+        t = translate(instruction, FakeLLM([reply]), scene=SCENE)
+        assert not t.ok and t.formula is None and t.message == msg_not_found("trash_can", "ゴミ箱"), said
+    assert going_targets("ゴミ箱の前まで行って", [translator.Entry("前", "box")]) == {"trash_can": "ゴミ箱"}
+
+
 def test_the_clause_test_stays_fast_for_long_chains_and_nested_saids():   # fix round 1 (minor)
     # 「箱と」×100 and 10 nested saids (箱 / 箱と箱 / …): unmemoised, one item took ~n^4 steps (>60 s for 50 items)
     instruction = "箱と" * 100 + "箱を押して"

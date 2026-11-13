@@ -164,12 +164,26 @@ vocabulary.check_words(vocabulary.VOCABULARY, lambda w: not _handles_object(w), 
 # The going and circling phrases after an object word (a closed list: the Go2 has only near and around).
 # fullmatch on the stripped rest of an item; .match on an instruction clause. Every part is optional, so it
 # also matches "": a clause counts only when the match holds more than a bare particle (_going).
-_GOING_TAIL = re.compile(
-    r"(?:の?(?:ところ|所|前|そば|横|近く|方|周り|まわり|周囲))?"
-    r"(?:まで|へ|に|を)?"
-    r"(?:(?:ぐるっと|ぐるりと)?(?:歩く|歩いて|あるく|あるいて|行く|行って|いく|いって|進む|進んで|近づく|近づいて"
-    r"|ちかづく|ちかづいて|向かう|向かって|回る|回って|まわる|まわって"
-    r"|(?:[0-9]+|[一二三四五六七八九十]+)周(?:する|して)?)){0,2}")
+_PLACE_WORDS = ("ところ", "所", "前", "そば", "横", "近く", "方", "周り", "まわり", "周囲")
+_GOING_VERBS = ("歩く", "歩いて", "あるく", "あるいて", "行く", "行って", "いく", "いって", "進む", "進んで", "近づく",
+                "近づいて", "ちかづく", "ちかづいて", "向かう", "向かって", "回る", "回って", "まわる", "まわって")
+# The kind guard's exemption (O35) only: more going phrases (pre-final review round 2, finding 3). §9.6's list for
+# the count messages stays as it is, so 「ゴミ箱に行け」 still keeps the 単語帳 message.
+_GUARD_PLACE_WORDS = _PLACE_WORDS + ("ほう", "とこ")
+_GUARD_VERBS = _GOING_VERBS + ("行け", "行きなさい", "進め", "向かえ", "近づけ", "歩け", "回れ", "移動して", "移動する",
+                               "移動", "寄って", "寄れ", "近寄って", "近寄れ", "来て", "目指して", "目指せ", "向けて")
+
+
+def _tail(places: Sequence[str], verbs: Sequence[str]) -> re.Pattern:
+    def alternation(words: Sequence[str]) -> str:     # longest first: .match keeps the first that fits (とこ, ところ)
+        return "|".join(sorted(words, key=len, reverse=True))
+    return re.compile(rf"(?:の?(?:{alternation(places)}))?(?:まで|へ|に|を)?"
+                      rf"(?:(?:ぐるっと|ぐるりと)?(?:{alternation(verbs)}"
+                      rf"|(?:[0-9]+|[一二三四五六七八九十]+)周(?:する|して)?)){{0,2}}")
+
+
+_GOING_TAIL = _tail(_PLACE_WORDS, _GOING_VERBS)                # spec §9.6
+_GUARD_TAIL = _tail(_GUARD_PLACE_WORDS, _GUARD_VERBS)          # O35's exemption only
 _BARE = ("", "を", "に", "へ")                  # spec §9.6 rule 3: a bare particle is no going phrase
 _CLAUSE_END = re.compile(r"[、。,.，．！!？?]")
 _COORDINATORS = "とや、・"
@@ -190,16 +204,26 @@ def _loose(said: str) -> re.Pattern:
     return re.compile(r"\s*".join(re.escape(ch) for ch in _plain(said)))
 
 
+def _going_phrase(said: str) -> bool:
+    """A said that is itself a going phrase (前, ところ, 前まで行って) is no object word (pre-final review round 2,
+    finding 4): else 「ゴミ箱の前」 with {前, box} would read the trash can as a describer of 前."""
+    return _GUARD_TAIL.fullmatch(_squeezed(_nfkc(said))) is not None
+
+
 class _Clauses:
     """spec §9.6 rule 3 over one instruction. `text` is its NFKC form with the white space kept, so positions
-    match `kinds` (kinds_in of that text). The object words are those vocabulary words and the entries' saids.
-    `passes` is memoised on (end, depth): a long chain of coordinated words or nested saids looks at each
-    word end once per step, not once per path (fix round 1)."""
+    match `kinds` (find of that text: kinds_in, or vocabulary.named_in for the guard's refusal set). The object
+    words are those vocabulary words and the entries' saids, except a said that is a going phrase. `tail` is
+    the going phrases (§9.6's list, or the guard's wider one). `passes` is memoised on (end, depth): a long
+    chain of coordinated words or nested saids looks at each word end once per step, not once per path
+    (fix round 1)."""
 
-    def __init__(self, instruction: str, entries: Sequence[Entry] = ()):
+    def __init__(self, instruction: str, entries: Sequence[Entry] = (), tail: re.Pattern | None = None,
+                 find=kinds_in):
         self.text = _nfkc(instruction)
-        self.kinds = kinds_in(self.text)
-        self._saids = [_loose(e.said) for e in entries]
+        self.kinds = find(self.text)
+        self._tail = _GOING_TAIL if tail is None else tail
+        self._saids = [_loose(e.said) for e in entries if not _going_phrase(e.said)]
         self._starts: dict[int, list[int]] = {}
         for k in self.kinds:
             self._starts.setdefault(k.start, []).append(k.end)
@@ -225,7 +249,7 @@ class _Clauses:
         object word: in X の P の Y (「冷蔵庫の横の椅子まで」) the place word belongs to Y, so X is no target
         (spec §9.8)."""
         stop = _CLAUSE_END.search(self.text, end)
-        going = _GOING_TAIL.match(_squeezed(self.text[end:stop.start() if stop else len(self.text)])).group()
+        going = self._tail.match(_squeezed(self.text[end:stop.start() if stop else len(self.text)])).group()
         if going in _BARE:
             return False
         pos = end
@@ -261,22 +285,43 @@ class _Clauses:
         return between is not None and bool(self._words_at(between.end()))
 
 
+def _targets(clauses: _Clauses, entries: Sequence[Entry]) -> dict[str, str]:
+    """label -> word for each object word whose clause passes, in instruction order (the first word per kind).
+    A vocabulary word gives its kind and word; an entry's said (D3) gives its kind by §9.7 (_said_kind) and its
+    head word, else the said (pre-final review round 2, finding 2)."""
+    found = [(k.end, k.label, k.word) for k in clauses.kinds if clauses.passes(k.end)]
+    for e in entries:
+        kind = _said_kind(e)
+        if kind is None or _going_phrase(e.said):
+            continue
+        ends = [m.end() for m in _loose(e.said).finditer(clauses.text) if m.group() and clauses.passes(m.end())]
+        if ends:
+            found.append((ends[0], kind[0], kind[1] or e.said))
+    out: dict[str, str] = {}
+    for _, label, word in sorted(found, key=lambda f: f[0]):
+        out.setdefault(label, word)
+    return out
+
+
 def going_targets(instruction: str, entries: Sequence[Entry] = ()) -> dict[str, str]:
     """The kinds the instruction names as a place to go to or to circle (spec §9.6 rule 3, §9.8): label ->
-    the user's vocabulary word (the first that passes, in the vocabulary's spelling), in instruction order."""
-    clauses = _Clauses(instruction, entries)
-    out: dict[str, str] = {}
-    for k in clauses.kinds:
-        if k.label not in out and clauses.passes(k.end):
-            out[k.label] = k.word
-    return out
+    the user's vocabulary word (the first that passes, in the vocabulary's spelling), in instruction order.
+    An entry whose said passes is a target too (D3), by §9.7's kind."""
+    return _targets(_Clauses(instruction, entries), entries)
+
+
+def _guard_targets(instruction: str, entries: Sequence[Entry] = ()) -> dict[str, str]:
+    """going_targets with the guard's wider list of going phrases (_GUARD_TAIL): O35's exemption only."""
+    return _targets(_Clauses(instruction, entries, tail=_GUARD_TAIL), entries)
 
 
 def named_kinds(instruction: str, entries: Sequence[Entry] = ()) -> dict[str, str]:
     """Every kind the instruction names, whatever the phrasing (the kind guard fails closed; pre-final review
-    F1): label -> the user's first such word, in instruction order. Only a word that describes another object
-    word (X の Y, X の P の Y: 「冷蔵庫の横の椅子」 names the chair) is left out."""
-    clauses = _Clauses(instruction, entries)
+    F1): label -> the user's first such word, in instruction order. The words are vocabulary.named_in's, so a
+    word that ends in kanji counts before a kanji verb with the particle dropped (ゴミ箱行って; round 2,
+    finding 1). Only a word that describes another object word (X の Y, X の P の Y: 「冷蔵庫の横の椅子」 names
+    the chair) is left out."""
+    clauses = _Clauses(instruction, entries, find=vocabulary.named_in)
     out: dict[str, str] = {}
     for k in clauses.kinds:
         if k.label not in out and not clauses.describes(k.end):
@@ -394,15 +439,18 @@ def _formula_labels(formula: str) -> set[str]:
 
 
 def _kind_guard(formula: str, view: Scene | None, instruction: str, entries: Sequence[Entry] = ()) -> list[str]:
-    """O35 (spec §9.8): when the formula uses an object whose kind is not a named target (going_targets, §9.6's
-    closed list) and some kind the instruction names (named_kinds, any phrasing) has no object in the Scene,
-    the 見つかりません message of each such kind, once; [] if fine. A phrasing off the closed list therefore
-    refuses rather than walks to another kind (fails closed; pre-final review F1)."""
+    """O35 (spec §9.8): when the formula uses an object whose kind is not a named target (_guard_targets: §9.6's
+    closed list and the guard's extra going phrases, vocabulary words and entries) and some kind the
+    instruction names (named_kinds, any phrasing) has no object in the Scene, the 見つかりません message of each
+    such kind, once; [] if fine. A phrasing off both lists therefore refuses rather than walks to another kind
+    (fails closed; pre-final review F1 and round 2)."""
     if view is None:
         return []
     named = named_kinds(instruction, entries)
-    targets = going_targets(instruction, entries)
-    if not named or all(label in targets for label in _formula_labels(formula)):
+    if not named:
+        return []
+    targets = _guard_targets(instruction, entries)
+    if all(label in targets for label in _formula_labels(formula)):
         return []
     return [msg_not_found(label, word) for label, word in named.items()
             if not any(o.label == label for o in view.objects)]
