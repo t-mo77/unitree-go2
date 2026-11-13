@@ -589,6 +589,41 @@ def test_published_footprint_covers_leaning_or_noisy_faces(lean, noise):
     assert failed == []
 
 
+def around(s, deg):
+    """A base as far from the solid's centre as BASE, turned deg around it, facing it (and its quaternion): the
+    second stop of the two-stop sweeps."""
+    c = np.array(s[:2])
+    d0 = np.array(BASE[:2]) - c
+    t = math.radians(deg)
+    d1 = np.array([math.cos(t) * d0[0] - math.sin(t) * d0[1], math.sin(t) * d0[0] + math.cos(t) * d0[1]])
+    return (float(c[0] + d1[0]), float(c[1] + d1[1]), BASE[2]), yaw_q(math.degrees(math.atan2(-d1[1], -d1[0])))
+
+
+# Two stops 45° apart: a far end along the newest camera's depth axis that only the first stop saw, grazed, short
+# of its end. Judged from the newest camera, whose rays reach those returns too, it was taken as seen (filled
+# False) and the union missed by 0.177, 0.176, 0.112, 0.058 and 0.058 m (pre-final review round 2, finding 8)
+FAR_END_ONLY_GRAZED = ((1.8, 0.9, 0.85, 90, 4.0, 30), (2.0, 1.0, 0.5, 90, 5.0, 30), (1.8, 0.9, 0.85, 90, 2.0, 30),
+                       (1.2, 0.4, 0.45, 15, 5.0, 30), (0.4, 0.3, 0.7, 0, 3.0, 30))
+
+
+def test_a_union_takes_a_far_end_as_seen_only_from_a_view_that_saw_it():
+    """R-PF3 (spec §11.6, O12): in a union of views from different stops, the newest camera's rays also reach the
+    returns that only another stop saw, so how they meet the far end says nothing about whether it was seen. The
+    union's far end counts as seen only when one single view's own returns reach it at <= 60° incidence (a face
+    on that side, or its end seen at <= 60°); otherwise it is unseen and gets O12's far pad: the prior's depth +
+    EDGE_PAD, filled. One scan from BASE and one from a stop turned -45° around the object, fused raw (no
+    thinning), the newest last."""
+    for case in FAR_END_ONLY_GRAZED:
+        s = _cover_solid(*case)
+        views = [(g.cut(scan([s], base=b, q=q))[:, :2], cam_xy(b, q)) for b, q in ((BASE, Q0), around(s, -45))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], case[:2], views=views)
+        assert fp.filled and covers(fp, s), (case, fp)
+        # either stop alone: one view, judged from its own camera, covers too
+        for pts, cam in views:
+            assert covers(g.footprint(pts, cam, case[:2]), s), case
+
+
 NEAR_SQUARE = (0.4, 0.3, 0.7)                     # the air purifier: S = 0.3 > 0.7 L = 0.28
 
 

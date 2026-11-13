@@ -31,9 +31,9 @@ published box covers the object (O12; test_published_footprint_covers_the_object
   - an observed depth is kept (filled False) in two cases: in a corner view (the depth axis is the face axis
     nearer the ray) of a real two-face L-shape (the observed width also >= FLAT_SPREAD, R-G4: a short strip of
     one face, partly hidden, is thin on both axes but shows no depth), when the face along the depth axis is
-    seen to its far end (a face lies on the far side, or the end is seen at <= 60° incidence, by the camera
-    or, for a union, by one of the single views passed as footprint(views=...)) and
-    d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
+    seen to its far end (a face lies on the far side, or the end is seen at <= 60° incidence, by the camera;
+    for a union, only by one of the single views passed as footprint(views=...), with its own returns and from
+    its own camera, R-PF3) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
     the prior's depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled
     is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
     sofa's side), so its last return says little about its end, however close the returns there lie (the
@@ -362,10 +362,14 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     """The axis-aligned footprint from one view (or the union of several) of one object's points (N x 2),
     with the vocabulary size prior (L, S) completing a depth the view cannot see. None without points.
     views: for a union, the single views it was made from, as (points N_k x 2, camera XY) pairs (the tracker's
-    last hits, raw: not thinned, at most MAX_TRACK_POINTS each). They only add evidence that the far end was
-    seen, by any of their cameras; their margin also covers what the union's thinning left out (_far_end_seen).
-    Without them the points are judged as one view from cam_xy, so a far end that only an older view saw
-    keeps the prior's depth (the larger side)."""
+    last hits, raw: not thinned, at most MAX_TRACK_POINTS each). With them the union's far end counts as seen
+    only when one of them saw it with its own returns from its own camera (_far_end_seen; R-PF3): the
+    newest camera's rays also reach returns that only an older stop saw, so how they meet the far end is no
+    evidence. Otherwise the far end is unseen and gets O12's far pad: the prior's depth + EDGE_PAD (filled),
+    unless the observed depth reaches the prior's (the rule for any view). A far end seen keeps the larger of
+    the union's pad and the view's margin (which also covers what the union's thinning left out). The lateral
+    sides are still judged as one view from cam_xy (a documented limit). Without views the points are judged
+    as one view from cam_xy throughout."""
     p = _points(points_xy, 2)
     if len(p) == 0:
         return None
@@ -393,11 +397,11 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     # get one point spacing where a face ends there (side_pad)
     pad_seen, far_sampled = _side(u, v, rays, lateral, +1)
     view_pad = 0.0
-    if corner and not far_sampled and views:  # a union: did one of its single views see the far end?
-        seen_by_view = _far_end_seen(views, depth, lateral, near, near + d_obs, float(v.min()), float(v.max()),
-                                     math.hypot(big, small))
-        if seen_by_view is not None:
-            far_sampled, view_pad = True, seen_by_view
+    if views:    # a union: the newest camera's rays also reach returns that only an older stop saw, so its far end
+        # counts as seen only when one single view's own returns reached it (R-PF3)
+        seen_by_view = None if not corner else _far_end_seen(
+            views, depth, lateral, near, near + d_obs, float(v.min()), float(v.max()), math.hypot(big, small))
+        far_sampled, view_pad = seen_by_view is not None, seen_by_view or 0.0
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
     # L when the width cannot be the long side's: < 0.7 L, or not wider than the short side (R-G3)
     d_prior = big if w_obs < SHORT_FACE * big or w_obs <= small + EDGE_PAD else small
@@ -433,7 +437,9 @@ def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.nd
     the side, or the camera (rays from it) sees the face ending there at <= 60° incidence, at the extreme
     point. Beyond 60° the last return can sit far short of the end (a grazing face). How close the other
     returns lie is no evidence: the rings of one column spread in XY on a leaning or curved face and with range
-    noise, so a grazed end looks densely sampled (a union of views passes its single views to footprint)."""
+    noise, so a grazed end looks densely sampled. For a union of views from several stops, the rays from one
+    camera say nothing about the returns another camera saw: footprint takes the union's far end from its single
+    views instead (_far_end_seen)."""
     extreme = along.max() if side > 0 else along.min()
     on = np.flatnonzero(np.abs(along - extreme) <= FLAT_TOL)
     if float(np.ptp(across[on])) >= FLAT_SPREAD:
@@ -451,10 +457,10 @@ def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.nd
 def _far_end_seen(views: Sequence[tuple[np.ndarray, Sequence[float]]], depth: np.ndarray, lateral: np.ndarray,
                   u_near: float, u_far: float, v_lo: float, v_hi: float, diag: float) -> float | None:
     """For a union: the far margin (beyond u_far along depth) when one of its single views saw the far end,
-    else None. A view counts when its own returns (trimmed as the union is) near the union's rectangle
-    (within VIEW_MARGIN) end on that side as _side calls sampled, from that view's camera, and that end plus
-    its pad reaches u_far. The largest such margin (it also covers a view's returns that the union's thinning
-    left out)."""
+    else None (the far end is then unseen, R-PF3). A view counts when its own returns (trimmed as the union is)
+    near the union's rectangle (within VIEW_MARGIN) end on that side as _side calls sampled, from that view's
+    camera, and that end plus its pad reaches u_far. The largest such margin (it also covers a view's returns
+    that the union's thinning left out)."""
     best = None
     for pts, cam in views:
         q, c = _points(pts, 2), np.asarray(cam, dtype=np.float64)[:2]

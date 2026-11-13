@@ -24,7 +24,8 @@
 - 見える絵：`in_view` は呼ぶ側（core）が、カメラから 6 m 以内・絵の中・LiDAR に隠されていない、のすべてを
   確かめる。追跡はカメラの位置を見え方の `cam_xy` からしか知らないので、見え方のない絵では `in_view` だけで決まる。
 - 形：LiDAR に支えられた直近 6 回の当たりの点（0.05 m で間引き、2000 点まで）を `fuse` に渡す（向きは
-  いちばん新しい見え方）。予備の見え方は、LiDAR に支えられた追跡を動かさない。
+  いちばん新しい見え方）。1 回ずつの当たりも、その絵のカメラと間引かない点で渡す。奥の端は、そのどれかが
+  自分の点で 60° 以内に見たときだけ見えたとする（R-PF3）。予備の見え方は、LiDAR に支えられた追跡を動かさない。
 
 名前は見え方の label だけから取る（ほかのトピックやファイルは読まない）。出すときに単語帳の label か確かめ直し、
 仮の追跡は出さない。時刻：frame_t・scan_t はセンサーの時刻（シミュレーション）、wall_t・wall_now は `seen` の
@@ -123,8 +124,9 @@ class Tracker:
         """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior, views=[(points, cam_xy),
         ...]) returns an object with x, y, size and filled (geometry.footprint), or None. points_xy is the union
         of the track's last hits (thinned), cam_xy the newest camera and views those hits one by one (raw, at most
-        MAX_TRACK_POINTS each), so a far end that an older view saw keeps its observed depth (spec §11.6;
-        pre-final review F3 and round 2)."""
+        MAX_TRACK_POINTS each), so a far end that an older view saw keeps its observed depth, and a far end that
+        none of them saw with its own returns is not taken as seen from the newest camera (spec §11.6; pre-final
+        review F3, round 2 and R-PF3)."""
         check_thresholds(thresholds, vocabulary.LABELS)
         self._th = thresholds
         self._priors = dict(priors)

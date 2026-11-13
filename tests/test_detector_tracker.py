@@ -283,45 +283,87 @@ def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final revi
 
 
 
-# The two cases where F3's thinned views missed and the old call (no views) covered (pre-final review round 2)
-VIEWS_MISSED = (((0.9, 0.45, 1.2, 0, 1.0, 30), 45), ((0.4, 0.3, 0.7, 15, 2.0, 0), -45))
-# The one left: there the thinned union is 3.9 cm short of the raw union on a lateral side, and only the prior's
-# depth (filled, without views) hid it. It is the union's 0.05 m thinning (spec §11.6), which also leaves 3 of the
-# 630 single-stop cases short (up to 0.023 m) with or without views: for the controller, with the two-stop misses
-# of a far end judged from the newest camera.
-UNION_THINNING = frozenset({VIEWS_MISSED[1]})
+# O12 at the tracker level from two stops (spec §11.6; pre-final review round 2, findings 7 and 8; R-PF3): every
+# cover case the tracker publishes short of the object, by how far the object reaches outside the published
+# rectangle (m, its worst corner, from the row's rounded values). Before R-PF3 the union's far end was judged from
+# the newest camera, whose rays also reach the returns only an older stop saw: 9, 20, 29 and 34 misses at +45,
+# -45, +90 and -90, up to 0.177 m. Now a far end counts as seen only when one single view's own returns reach it
+# at <= 60°, otherwise the prior fills it.
+# UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (R-PF3). Among them F7's rest, (0.4, 0.3,
+# 0.7, yaw 15, 2.0 m, 0) at -45 (accepted by R-PF3): the thinned union is 3.9 cm short of the raw union on a lateral
+# side. Most of the others are not the thinning itself: the union's lateral sides are still judged as one view from
+# the newest camera (their pad from its rays; the ends of two stops' faces at one lateral coordinate count as a
+# face lying along that side).
+UNION_THINNING = {
+    45: {(1.2, 0.4, 0.45, 75, 1.0, 0): 0.0015, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0396},
+    -45: {(0.3, 0.3, 0.45, 15, 2.0, 0): 0.0004, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0316,
+          (1.2, 0.4, 0.45, 90, 1.0, 0): 0.0020, (1.8, 0.9, 0.85, 90, 1.0, 30): 0.0099,
+          (0.4, 0.3, 0.7, 15, 2.0, 0): 0.0025},
+    90: {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0013, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0298,
+         (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0105,
+         (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0440, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0274,
+         (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0094, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
+         (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0149, (2.0, 2.0, 0.8, 75, 2.0, 30): 0.0044,
+         (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0076, (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0186,
+         (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0355, (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0127,
+         (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0083, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0142,
+         (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0051,
+         (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0436, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0243},
+    -90: {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0139, (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0024,
+          (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0110,
+          (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0345, (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0024,
+          (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0273, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0113,
+          (2.0, 2.0, 0.8, 0, 1.0, 0): 0.0175, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
+          (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0149, (2.0, 2.0, 0.8, 75, 1.0, 30): 0.0045,
+          (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0275, (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0172,
+          (1.2, 0.4, 0.45, 0, 4.0, 30): 0.0072, (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0020,
+          (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009, (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0060,
+          (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0038, (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0180,
+          (1.8, 0.9, 0.85, 45, 2.0, 0): 0.0011, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0027,
+          (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0259, (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0294,
+          (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0384, (2.0, 1.0, 0.5, 45, 1.0, 0): 0.0172,
+          (2.0, 1.0, 0.5, 45, 3.0, 0): 0.0218, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0053,
+          (2.0, 1.0, 0.5, 75, 1.0, 30): 0.0104, (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0429,
+          (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0290, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0276,
+          (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0291},
+}
+# Larger than the thinning step, reported to the controller with these numbers (R-PF3: not hidden by wider pads).
+# Both are a lateral side of the union judged from the newest camera: at -45 the end of the 2 m face that the first
+# stop grazed from 1 m (its last return 0.21 m short of the end, which no pad bounds and no prior completes on a
+# lateral side); at +90 two stops' grazed face ends at one lateral coordinate, taken as a face lying along it.
+LATERAL_FROM_NEWEST = {
+    -45: {(2.0, 1.0, 0.5, 0, 1.0, 30): 0.0935},
+    90: {(2.0, 2.0, 0.8, 75, 3.0, 30): 0.0654, (2.0, 2.0, 0.8, 75, 4.0, 30): 0.0554},
+}
+# The +45 case where F3's thinned views missed by 6 mm, which the old call (no views) covered (round 2, finding 7)
+VIEWS_MISSED = ((0.9, 0.45, 1.2, 0, 1.0, 30), 45)
 
 
-def _around(s, deg):
-    """A base as far from the solid's centre as BASE, turned deg around it, facing it (and its quaternion)."""
-    from test_detector_geometry import BASE as STAND, yaw_q
+def _outside(row, s):
+    """How far the solid s reaches outside the row's rectangle (m, its worst corner; 0 when covered)."""
+    from test_detector_geometry import corners_xy
 
-    c = np.array(s[:2])
-    d0 = np.array(STAND[:2]) - c
-    t = math.radians(deg)
-    d1 = np.array([math.cos(t) * d0[0] - math.sin(t) * d0[1], math.sin(t) * d0[0] + math.cos(t) * d0[1]])
-    return (float(c[0] + d1[0]), float(c[1] + d1[1]), STAND[2]), yaw_q(math.degrees(math.atan2(-d1[1], -d1[0])))
+    c = corners_xy(s)
+    return max(0.0, float((np.abs(c[:, 0] - row.x) - row.size[0] / 2).max()),
+               float((np.abs(c[:, 1] - row.y) - row.size[1] / 2).max()))
 
 
 @pytest.mark.parametrize("deg", (45, -45, 90, -90))
-def test_views_add_no_cover_miss_from_two_stops(deg):   # pre-final review round 2 (F3; spec §11.6, O12)
+def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, findings 7 and 8; spec §11.6, O12)
     """O12 at the tracker level: the 630 cover cases, 3 hits from BASE and then 3 from a stop turned ±45° or ±90°
-    around the object. Some cases miss with or without views (a union is judged from the newest camera), so this
-    pins that the views, each hit raw and not thinned, add no miss to the same hits fused without views, except
-    UNION_THINNING; and that the first case of VIEWS_MISSED now covers (it missed by 6 mm with thinned views)."""
+    around the object, fused by geometry.footprint with each hit as a raw view. Every published case covers the
+    object except UNION_THINNING (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far
+    end that only an older stop grazed is taken as seen any more. The case of VIEWS_MISSED covers."""
     from detector import geometry as g
-    from test_detector_geometry import BASE as STAND, Q0, _cover_cases, _cover_solid, cam_xy, covers, scan
+    from test_detector_geometry import BASE as STAND, Q0, _cover_cases, _cover_solid, around, cam_xy, scan
 
-    def without_views(points, cam, prior, views=None):
-        return g.footprint(points, cam, prior)
-
-    added = set()
+    missed, published = {}, 0
     for case in _cover_cases():
         prior = case[:2]
         s = _cover_solid(*case)
-        trackers = [Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, fuse) for fuse in (g.footprint, without_views)]
+        tracker = Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, g.footprint)
         t, wall, seed = 100.0, 5000.0, 0
-        for base, q in ((STAND, Q0), _around(s, deg)):
+        for base, q in ((STAND, Q0), around(s, deg)):
             cam = cam_xy(base, q)
             for _ in range(3):
                 seed += 1
@@ -330,15 +372,24 @@ def test_views_add_no_cover_miss_from_two_stops(deg):   # pre-final review round
                     continue
                 fp = g.footprint(points, cam, prior)
                 t, wall = t + 1.0, wall + 1.0
-                for tracker in trackers:
-                    tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False,
-                                                cam)], t, wall, always)
-        rows = [tracker.rows(wall, 3.0) for tracker in trackers]
-        if rows[0] and rows[1] and not covers(rows[0][0], s) and covers(rows[1][0], s):
-            added.add((case, deg))
-        if (case, deg) == VIEWS_MISSED[0]:
-            assert rows[0] and covers(rows[0][0], s)
-    assert added == {c for c in UNION_THINNING if c[1] == deg}
+                tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False,
+                                            cam)], t, wall, always)
+        rows = tracker.rows(wall, 3.0)
+        if (case, deg) == VIEWS_MISSED:
+            assert rows
+        if not rows:                         # the object's centre beyond 6 m of a camera: no frame counted
+            continue
+        published += 1
+        size = _outside(rows[0], s)
+        if size > 1e-9:
+            missed[case] = round(size, 4)
+    pinned = {**UNION_THINNING[deg], **LATERAL_FROM_NEWEST.get(deg, {})}
+    assert published >= 600
+    assert sorted(missed) == sorted(pinned)
+    assert missed == pytest.approx(pinned, abs=5e-4)
+    assert max(UNION_THINNING[deg].values()) <= tracker_module.THIN_CELL
+    assert min(LATERAL_FROM_NEWEST.get(deg, {}).values(), default=1.0) > tracker_module.THIN_CELL
+
 
 def test_frames_beyond_6_m_do_not_count_toward_n():
     run = Run()
