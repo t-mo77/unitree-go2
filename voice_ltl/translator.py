@@ -465,7 +465,8 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | Non
         subs = _substitutions(reply.get("substitutions"), instruction)
         if not errors:
             used = _formula_labels(formula)
-            open_items = [e.said for e in entries if e.label is None or e.label not in used]      # O8
+            # O8, the entry's kind by §9.7 (its said's head word first; pre-final review F5)
+            open_items = [e.said for e in entries if (kind := _said_kind(e)) is None or kind[0] not in used]
             attempts.append(Attempt(formula, open_items, [], _shown(entries)))
             if open_items:
                 return Translation(False, None, open_items, attempts,

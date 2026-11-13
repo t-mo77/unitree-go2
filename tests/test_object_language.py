@@ -471,6 +471,18 @@ def test_an_entry_refuses_a_formula_unless_its_kind_is_used():   # O8 (softened)
              "unresolved_objects": [{"said": "グリーン", "label": "kitchen"}]}
     t = translate("椅子とグリーンまで歩いて", FakeLLM([reply]), scene=SCENE)
     assert not t.ok and t.unsupported == ["グリーン"] and t.message == tango("グリーン")
+    # the entry's kind is §9.7's: the said's own head word beats Claude's label (pre-final review F5)
+    for instruction, said, label, formula in (("段ボールまで行って", "段ボール", "chair", "F near_box_1"),
+                                              ("いすまで行って", "いす", "seat", "F near_chair_1")):
+        reply = {"formula": formula, "unsupported": [], "substitutions": [],
+                 "unresolved_objects": [{"said": said, "label": label}]}
+        t = translate(instruction, FakeLLM([reply]), scene=SCENE)
+        assert t.ok and t.formula == formula, instruction
+    # ... and still refuses a formula of another kind, with the kind's own count message
+    reply = {"formula": "F near_chair_1", "unsupported": [], "substitutions": [],
+             "unresolved_objects": [{"said": "段ボール", "label": "chair"}]}
+    t = translate("段ボールまで行って", FakeLLM([reply]), scene=Scene((DEFAULT_LAYOUT[1],), (0.0, 0.0, 0.0)))
+    assert not t.ok and t.unsupported == ["段ボール"] and t.message == msg_not_found("box", "段ボール")
 
 
 def test_words_come_first_then_claudes_label():           # spec §9.7
