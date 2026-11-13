@@ -288,12 +288,15 @@ def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final revi
 # rectangle (m, its worst corner, from the row's rounded values). Before R-PF3 the union's far end was judged from
 # the newest camera, whose rays also reach the returns only an older stop saw: 9, 20, 29 and 34 misses at +45,
 # -45, +90 and -90, up to 0.177 m. Now a far end counts as seen only when one single view's own returns reach it
-# at <= 60°, otherwise the prior fills it.
+# at <= 60°, otherwise the prior fills it; a far end that several views saw takes the tightest of their bounds
+# (round-3 review, finding 1). No miss left is short at its far end.
 # UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (R-PF3). Among them F7's rest, (0.4, 0.3,
 # 0.7, yaw 15, 2.0 m, 0) at -45 (accepted by R-PF3): the thinned union is 3.9 cm short of the raw union on a lateral
-# side. Most of the others are not the thinning itself: the union's lateral sides are still judged as one view from
-# the newest camera (their pad from its rays; the ends of two stops' faces at one lateral coordinate count as a
-# face lying along that side).
+# side. Most of the others are not the thinning: 61 of the 62 are short on a lateral side (one at -90 on its near
+# side), and fused unthinned 1 / 2 / 22 / 28 of them (+45 / -45 / +90 / -90) still miss. The union's lateral sides
+# are still judged as one view from the newest camera (their pad from its rays; the ends of two stops' faces at one
+# lateral coordinate count as a face lying along that side), so their size is no bound: the same mechanism gives
+# LATERAL_FROM_NEWEST. The name stands until the controller's ruling on that limit (round-3 review, finding 2).
 UNION_THINNING = {
     45: {(1.2, 0.4, 0.45, 75, 1.0, 0): 0.0015, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0396},
     -45: {(0.3, 0.3, 0.45, 15, 2.0, 0): 0.0004, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0316,
@@ -302,41 +305,47 @@ UNION_THINNING = {
     90: {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0013, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0298,
          (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0105,
          (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0440, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0274,
-         (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0094, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
-         (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0149, (2.0, 2.0, 0.8, 75, 2.0, 30): 0.0044,
-         (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0076, (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0186,
-         (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0355, (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0127,
-         (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0083, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0142,
-         (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0051,
-         (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0436, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0243},
+         (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0114, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
+         (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154, (2.0, 2.0, 0.8, 75, 2.0, 30): 0.0044,
+         (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0081, (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0188,
+         (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0455, (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0167,
+         (1.2, 0.4, 0.45, 75, 5.0, 30): 0.0142, (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0083,
+         (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0142, (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081,
+         (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0051, (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0496,
+         (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0037, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0243},
     -90: {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0139, (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0024,
           (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0110,
           (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0345, (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0024,
           (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0273, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0113,
           (2.0, 2.0, 0.8, 0, 1.0, 0): 0.0175, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
-          (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0149, (2.0, 2.0, 0.8, 75, 1.0, 30): 0.0045,
+          (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154, (2.0, 2.0, 0.8, 75, 1.0, 30): 0.0045,
           (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0275, (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0172,
           (1.2, 0.4, 0.45, 0, 4.0, 30): 0.0072, (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0020,
-          (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009, (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0060,
+          (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009, (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0065,
           (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0038, (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0180,
-          (1.8, 0.9, 0.85, 45, 2.0, 0): 0.0011, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0027,
-          (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0259, (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0294,
+          (1.8, 0.9, 0.85, 45, 2.0, 0): 0.0011, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0031,
+          (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0264, (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0289,
           (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0384, (2.0, 1.0, 0.5, 45, 1.0, 0): 0.0172,
-          (2.0, 1.0, 0.5, 45, 3.0, 0): 0.0218, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0053,
-          (2.0, 1.0, 0.5, 75, 1.0, 30): 0.0104, (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0429,
-          (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0290, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0276,
-          (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0291},
+          (2.0, 1.0, 0.5, 45, 3.0, 0): 0.0212, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0063,
+          (2.0, 1.0, 0.5, 75, 1.0, 30): 0.0104, (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0424,
+          (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0285, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0276,
+          (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0296},
 }
 # Larger than the thinning step, reported to the controller with these numbers (R-PF3: not hidden by wider pads).
 # Both are a lateral side of the union judged from the newest camera: at -45 the end of the 2 m face that the first
 # stop grazed from 1 m (its last return 0.21 m short of the end, which no pad bounds and no prior completes on a
-# lateral side); at +90 two stops' grazed face ends at one lateral coordinate, taken as a face lying along it.
+# lateral side; fused unthinned, the median moves, that face becomes the depth axis and the prior completes it);
+# at +90 two stops' grazed face ends at one lateral coordinate, taken as a face lying along it.
 LATERAL_FROM_NEWEST = {
     -45: {(2.0, 1.0, 0.5, 0, 1.0, 30): 0.0935},
     90: {(2.0, 2.0, 0.8, 75, 3.0, 30): 0.0654, (2.0, 2.0, 0.8, 75, 4.0, 30): 0.0554},
 }
 # The +45 case where F3's thinned views missed by 6 mm, which the old call (no views) covered (round 2, finding 7)
 VIEWS_MISSED = ((0.9, 0.45, 1.2, 0, 1.0, 30), 45)
+# The cases published, of 630 (the rest: the object's centre beyond 6 m of a camera), as on 97da92a. A far pad
+# taken as the largest of the views' margins lost one at ±90: (2.0, 1.0, 0.5, yaw 45, 5.0 m, 0), whose centre it
+# moved past 6 m of the second camera (round-3 review, finding 1)
+PUBLISHED = {45: 610, -45: 609, 90: 607, -90: 607}
 
 
 def _outside(row, s):
@@ -353,7 +362,8 @@ def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, 
     """O12 at the tracker level: the 630 cover cases, 3 hits from BASE and then 3 from a stop turned ±45° or ±90°
     around the object, fused by geometry.footprint with each hit as a raw view. Every published case covers the
     object except UNION_THINNING (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far
-    end that only an older stop grazed is taken as seen any more. The case of VIEWS_MISSED covers."""
+    end that only an older stop grazed is taken as seen any more. The case of VIEWS_MISSED covers, and as many
+    cases are published as on 97da92a (PUBLISHED)."""
     from detector import geometry as g
     from test_detector_geometry import BASE as STAND, Q0, _cover_cases, _cover_solid, around, cam_xy, scan
 
@@ -384,7 +394,7 @@ def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, 
         if size > 1e-9:
             missed[case] = round(size, 4)
     pinned = {**UNION_THINNING[deg], **LATERAL_FROM_NEWEST.get(deg, {})}
-    assert published >= 600
+    assert published == PUBLISHED[deg]
     assert sorted(missed) == sorted(pinned)
     assert missed == pytest.approx(pinned, abs=5e-4)
     assert max(UNION_THINNING[deg].values()) <= tracker_module.THIN_CELL

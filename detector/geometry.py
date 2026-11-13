@@ -367,9 +367,10 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     newest camera's rays also reach returns that only an older stop saw, so how they meet the far end is no
     evidence. Otherwise the far end is unseen and gets O12's far pad: the prior's depth + EDGE_PAD (filled),
     unless the observed depth reaches the prior's (the rule for any view). A far end seen keeps the larger of
-    the union's pad and the view's margin (which also covers what the union's thinning left out). The lateral
-    sides are still judged as one view from cam_xy (a documented limit). Without views the points are judged
-    as one view from cam_xy throughout."""
+    the union's pad and the views' margin: the tightest bound of the views that saw it, but at least the
+    farthest return of any view beyond the union's (what the union's thinning left out). The lateral sides are
+    still judged as one view from cam_xy (a documented limit). Without views the points are judged as one view
+    from cam_xy throughout."""
     p = _points(points_xy, 2)
     if len(p) == 0:
         return None
@@ -459,9 +460,11 @@ def _far_end_seen(views: Sequence[tuple[np.ndarray, Sequence[float]]], depth: np
     """For a union: the far margin (beyond u_far along depth) when one of its single views saw the far end,
     else None (the far end is then unseen, R-PF3). A view counts when its own returns (trimmed as the union is)
     near the union's rectangle (within VIEW_MARGIN) end on that side as _side calls sampled, from that view's
-    camera, and that end plus its pad reaches u_far. The largest such margin (it also covers a view's returns
-    that the union's thinning left out)."""
-    best = None
+    camera, and that end plus its pad reaches u_far. Each such view bounds the true end on its own, so the margin
+    is the tightest of their bounds (the largest padded a far face that one view sampled on its plane by another
+    view's grazing spacing; round-3 review, finding 1), but at least the farthest return of any view beyond
+    u_far (what the union's thinning left out)."""
+    best = beyond = None
     for pts, cam in views:
         q, c = _points(pts, 2), np.asarray(cam, dtype=np.float64)[:2]
         if len(q) == 0:
@@ -472,12 +475,12 @@ def _far_end_seen(views: Sequence[tuple[np.ndarray, Sequence[float]]], depth: np
                   & (v >= v_lo - VIEW_MARGIN) & (v <= v_hi + VIEW_MARGIN))
         if not inside.any():
             continue
-        rays = q[inside] - c
-        pad, sampled = _side(u[inside], v[inside], rays, lateral, +1)
-        end = float(u[inside].max()) + pad
-        if sampled and end >= u_far:
-            best = end - u_far if best is None else max(best, end - u_far)
-    return best
+        top = float(u[inside].max())
+        beyond = top - u_far if beyond is None else max(beyond, top - u_far)
+        pad, sampled = _side(u[inside], v[inside], q[inside] - c, lateral, +1)
+        if sampled and top + pad >= u_far:
+            best = top + pad - u_far if best is None else min(best, top + pad - u_far)
+    return None if best is None else max(best, beyond)
 
 
 def plausible(fp: Footprint, prior: tuple[float, float]) -> bool:

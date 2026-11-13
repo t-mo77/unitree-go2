@@ -624,6 +624,69 @@ def test_a_union_takes_a_far_end_as_seen_only_from_a_view_that_saw_it():
             assert covers(g.footprint(pts, cam, case[:2]), s), case
 
 
+def facing(centre, dist, deg):
+    """A base dist m from centre (XY), in the direction deg as seen from it, facing it (and its quaternion)."""
+    t = math.radians(deg)
+    return (centre[0] + dist * math.cos(t), centre[1] + dist * math.sin(t), BASE[2]), yaw_q(deg + 180.0)
+
+
+def test_a_far_end_seen_by_two_views_takes_the_tighter_bound():
+    """R-PF3 (round-3 review, finding 1; spec §11.6, O12): each single view that saw the union's far end bounds
+    the true end by its last return plus its own pad, so the tightest of those bounds holds (and at least every
+    raw return of a view beyond the union's far end, which the union's thinning can leave out). The largest
+    bound padded a far face that one view had sampled on its plane by the other view's grazing spacing.
+    A 2 x 1 m sofa, its far end along +x: one stop 2.5 m off sees the +x face on its plane; the newest stop 5 m
+    off at 222° or 228° sees the -x and -y faces and the -y face's end at the far side at 59° or 54° incidence,
+    where its own bound (one point spacing past its last return) reaches 0.108 or 0.147 m past the far face.
+    Fused raw: the far side gets EDGE_PAD."""
+    L, S = 2.0, 1.0
+    sofa = solid(0.0, 0.0, L, S, height=0.5)
+    for deg, grazed in ((222, 1.1077), (228, 1.1474)):
+        views = [(g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q))
+                 for b, q in (facing((0.0, 0.0), 2.5, 0.0), facing((0.0, 0.0), 5.0, deg))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], (L, S), views=views)
+        assert not fp.filled and covers(fp, sofa), deg
+        assert fp.x + fp.size[0] / 2 == pytest.approx(L / 2 + g.EDGE_PAD, abs=1e-9), deg    # the far pad: EDGE_PAD
+        assert fp.x - fp.size[0] / 2 == pytest.approx(-L / 2 - g.EDGE_PAD, abs=1e-9), deg
+        # each of the two alone bounds the far end by its own margin: the face-on view by EDGE_PAD, the grazing
+        # view by one point spacing beyond its last return
+        for seen, far in ((views[:1], L / 2 + g.EDGE_PAD), (views[1:], grazed)):
+            alone = g.footprint(union, views[1][1], (L, S), views=seen)
+            assert not alone.filled and alone.x + alone.size[0] / 2 == pytest.approx(far, abs=1e-4), deg
+
+
+def test_a_far_end_bound_never_stops_short_of_a_views_return():
+    """The tightest bound has a floor: a view's return beyond the union's far end stays inside, also one that the
+    union's thinning left out (one point per 5 cm cell, the first kept; along a diagonal depth axis a cell spans
+    up to 0.07 m, more than EDGE_PAD). The scene of the test above turned 45° (the far face along (1, 1)), with
+    two returns of a part that reaches past the far face by the grazing face's end, in the grazing view only and
+    in one thinning cell, so the union keeps the first (0.008 m past the face). The face-on view's bound (EDGE_PAD
+    past the face) and EDGE_PAD past the union's far end stop 0.017 and 0.009 m short of the second return, which
+    then bounds the far side. Not a box: with boxes each view's bound already covers every return of the others."""
+    L, S = 2.0, 1.0
+    e, lat = np.array([1.0, 1.0]) / math.sqrt(2), np.array([-1.0, 1.0]) / math.sqrt(2)
+    corner = np.array([1.0, 1.0]) + 0.002 * e                 # the grazed face's far corner, by a cell corner
+    c = corner - L / 2 * e + S / 2 * lat
+    sofa = solid(c[0], c[1], L, S, yaw_deg=45.0, height=0.5)
+    views = [(g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q))
+             for b, q in (facing(c, 2.5, 45.0), facing(c, 5.0, 267.0))]
+    kept, left_out = corner + 0.008 * e - 0.01 * lat, np.array([1.049, 1.049])
+    assert np.array_equal(np.floor(kept / 0.05), np.floor(left_out / 0.05))       # one thinning cell
+    union = np.vstack([views[0][0], views[1][0], kept])
+    fps = [g.footprint(union, views[1][1], (L, S), views=[views[0], (np.vstack([views[1][0], part]), views[1][1])])
+           for part in ([kept], [kept, left_out])]
+    assert not fps[0].filled and not fps[1].filled
+    # the far edge moves from EDGE_PAD past the union's far end to the left-out return: the box grows by that
+    # along +x and +y (a far corner of the turned rectangle), and nowhere else
+    grow = float(left_out @ e - (kept @ e + g.EDGE_PAD)) / math.sqrt(2)
+    assert grow > 0.006
+    hi = [np.array([fp.x, fp.y]) + np.array(fp.size) / 2 for fp in fps]
+    lo = [np.array([fp.x, fp.y]) - np.array(fp.size) / 2 for fp in fps]
+    assert hi[1] - hi[0] == pytest.approx([grow, grow], abs=1e-9)
+    assert lo[1] == pytest.approx(lo[0], abs=1e-9)
+
+
 NEAR_SQUARE = (0.4, 0.3, 0.7)                     # the air purifier: S = 0.3 > 0.7 L = 0.28
 
 
