@@ -687,6 +687,42 @@ def test_a_far_end_bound_never_stops_short_of_a_views_return():
     assert lo[1] == pytest.approx(lo[0], abs=1e-9)
 
 
+def test_returns_the_union_drops_add_nothing_to_its_far_end():
+    """R-PF3 (round-3 review, finding 3): a union's far end is judged only from its single views' own returns,
+    trimmed as the union is and within VIEW_MARGIN of the union's rectangle (_far_end_seen). A view that holds
+    returns the union's own trim drops leaves the union's far end and pad as they are without those returns.
+    - A neighbour: a 0.3 m box 0.6 m beyond the far face of a 2 x 1 m sofa, seen only by the older stop, 5 m off.
+      It is a third of that view's returns, inside its trim's core, so that view keeps it; in the union, from the
+      newest stop 2.5 m off, it is outside the core and 0.63 m from the sofa (the link step there is 0.51 m), so
+      the union's trim drops it. Only VIEW_MARGIN keeps it out of the far end.
+    - A lone stray return 0.08 m beyond the union's far end (0.035 m beyond the sofa), at the hidden far corner,
+      more than 0.9 m from every other return: within VIEW_MARGIN, so only the view's trim keeps it out. One stop:
+      the tracker after its first hit (the union and its one view)."""
+    L, S = 2.0, 1.0
+    sofa = solid(0.0, 0.0, L, S, height=0.5)
+    box = solid(L / 2 + 0.6 + 0.15, 0.0, 0.3, 0.3, height=0.5)
+    (older, q_older), (newest, q_newest) = facing((0.0, 0.0), 5.0, 30.0), facing((0.0, 0.0), 2.5, 215.0)
+    seen = []
+    for b, q in ((older, q_older), (newest, q_newest)):
+        pts, k = scan([sofa, box], base=b, q=q, which=True)
+        keep = (pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP)
+        seen.append((pts[keep][:, :2], k[keep], cam_xy(b, q)))
+    (p_old, k_old, c_old), (p_new, k_new, c_new) = seen
+    assert (k_old == 1).sum() >= 10 and not (k_new == 1).any()     # only the older stop sees the neighbour
+    sofa_old = p_old[k_old == 0]
+    fp = g.footprint(np.vstack([p_old, p_new]), c_new, (L, S), views=[(p_old, c_old), (p_new, c_new)])
+    assert fp == g.footprint(np.vstack([sofa_old, p_new]), c_new, (L, S), views=[(sofa_old, c_old), (p_new, c_new)])
+    assert not fp.filled and fp.x + fp.size[0] / 2 == pytest.approx(L / 2 + g.EDGE_PAD, abs=1e-9)
+    # the stray return at the hidden far corner
+    b, q = facing((0.0, 0.0), 3.5, 218.0)
+    p, cam = g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q)
+    alone = g.footprint(p, cam, (L, S), views=[(p, cam)])
+    stray = np.vstack([p, [[float(p[:, 0].max()) + 0.08, S / 2 - 0.05]]])
+    assert float(np.hypot(*(p - stray[-1]).T).min()) > 0.9
+    assert g.footprint(stray, cam, (L, S), views=[(stray, cam)]) == alone
+    assert not alone.filled and covers(alone, sofa)
+
+
 NEAR_SQUARE = (0.4, 0.3, 0.7)                     # the air purifier: S = 0.3 > 0.7 L = 0.28
 
 
