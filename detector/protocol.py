@@ -30,11 +30,11 @@ import numpy as np
 from voice_ltl import vocabulary
 
 DEFAULT_DETECTOR = "yoloe"
-# name -> (module, class); imported only when that detector is made
+# name -> (module, class); imported only when that detector is made. The prompt-free YOLOE (spec §11.10,
+# detector/yoloe_pf.py) is not built in v1 (O24: text-prompt YOLOE stays), so it is not listed until it exists.
 DETECTORS: Mapping[str, tuple[str, str]] = {
     "yoloe": ("detector.yoloe", "YoloeDetector"),
     "oracle": ("detector.oracle", "OracleDetector"),
-    "yoloe_pf": ("detector.yoloe_pf", "YoloePfDetector"),
 }
 
 
