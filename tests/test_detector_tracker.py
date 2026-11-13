@@ -34,8 +34,8 @@ class FP(NamedTuple):
     filled: bool
 
 
-def aabb_fuse(points, cam_xy, prior):
-    """The stub fuse: the axis-aligned box of the points (at least 0.1 m a side)."""
+def aabb_fuse(points, cam_xy, prior, views=None):
+    """The stub fuse: the axis-aligned box of the points (at least 0.1 m a side); the single views are unused."""
     if points is None or len(points) == 0:
         return None
     lo, hi = points.min(axis=0), points.max(axis=0)
@@ -253,6 +253,33 @@ def test_a_tentative_track_whose_window_empties_is_dropped():    # pre-final rev
     run.frame()
     run.frame()                                          # three in-view frames without a hit: the window is empty
     assert run.stats()["tracks_tentative"] == 0 and run.ids() == []
+
+
+def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final review F3 (spec §11.6)
+    """The tracker passes each hit's points with its camera as footprint's views, so a box seen from the front
+    and then from the side is published with the depth those views saw (filled False), as geometry's
+    test_a_depth_seen_to_its_far_end_is_kept_below_the_prior assumes of the tracker."""
+    from detector import geometry as g
+    from test_detector_geometry import BASE as STAND, Q0, Q_SIDE, SIDE_BASE, cam_xy, covers, scan, solid
+
+    box = solid(2.175, 0.0, 0.35, 0.35, height=0.45)          # smaller than its prior (0.5, 0.5)
+    prior = (0.5, 0.5)
+    tracker = Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, g.footprint)
+    t, wall = 100.0, 5000.0
+    for base, q, seed in ((STAND, Q0, 1), ((box[0], SIDE_BASE[1], SIDE_BASE[2]), Q_SIDE, 2)):
+        points = g.cut(scan([box], base=base, q=q, seed=seed))[:, :2]
+        cam = cam_xy(base, q)
+        fp = g.footprint(points, cam, prior)
+        assert fp.filled                                       # one face alone shows no depth
+        for _ in range(3):
+            t, wall = t + 1.0, wall + 1.0
+            tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False, cam)],
+                           t, wall, always)
+    rows = tracker.rows(wall, 3.0)
+    assert [r.id for r in rows] == ["box_1"] and tracker.stats()["filled"] == []
+    row = rows[0]
+    assert covers(row, box) and max(row.size) <= 0.35 + 0.16 < 0.5 + 2 * g.EDGE_PAD   # observed, not the prior
+    assert (row.x, row.y) == pytest.approx((box[0], box[1]), abs=0.05)
 
 
 def test_frames_beyond_6_m_do_not_count_toward_n():
@@ -692,8 +719,8 @@ def test_fused_size_recovers_after_one_bad_frame():
 def test_fuse_gets_the_newest_view_and_the_prior():
     calls = []
 
-    def recording_fuse(points, cam_xy, prior):
-        calls.append((len(points), cam_xy, prior))
+    def recording_fuse(points, cam_xy, prior, views=None):
+        calls.append((len(points), cam_xy, prior, views))
         return aabb_fuse(points, cam_xy, prior)
 
     run = Run(fuse=recording_fuse)
@@ -701,12 +728,16 @@ def test_fuse_gets_the_newest_view_and_the_prior():
     run.frame(obs("sofa", x=3.0, size=(1.8, 0.9), cam=(0.5, 0.2)))
     assert calls[-1][1] == (0.5, 0.2)
     assert calls[-1][2] == PRIORS["sofa"]
+    # the single views, oldest first, each with its own camera (pre-final review F3)
+    views = calls[-1][3]
+    assert [cam for _, cam in views] == [(0.0, 0.0), (0.5, 0.2)]
+    assert sum(len(p) for p, _ in views) >= calls[-1][0]
 
 
 def test_fused_points_are_thinned_and_capped():
     seen = []
 
-    def counting_fuse(points, cam_xy, prior):
+    def counting_fuse(points, cam_xy, prior, views=None):
         seen.append(len(points))
         return aabb_fuse(points, cam_xy, prior)
 
@@ -756,7 +787,7 @@ def test_confidence_is_the_median_of_the_last_10_hits_of_the_label():
 
 
 def test_filled_ids_are_reported():
-    def filling_fuse(points, cam_xy, prior):
+    def filling_fuse(points, cam_xy, prior, views=None):
         fp = aabb_fuse(points, cam_xy, prior)
         return fp._replace(filled=fp.size[0] < prior[0] - 0.2)   # the sofa is seen face-on: depth filled
 

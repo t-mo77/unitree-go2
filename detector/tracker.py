@@ -95,7 +95,8 @@ class _Track:
         self.filled = False
         self.measured = False                   # the geometry comes from LiDAR-supported hits
         self.cam_xy = (0.0, 0.0)                # the newest view
-        self.point_frames: deque[np.ndarray] = deque(maxlen=TRACK_POINT_FRAMES)
+        # the last TRACK_POINT_FRAMES supported hits: (thinned points N x 2, the camera XY of that view)
+        self.point_frames: deque[tuple[np.ndarray, tuple[float, float]]] = deque(maxlen=TRACK_POINT_FRAMES)
         self.hits: deque[_Hit] = deque(maxlen=RELABEL_HITS)
         self.votes: dict[str, float] = {}       # label -> summed confidence, every hit (the tentative label)
         self.confidences: dict[str, deque[float]] = {}
@@ -117,9 +118,11 @@ class _Track:
 
 class Tracker:
     def __init__(self, thresholds: Thresholds, priors: Mapping[str, tuple[float, float]],
-                 fuse: Callable[[np.ndarray, tuple[float, float], tuple[float, float]], object | None]) -> None:
-        """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior) returns an object with
-        x, y, size and filled (geometry.footprint), or None."""
+                 fuse: Callable[..., object | None]) -> None:
+        """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior, views=[(points, cam_xy),
+        ...]) returns an object with x, y, size and filled (geometry.footprint), or None. points_xy is the union
+        of the track's last hits, cam_xy the newest camera and views those hits one by one, so a far end that an
+        older view saw keeps its observed depth (spec §11.6; pre-final review F3)."""
         check_thresholds(thresholds, vocabulary.LABELS)
         self._th = thresholds
         self._priors = dict(priors)
@@ -248,10 +251,12 @@ class Tracker:
             track.label = max(track.votes, key=track.votes.__getitem__)   # ties: the label seen first
         cam = _xy(o.cam_xy)
         if o.supported and points is not None and len(points):
-            track.point_frames.append(_thin(points))
+            track.point_frames.append((_thin(points), cam))
             track.cam_xy = cam
             track.measured = True
-            fused = self._fuse_fn(_thin(np.concatenate(list(track.point_frames))), cam, self._prior(track.label))
+            views = list(track.point_frames)
+            fused = self._fuse_fn(_thin(np.concatenate([pts for pts, _ in views])), cam, self._prior(track.label),
+                                  views=views)
             if fused is not None and _finite(fused.x) and _finite(fused.y) and _size(fused.size) is not None:
                 track.x, track.y, track.size, track.filled = (float(fused.x), float(fused.y), _size(fused.size),
                                                               bool(fused.filled))

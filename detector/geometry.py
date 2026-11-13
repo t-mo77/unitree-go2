@@ -362,7 +362,8 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     """The axis-aligned footprint from one view (or the union of several) of one object's points (N x 2),
     with the vocabulary size prior (L, S) completing a depth the view cannot see. None without points.
     views: for a union, the single views it was made from, as (points N_k x 2, camera XY) pairs (the tracker's
-    hits, before any thinning). They only add evidence that the far end was seen, by any of their cameras.
+    last hits, each thinned on its own, not with the others). They only add evidence that the far end was seen,
+    by any of their cameras.
     Without them the points are judged as one view from cam_xy, so a far end that only an older view saw
     keeps the prior's depth (the larger side)."""
     p = _points(points_xy, 2)
