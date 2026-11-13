@@ -10,7 +10,8 @@ app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのま
   子の出力は標準エラーにそのまま流す。/go2/objects も受け、最後の 1 通の "source" を summarize に渡す。
   --target <正解の id>：その正解の足跡で手前・周回の線を測る（式の id は検出器の id でよい。M10 の resolve で引く）。
   --layout <名前>：配置ファイル（既定は GO2_LAYOUT、なければ household）。/gazebo/objects_truth の "layout" が
-  違えば、子を始めずに終了コード 2。
+  違えば、子を始めずに終了コード 2。app のサービスは GO2_LAYOUT を渡さないので、docker compose run では
+  --layout か -e GO2_LAYOUT=<名前> で渡す（外で GO2_LAYOUT を付けても、コンテナの中には届かない）。
 - watch：run と同じく記録するが、子は始めない（app が Go2 を動かす。H6 の声の段）。--seconds で、または
   settled()（動いた後に 10 秒止まった）で終わり、summarize(…, exit_code=None, log=None) を "child": null で出す。
   合格 0、不合格 1、odometry なし 2。
@@ -368,7 +369,8 @@ def layout_mismatch(truth_payload: object, name: str) -> str | None:
     if not isinstance(got, str):
         return f"{TRUTH_TOPIC} names no layout; this check uses the layout {name!r}"
     return (f"{TRUTH_TOPIC} is for the layout {got[:64]!r}, not {name!r}: "
-            f"pass --layout {got[:64]} (or set GO2_LAYOUT)")
+            f"pass --layout {got[:64]} (with docker compose run, -e GO2_LAYOUT={got[:64]} also works: "
+            f"the app service passes no GO2_LAYOUT)")
 
 
 def layout_name(arg: str | None, environ: Mapping[str, str] = os.environ) -> str:

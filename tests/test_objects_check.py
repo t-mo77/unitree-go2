@@ -812,7 +812,9 @@ def test_layout_mismatch_is_no_data():
     assert layout_mismatch(truth_message(), "household") is None
     other = truth_message(name="default")
     error = layout_mismatch(other, "household")
-    assert "default" in error and "household" in error and "--layout" in error
+    assert "default" in error and "household" in error and "--layout default" in error
+    # the app service passes no GO2_LAYOUT, so the hint names compose run's -e (pre-final review F7)
+    assert "or set GO2_LAYOUT" not in error and "-e GO2_LAYOUT=default" in error
     unnamed = {k: v for k, v in truth_message().items() if k != "layout"}
     assert layout_mismatch(unnamed, "household") is not None
     assert layout_mismatch(None, "household") is not None
