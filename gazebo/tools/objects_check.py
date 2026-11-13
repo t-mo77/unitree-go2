@@ -18,11 +18,13 @@ app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのま
 - accuracy：Go2 が止まり、/go2/detector_status の still_inferences が 3 以上になるまで（か --seconds）待ち、
   最後の /go2/objects（"source": "detector" でなければ 2）と /gazebo/objects_truth を accuracy() で比べる。
   /sim/world のボタンの箱と、状態の filled・ids_retired も使う。合格 0、不合格 1、データなし 2。
-- resolve：/go2/objects の行で、正解の --target と組になり measured: true のものを待ち、その id を出す
-  （{"target", "id", "measured", "listed_after_still_s"}）。見つかれば 0、時間切れ 1、データなし 2。
+- resolve：/go2/objects の行で、正解の --target と組になり（位置で。名前によらない）、名前が配置のその物の
+  accept にあり、measured: true のものを待ち、その id を出す（{"target", "id", "measured", "listed_after_still_s"}）。
+  見つかれば 0、時間切れ 1、データなし 2。組になっても名前が accept にない行（B でソファを chair と呼んだ行。
+  Bf で名前が変われば、その id は退く）は標準エラーに書いて待ち続ける（pre-final review の 2 回目）。
   listed_after_still_s は、このコマンドが見た止まり（歩いた後に止まった時刻）から、その行が measured: true で
   初めて届くまでの秒数（ListedWait）。止まった後や行が出た後に始めると null（わけは標準エラー）なので、
-  目標が見えるようになる動きの前に、別に始めておく（H6 M4）。
+  テスト姿勢に着く式（Bf なら F moved_forward、R5 なら 5 歩の式）の直前に、別に始めておく（H6 M4）。
 - rtf：実際の時間の窓（--seconds 秒、monotonic）の間に /clock が進んだ秒数を、窓の長さで割る。{"rtf": …} を JSON 1 行で。
 - objects：/go2/objects を 1 通、JSON 1 行で出す。どの行も objects.parse を通れば 0、
   通らない行があるか物がなければ 1、届かなければ 2。
@@ -324,19 +326,29 @@ class ListedWait:
     """resolve's wait (M10, spec §13.5), without ROS. message() takes each /go2/objects message in order, the
     latest truth, the feed's still_wall (a stop this tool saw, _Feed) and the wall time; it is True once the wait
     is over: a truth for another layout (error), or the target's row has measured: true (id, measured).
+    The target's row is the one paired with it (resolve, by position whatever the label), and only when its
+    label is in the target's layout entry's accept list: at B the sofa was listed as chair, an id the tracker
+    retires when it relabels the track at Bf. A row with another label is noted (notes, once per id and label)
+    and the wait goes on, as if the row were not listed (pre-final review round 2).
     after (listed_after_still_s) = that wall time minus still_wall, only when the Go2 stood still since a stop
     this tool saw and an earlier message had no measured row for the target. Else after is None and note says
     why: a resolve started after the stop, or after the row was listed, must not time the latency from its own
-    start (pre-final review F11). So start resolve before the motion that should bring the target into view."""
+    start (pre-final review F11). So start resolve just before the formula that reaches the test pose."""
 
-    def __init__(self, target: str, layout_name_: str):
+    def __init__(self, target: str, lay: layouts.Layout):
+        entry = lay.find(target)
+        if entry is None:
+            raise ValueError(f"{target!r} is not in the layout {lay.name!r}")
         self.target = target
-        self.layout = layout_name_
+        self.layout = lay.name
+        self.accept = tuple(entry.accept)
         self.id: str | None = None
         self.measured: bool | None = None
         self.after: float | None = None
         self.error: str | None = None
         self.note: str | None = None
+        self.notes: list[str] = []          # rows paired with the target under another label
+        self._told: set[tuple[str, str]] = set()
         self._unlisted = False              # an earlier message had no measured row for the target
 
     def message(self, objects_payload: object, truth_payload: object, still_wall: float | None,
@@ -347,7 +359,13 @@ class ListedWait:
         rows = parse(objects_payload)
         obj_id = resolve(rows, parse(truth_payload), self.target)
         row = next((o for o in rows if o.id == obj_id), None)
-        self.id, self.measured = obj_id, (row.measured if row is not None else None)
+        if row is not None and row.label not in self.accept:
+            if (row.id, row.label) not in self._told:
+                self._told.add((row.id, row.label))
+                self.notes.append(f"{row.id} ({row.label!r}) pairs with {self.target}, whose labels are "
+                                  f"{list(self.accept)}: waiting for one of those")
+            row = None
+        self.id, self.measured = (row.id, row.measured) if row is not None else (None, None)
         if row is None or row.measured is not True:
             self._unlisted = True
             return False
@@ -967,15 +985,20 @@ def _resolve(args: argparse.Namespace) -> int:
         return 2
     rclpy, node = _start_ros("go2_objects_check_resolve")
     feed = _listen(node, _Feed(StillGate()), odom=True, objects=True, truth=True)
-    wait = ListedWait(args.target, lay.name)
+    wait = ListedWait(args.target, lay)
     seen = [0]
+    told = [0]
 
     def done() -> bool:
         if not feed.truth:
             return False
         while seen[0] < len(feed.objects):
             seen[0] += 1
-            if wait.message(feed.objects[seen[0] - 1], feed.truth[-1], feed.still_wall, time.monotonic()):
+            over = wait.message(feed.objects[seen[0] - 1], feed.truth[-1], feed.still_wall, time.monotonic())
+            for note in wait.notes[told[0]:]:
+                _say(note)
+            told[0] = len(wait.notes)
+            if over:
                 return True
         return False
 

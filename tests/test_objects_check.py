@@ -914,7 +914,7 @@ def test_resolve_times_the_listing_from_the_stop_it_saw():   # pre-final review 
         """odoms: (wall, sim t, speed); messages: (wall, payload), interleaved by wall time."""
         wall = Wall()
         feed = _Feed(StillGate(), clock=wall)
-        wait = ListedWait("sofa_1", "household")
+        wait = ListedWait("sofa_1", HOUSE)
         events = sorted([(w, 0, (t, v)) for w, t, v in odoms] + [(w, 1, m) for w, m in messages],
                         key=lambda e: (e[0], e[1]))
         for w, kind, item in events:
@@ -943,5 +943,50 @@ def test_resolve_times_the_listing_from_the_stop_it_saw():   # pre-final review 
     w = run(walk_then_stop, [(11.0, unlisted), (14.0, unmeasured)])
     assert w.id == "sofa_3" and w.measured is False and w.after is None
     # a truth message for another layout ends the wait with an error
-    other = ListedWait("sofa_1", "household")
+    other = ListedWait("sofa_1", HOUSE)
     assert other.message(listed, truth_message(name="default"), 1.0, 2.0) is True and "default" in other.error
+
+
+def test_resolve_waits_for_a_row_with_an_accepted_label():   # pre-final review round 2 (F11, M10)
+    """The Bf procedure stops at B before F moved_forward, and at B the sofa was listed as chair (H3: 'chair
+    0.734'). The tracker retires that id when it relabels the track at Bf. So resolve ends only on a paired row
+    whose label the target's layout entry accepts, notes a row with another label, and times the listing from
+    the stop at Bf."""
+    from gazebo.bridge_core import StillGate
+    from gazebo.tools.objects_check import ListedWait, _Feed
+
+    truth = truth_message()
+    as_chair = replace(SOFA_TRUTH, id="chair_1", label="chair", x=SOFA_TRUTH.x + 0.2, size=(0.6, 0.6), measured=True)
+    as_sofa = replace(SOFA_TRUTH, id="sofa_1", size=(1.0, 1.9), measured=True)
+
+    def run(events):
+        wall = Wall()
+        feed = _Feed(StillGate(), clock=wall)
+        wait = ListedWait("sofa_1", HOUSE)
+        for w, kind, item in events:
+            wall.t = w
+            if kind == "odom":
+                feed.on_odom(odom(item[0], 0.0, item[1]))
+            elif wait.message(item, truth, feed.still_wall, w):
+                return w, wait
+        return None, wait
+
+    to_b = [(0.0, "odom", (1.0, 0.0)), (1.0, "msg", det_message(())),            # lying still, then unlisted
+            (2.0, "odom", (2.0, 0.3)), (20.0, "odom", (20.0, 0.3)),              # stand and two left turns
+            (21.0, "odom", (21.0, 0.0)),                                          # the stop at B
+            (24.5, "msg", det_message((as_chair,)))]                              # the sofa listed as chair
+    to_bf = [(27.0, "odom", (27.0, 0.3)), (33.0, "odom", (33.0, 0.0)),           # F moved_forward, the stop at Bf
+             (36.0, "msg", det_message((as_sofa,)))]                              # relabelled: sofa_1
+    end, wait = run(to_b + to_bf)
+    assert end == 36.0 and (wait.id, wait.measured, wait.after, wait.note) == ("sofa_1", True, 3.0, None)
+    assert len(wait.notes) == 1 and "chair_1" in wait.notes[0] and "'chair'" in wait.notes[0]
+    # only the chair row: no id (never the retired chair_1), and the wait goes on
+    end, wait = run(to_b)
+    assert end is None and (wait.id, wait.measured, wait.after) == (None, None, None) and len(wait.notes) == 1
+    # a label the entry accepts besides its own ends the wait (table_1 accepts desk)
+    table = HOUSE.find("table_1").obj()
+    desk = replace(table, id="desk_2", label="desk", measured=True)
+    wait = ListedWait("table_1", HOUSE)
+    assert wait.message(det_message((desk,)), truth_message(), None, 1.0) is True and wait.id == "desk_2"
+    with pytest.raises(ValueError):
+        ListedWait("lamp_9", HOUSE)
