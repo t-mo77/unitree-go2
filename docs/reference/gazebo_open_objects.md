@@ -1005,3 +1005,244 @@ sha256 と大きさに同じ（上の表と同じ値）。できたイメージ�
 **テスト。** build の前に `T tests/test_layout.py tests/test_fuel_image.py`：95 passed。後に `T tests/test_layout.py tests/test_fuel_image.py
 tests/test_household.py`：125 passed（39.1 秒）。2 回目より 1 つと 3 つ多いのは、見直しが足したテストの分。全部のテストは流していない
 （依頼が求めていない。見直しの直しの `bfdc636` で 2564 passed・18 skipped・29 deselected・0 failed）。
+
+## H3b：部屋の直しの後の検出の下見（`patch-0005-fuel2`、2026-11-13）
+
+- 枝：`objects2/h3b-preview`（`feat/open-objects` の `25d8bba`、H1b の 3 回目の merge から）。worktree `~/work/physicalAI/.go2-worktrees/oo-h3b`。
+  ROS の domain は 63。
+- 場所：この Mac の Docker Desktop。Gazebo は compose project `go2oo`（画面なし、`go2oo-gazebo`、`OBJECTS_SOURCE=detector`、検出の
+  service なし）、イメージは `go2-voice-ltl-gazebo:patch-0005-fuel2`（H1b の 3 回目、一覧の ID `c40a28c22024`、17:48:36）。検出は
+  `go2-voice-ltl-detector:yoloe-11s`（H2、`016348e47306`）。どちらも作り直していない。
+- 前の試みはなかった（worktree・枝・記録・`out/` のどれもなかった）。1 回で済んだ（18:01〜18:10）。
+- 部屋は R-H3h・R-H3i の後のもの（`gazebo/layouts/household.json`）：sofa_1 (−4.6, 0)、suitcase_1 (−1.62, −1.14) yaw 90、
+  traffic_cone_1 (−0.3, −4.45)、table_1（論理だけ）、box_1・chair_1。検出の目標は `detector_check.PREVIEW_TARGETS` の
+  sofa_1・suitcase_1（Bf）と traffic_cone_1（R5）。
+- 絵（`out/h3-preview/`、`out/h3b-L/`）は CC BY / CC0 のモデルを描いたものなので git に入れていない（設計書 §11.11）。worktree の中に残してある。
+
+### 結論
+
+**H3b の線を満たした。** `preview` を通った新しい種類は **3**（sofa_1、suitcase_1、traffic_cone_1。線は 3 以上、設計書 §12.8 の 5、§13.4）。
+始めの位置の見え方も通った（box と chair のほかに確かになる名前なし）。どの検出の試験の見え方にも、検出できないモデル（table_1・
+box_1・chair_1）の体は写っていない（R-H3c）。配置・単語帳・`BY_LABEL` は変えていない。変えたのはこの記録だけ。
+
+| 線（計画 H3、部屋の直しの後） | 結果 |
+|---|---|
+| `record_frames` が `patch-0005-fuel2` で起動する（Task 2.12 の Step 4、R-H3f の形） | exit 0、`gz` は `/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz` |
+| 見え方を撮る（`spawn_lying`、`spawn`、Bf・R5 × (そのまま＋ずらし 4)、測った向きの本当の手順） | 12 枚とも exit 0（止まりの門・位置の組・正解の確かめを通った）。撮り直しはなし |
+| 最初の絵で、どの Fuel のモデルも自分の見え方に写る（M15） | 写った。Sofa と Suitcase1（Bf）、Construction Cone（R5）。Table は足した L の 1 枚で写った |
+| `detector_check.py … --detector yoloe` | 12 枚、`errors` なし。`preview` の `detectable` は `[sofa_1, suitcase_1, traffic_cone_1]`、`enough` は true。exit 1（`Bf_s2` の絵ごとの線、下） |
+| 通った目標に `detectable: true` | 3 つとも、もう `true`（部屋の直しのまま）。変えていない |
+| `BY_LABEL`・外す検出の言葉 | なし（下の「決めたこと」） |
+| R-H3c：検出できないモデルは、どの試験の見え方にも入らない | 入らない（投影・論理カメラ・検出・絵の 4 つで確かめた。下の「R-H3c の確かめ」） |
+| 眠り | なし（`pmset -g log` の最後の眠りは 16:55:28〜16:56:54、この回の前） |
+| `T tests/test_household.py`、全部のテスト | 下の「テスト」 |
+
+### D11 の門と、ほかの container・電源
+
+どの Gazebo の回と検出の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。
+こちらのほかの重い段もなかった。`load` は host の `sysctl -n vm.loadavg`（1・5・15 分）。`lowpowermode` はどの時も 0。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | load |
+|---|---|---|---|---|
+| 18:01:14 | 始め（門） | なし | 電池、87%、discharging | 2.04 2.60 3.43 |
+| 18:01:44 | 回 1（伏せ・立ち・Bf）の前 | なし | 電池、86% | 2.06 2.56 3.39 |
+| 18:03:07 | 回 1 の終わり（Gazebo あり） | `go2oo-gazebo` 217.10 %、985.2 MiB | 電池、85% | 3.66 2.96 3.46 |
+| 18:03:19 | 回 1 を止めた後・回 2（R5）の前 | なし | 電池、85% | 3.79 3.01 3.47 |
+| 18:04:26 | 回 2 の終わり | `go2oo-gazebo` 280.27 %、745.7 MiB。`go2-app-run-a266eb0789de` 140.23 %、80.07 MiB | 電池、85% | 5.05 3.54 3.63 |
+| 18:04:34 | 回 2 を止めた後 | `go2-app-run-a266eb0789de` 99.89 %、124.6 MiB | 電池、85% | 4.96 3.55 3.64 |
+| 18:06:35 | 検出（`detector_check`）の前 | なし | 電池、84% | 2.57 3.14 3.46 |
+| 18:06:50 | 検出の後 | `go2-app-run-5834b80b3397` 99.34 %、206.3 MiB | 電池、84% | 2.98 3.20 3.48 |
+| 18:07:49 | 種類ごとの確からしさの確かめの前 | `go2-app-run-5834b80b3397` 48.64 %、238.2 MiB | 電池、83% | 4.27 3.48 3.56 |
+| 18:08:03 | その後 | `go2-app-run-5834b80b3397` 100.10 %、219.7 MiB | 電池、83% | 4.23 3.50 3.57 |
+| 18:09:09 | 回 3（L、Table の M15）の前 | `go2-app-run-5834b80b3397` 99.91 %、236.6 MiB | 電池、83% | 3.60 3.49 3.55 |
+| 18:09:33 | 回 3 の終わり | `go2oo-gazebo` 236.58 %、742 MiB。`go2-app-run-5834b80b3397` 101.39 %、248.1 MiB | 電池、82% | 4.02 3.59 3.59 |
+
+- `go2-app-run-…` の 2 つは、本体の compose project の `app` の `run`（ほかの仕事の軽いテスト）で、私のものではない。`go2-gazebo-1` でも
+  こちらの重い段でもない。どちらも Gazebo の回 2・回 3 の終わりと、検出の後に重なった。絵は時間を測らないので影響しない。検出の推論は
+  中央値 333.1 ms で、H3（324.8 ms）・H3 の下見（322〜388 ms）と同じくらい。
+- 動かしたのは、`G` の Gazebo（`go2oo-gazebo`、`docker rm -f` と `G down` で止めた）と `G run --rm … app`（`run_formula`）、計画の
+  `TA`・`T`、名前を付けた使い捨ての `docker run --rm --name oo-h3b-…`（検出器のイメージと Fuel のイメージ）だけ。終わった後に残った
+  こちらの container とネットワークはない。
+
+### 軽い確かめ：`record_frames` を `patch-0005-fuel2` で
+
+```bash
+docker run --rm --network none -v "$WT":/wt -w /wt -e PYTHONPATH=/wt:/wt/nl_control --entrypoint bash \
+    go2-voice-ltl-gazebo:patch-0005-fuel2 -c 'source /opt/ros/jazzy/setup.bash && command -v gz && python3 -c \
+    "import numpy, rclpy, sensor_msgs.msg, nav_msgs.msg, std_msgs.msg, gazebo.tools.record_frames; …write_png(…)"'
+```
+
+- **exit 0**、`gz` は `/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz`。R-H3f の形（`PYTHONPATH` を ROS を読み込む前に渡す）なので、H3 の
+  1 回目のような `rclpy` の不足は出ない。
+
+### 撮った見え方（12 枚、`out/h3-preview/`）
+
+```bash
+OBJECTS_SOURCE=detector G run -d --no-deps --service-ports --name go2oo-gazebo gazebo \
+    ros2 launch /work/gazebo/launch/go2_gazebo.launch.py gui:=false
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "<式>"
+docker exec -e PYTHONPATH=/work:/work/nl_control go2oo-gazebo bash -c \
+    'source /opt/ros/jazzy/setup.bash && python3 /work/gazebo/tools/record_frames.py /work/out/h3-preview --view <名前> [--shift=<s>]'
+```
+
+- 回 1（18:01:44〜18:03:07）：起動してすぐ `spawn_lying`（`--timeout 180`。撮れたのはシミュレーションの 1.0 秒）、`F standing`、`spawn`、
+  `F(turned_left & X F turned_left)`、`F moved_forward`、`Bf`、`Bf_s1`〜`Bf_s4`。
+- 回 2（18:03:19〜18:04:26）：起動し直し、`F standing`、`F turned_right`、
+  `F(moved_forward & X F(moved_forward & X F(moved_forward & X F(moved_forward & X F moved_forward))))`、`R5`、`R5_s1`〜`R5_s4`。
+- どの `run_formula` も「結果：done」。ずらしは計画の 4 つで、負の数で始まるものも含めてすべて `--shift=<s>` の形（R-H3f）。どの
+  `record_frames` も 1 回で exit 0（止まりの門、位置の組 0.02 m・1°、ずらしの後の正解の確かめを通った）。撮り直した見え方はない。
+- 回 2 は Gazebo の起動直後に `F standing` を始めたので、app の側に rmw の `invalid data size` が出た（H3 と同じ、立ち上がり中の
+  トピック）。動きは変わらず、done まで行った。
+- 1 枚あたり 5〜7 秒（ずらしは置き直しと 1 秒の落ち着きを含む）。B（Bf へ行く途中）は撮っていない（試験の姿勢でない）。
+
+| 見え方 | 本当の姿勢（odom、絵の時刻） | 絵・点群の時刻（sim 秒） | 点群の点 | 論理カメラが見た物 |
+|---|---|---|---|---|
+| spawn_lying | (0.004, 0.002)、高さ 0.068、−1.5° | 1.0・1.7 | 209 | box_1, chair_1 |
+| spawn | (0.001, −0.012)、−1.2° | 19.0・19.9 | 216 | box_1, chair_1 |
+| Bf | **(−0.540, −0.090)、−171.6°** | 42.0・42.8 | 349 | sofa_1, suitcase_1 |
+| Bf_s1〜s4 | 同じ（物を動かして見え方をずらす） | 46.0〜60.5 | 304〜411 | sofa_1, suitcase_1（4 枚とも） |
+| R5 | **(−0.359, −2.709)、−98.0°** | 31.0・31.5 | 245 | traffic_cone_1 |
+| R5_s1〜s4 | 同じ | 35.0〜50.0 | 242〜270 | traffic_cone_1（4 枚とも） |
+
+- **測った向きとの比べ：** Bf は H3 の下見の測った箱（x −0.506〜−0.560、y −0.054〜−0.141、向き −166.6〜−172.4°）の中。R5 は y が箱の中、
+  **x −0.359 と向き −98.0° が箱（x −0.342〜−0.225、向き −95.1〜−97.6°）の外**（x で 0.017 m、向きで 0.38°）。`tests/test_household.py`
+  の `MEASURED_RANGES` はこの箱を固定している（下の「controller に返すこと」）。
+- 目標の方位と距離（`tests/test_household.py` の `sight` で、この回の姿勢から）：Bf でソファはカメラから −10.5°・3.72 m（台から −9.7°・
+  4.04 m）、スーツケースはカメラから +44.5°・1.256 m（台から +35.8°・1.507 m）。R5 でコーンはカメラから +12.2°・1.421 m（台から +9.9°・1.742 m）。
+- **M15：** 最初の絵で、Sofa と Suitcase1 は Bf に、Construction Cone は R5 に、箱と椅子は spawn に写った。ソファの前にスーツケースは
+  かぶらない（Bf でスーツケースの枠は u 33〜203、ソファは u 304〜412）。Table の試験の姿勢 L は検出の試験の姿勢でなく、12 枚にないので、
+  回 3（18:09:09〜18:09:33、起動し直し、`F standing`、`F turned_left`）で `out/h3b-L/` に `L` を 1 枚だけ撮った：(0.019, 0.029)、96.5°、
+  論理カメラは table_1、Table は絵の左寄りに全体が写った。この 1 枚は `detector_check` にかけていない。
+
+### R-H3c の確かめ：検出できないモデルは試験の見え方に入らない
+
+検出の試験の見え方（Bf・R5 とそれぞれのずらし 4 つ、10 枚）で、4 つのやり方で確かめた。
+
+1. **投影**（作業用の小さいスクリプト、Fuel のイメージ、`--network none`）：絵の時刻の台の姿勢と、ずらした絵では記録の `moved`
+   （動かした後のモデルの姿勢）から、配置のどのモデルの体（足跡 × 高さ、モデルの yaw で回した 8 つの角）も
+   `detector.camera.world_to_camera` と記録の K で絵に写した。絵（u 0〜640）に入るのは、Bf の 5 枚ではソファとスーツケースだけ、R5 の 5 枚では
+   コーンだけ。table_1 の体のいちばん内側の u は Bf 813、s1 1067、s2 717、s3 693、s4 925（どれも 640 の外）。box_1・chair_1 は後ろ。
+2. **`tests/test_household.py` の関数**（`rendered`、`bearings`、`shifted`、app のイメージ）をこの回の 2 つの姿勢で：Bf と 4 つのずらしで
+   見えるのは {sofa_1, suitcase_1}、R5 と 4 つのずらしで {traffic_cone_1}。table_1 の視野の外への余裕は Bf 9.49°、s1 16.13°、s2 5.09°、
+   **s3 3.67°**、s4 13.03°（固定の最小 2.31° より広い）。R5 では table_1 は 84.8° 以上外。
+3. **論理カメラ**（記録の正解の `visible`）：上の表のとおり、Bf の 5 枚は sofa_1・suitcase_1、R5 の 5 枚は traffic_cone_1 だけ。
+4. **検出と絵**：Bf・R5 の 10 枚の当たりは、どれも目標の正解の枠の上（下の表）。絵を目で見ても、ほかのモデルはない。
+
+- 1 つだけ：**`Bf_s3` の右の端に table_1 の影の先が 4 画素**（行 264、u 635〜639、灰色 90〜174、床は 194）写った。世界の太陽
+  （方向 (−0.5, 0.1, −0.9)）で落ちる影を同じように投影すると、table_1 の影だけが u 631 から絵に入る。モデルの体ではなく、検出の当たりも
+  ない（`Bf_s3` の当たりはソファとスーツケースだけ）。
+
+### 検出（`detector_check.py`、YOLOE-11s 文字 @ 640、87 の言葉 + 捨てる 3 つ）
+
+```bash
+docker run --rm --name oo-h3b-detect -v "$WT":/work -v /dev/null:/work/env.txt:ro -w /work go2-voice-ltl-detector:yoloe-11s \
+    python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe
+```
+
+- 18:06:35〜18:06:50、`real` 14.7 秒、**exit 1**（`failed` は `Bf_s2` だけ）。12 枚、`errors` なし。推論 1 回の時間は中央値 333.1 ms、
+  最大 353.5 ms（1 スレッド）。
+
+| 見え方 | 当たり（`sighting` 0.25 以上。名前・確からしさ、正解の枠との IoU） | §13.3 の絵ごとの線 |
+|---|---|---|
+| spawn_lying | chair 0.707（chair_1）、chair 0.414、box 0.278（box_1） | 数えない（`preview` は見ない。`no_recall`） |
+| spawn | chair 0.545（chair_1、0.549）、chair 0.351（0.963） | `no_recall`（検出できる正解なし）、落ちた線なし |
+| Bf | **sofa 0.782**（0.805）、**suitcase 0.559**（0.861） | 通った |
+| Bf_s1 | sofa 0.816（0.792）、suitcase 0.766（0.868） | 通った |
+| Bf_s2 | **chair 0.732（sofa_1、0.79）**。スーツケースは当たりなし | **落ちた**：sofa_1・suitcase_1 の組なし、recall 0.000 |
+| Bf_s3 | sofa 0.738（0.804）、suitcase 0.627（0.851） | 通った |
+| Bf_s4 | sofa 0.754（0.806）、suitcase **0.384**（0.890） | 通った |
+| R5 | **traffic_cone 0.429**（0.543） | 通った |
+| R5_s1 | traffic_cone 0.472（0.573） | 通った |
+| R5_s2 | traffic_cone 0.958（0.514） | 通った |
+| R5_s3 | traffic_cone 0.807（0.521） | 通った |
+| R5_s4 | traffic_cone 0.870（0.552） | 通った |
+
+- `preview`（設計書 §12.8 の 3）：
+
+| 目標 | 姿勢 | 姿勢の見え方 | ずらしで当たった数（線は 2） | 他の目標の名前 | いちばん低い余裕（確からしさ − 0.35） | 合否 |
+|---|---|---|---|---|---|---|
+| sofa_1 | Bf | sofa 0.782 | 3（s1 0.816、s3 0.738、s4 0.754。s2 は chair） | なし | +0.388（s3） | **合格** |
+| suitcase_1 | Bf | suitcase 0.559 | 3（s1 0.766、s3 0.627、s4 0.384。s2 は当たりなし） | なし | +0.034（s4）。線に要る姿勢＋2 つでは +0.209 | **合格** |
+| traffic_cone_1 | R5 | traffic_cone 0.429 | 4（0.472、0.958、0.807、0.870） | なし | +0.079（姿勢の見え方） | **合格** |
+| spawn（始めの位置） | — | box と chair のほかの名前なし | — | — | — | 合格 |
+
+- `detectable` は `["sofa_1", "suitcase_1", "traffic_cone_1"]`、`enough` は true。
+- 取り違えの表（`confusion`）で目標に乗った違う名前は、`Bf_s2` のソファの chair 0.732 だけ。chair は目標の名前でないので、`preview` の
+  「他の目標の名前」には入らない。
+- H3 の下見（Part B の最後の部屋、x4b・v6r）と比べて：ソファは 5/5 から姿勢＋3/4（`Bf_s2` が chair に）、スーツケースは姿勢＋3/4 のまま
+  （下見は s4 が trash_can、この回は s2 が切れて当たりなし）、コーンは 5/5 のままだが姿勢の見え方が 0.634 から 0.429 に下がった。
+- 線の 3 は満たすが、`detector_check` の終わりのコードは 1。`Bf_s2` の絵ごとの §13.3 の線（ソファの名前の誤りと、端で切れた
+  スーツケース）のため。H3b の線（`preview`）ではない。H6 は §13.3 を本当の姿勢（ずらしなし）で数える。
+
+### わけを探した：種類ごと・言葉ごとの確からしさ（`Bf_s2` とうすい余裕）
+
+H3 と同じやり方：使い捨てのスクリプト（作業用の場所。リポジトリには入れていない）で、同じ YOLOE と同じ 90 の言葉で、名前ごとの NMS
+（`conf` 0.05）にかけ、各正解の枠（記録の正解と配置の高さ）と IoU 0.5 以上の箱のいちばん高い確からしさを言葉ごとに数えた
+（18:07:49〜18:08:03）。全部の一覧で勝った名前の値（sofa 0.782 = `couch` 0.782、chair 0.732 など）と一致する。
+
+| 見え方 | ソファ：`couch` | ソファ：`chair` | スーツケース：`suitcase` | スーツケースの次の言葉 | コーン：`traffic cone`（IoU） |
+|---|---|---|---|---|---|
+| Bf | **0.782** | 0.618 | **0.559** | television 0.292 | — |
+| Bf_s1 | **0.816** | 0.05 未満 | **0.766** | — | — |
+| Bf_s2 | 0.716 | **0.732** | 0.05 未満 | television 0.151 | — |
+| Bf_s3 | **0.738** | 0.650 | **0.627** | garbage bin 0.198 | — |
+| Bf_s4 | **0.754** | 0.621 | **0.384** | garbage bin 0.252 | — |
+| R5・R5_s1〜s4 | — | — | — | — | 0.429（0.54）、0.472（0.57）、0.958（0.51）、0.807（0.52）、0.870（0.55） |
+
+- **`Bf_s2` のソファ：** `couch` 0.716 と `chair` 0.732 の差は 0.016 で、五分五分。agnostic NMS で 1 つの物に 1 つの名前なので、chair が残る。
+  ほかの 4 枚では `couch` が勝つ（chair との差は 0.088 以上）。H3 が B（4.4 m）で見た、ソファと椅子が絵ごとに五分五分になる取り違えが、
+  この回は Bf の 1 枚（−5° 回した s2）だけに出た。ソファはカメラから 3.72 m。
+- **`Bf_s2` のスーツケース：** 正解の枠は u 0〜140（左の端で切れる。体の投影は u −158〜139）。`suitcase` は 0.05 にも届かない。
+  部屋の直しの見直しの予想（「`Bf_s2` は測ったどの向きでも左の端で切れる。外れは切れたためで、検出の誤りではない」）のとおり。
+- **コーン：** `traffic cone` のほかに 0.05 以上の言葉はない。IoU 0.51〜0.57 は下見と同じ（影が正解の枠に入る）。姿勢の見え方の 0.429 は
+  下見（0.634）より低い。この回の R5 の向き −98.0° は、下見の 4 回でいちばん回った −97.6° より 0.4° 多い（わけかどうかは確かめていない）。
+
+### 決めたこと
+
+- **数える種類（`detectable`）：** `preview` を通ったのは sofa_1・suitcase_1・traffic_cone_1 で、配置はもうこの 3 つが `true`、
+  box_1・chair_1・table_1 が `false`（部屋の直しのまま）。だから配置は変えない。
+- **lamp_1（R-H3d）：** ランプは部屋を出た（`household.json` に lamp_1 も trash_can_1 もない）。R-H3d の直しで
+  `test_detector_check_command_line_with_the_oracle` は凍った `SCENE_LAYOUT` を読むので、配置の旗との縛りもない。決めることはない。
+- **`BY_LABEL`：** なし（`{}` のまま）。目標に乗った違う名前は `Bf_s2` の chair 0.732 だけで、正しい名前（`couch` 0.716）より高い。
+  計画の決まり「違う名前が 0.35 と正しい名前の確からしさの間にあるとき」に当たらない。chair の閾を 0.732 より上げると、始めの位置の
+  椅子（0.545・0.707）も確かにならなくなり、しかもソファの名前は出ない（agnostic NMS でソファの箱は消えたまま）。
+- **外す検出の言葉：** なし（`vocabulary.json` は変えない）。`Bf_s2` を直す言葉は chair の `chair` を外すことだけで、椅子という基本の
+  種類の検出の言葉をなくす。`preview` は言葉を変えずに通る。
+
+### controller に返すこと
+
+1. **R5 の姿勢が固定の箱の外：** この回の R5 は (−0.359, −2.709, −98.0°) で、`tests/test_household.py` の `MEASURED_RANGES["R5"]`
+   （x −0.342〜−0.225、向き −95.1〜−97.6°）から x で 0.017 m、向きで 0.38° 外。この姿勢で、R-H3c（上の 2）と、目標の式の計画（下の表）は
+   どれも成り立つ。箱を広げて数を固定し直すかは、H3b のファイルの外（テスト）なので controller に返す。
+2. **`Bf_s2` の絵ごとの §13.3 の線が落ちた：** ソファが chair（0.016 の差）、スーツケースは端で切れて当たりなし。`preview` には響かない。
+   H6 は本当の姿勢（ずらしなし）で数える。この回の Bf の見え方ではソファは `couch` 0.782 で、chair 0.618 より 0.164 高い。
+3. **うすい余裕：** スーツケースは `Bf_s4` で 0.384（+0.034）、コーンは R5 の姿勢の見え方で 0.429（+0.079）、コーンの IoU は 0.51〜0.57。
+   どれも線の中だが、R-H3h (4) が受け入れたうすさのとおり。
+4. **`Bf_s3` の右の端の table_1 の影（4 画素）：** モデルではなく、検出もない。メモだけ。
+
+- この回の姿勢からの計画（`tests/test_household.py` の `build`・`area`・`moves`、app のイメージ、PLANT だけ、合成なし。手前のキーは
+  `gw.near` の数）：
+
+| 式 | 始め | 面積 | 手 | 手前のキー | PLANT の状態 | 4 つのずれ（面積・手） |
+|---|---|---|---|---|---|---|
+| `F near_sofa_1` | Bf（この回） | 140 | 5 | 20 | 2 760 | (154,5)(140,5)(140,5)(154,5) |
+| `F around_sofa_1` | Bf（この回） | 208 | 49 | — | 14 256 | (208,52)(208,50)(224,55)(208,53) |
+| `F near_suitcase_1` | Bf（この回） | 56 | 2 | 7 | 1 224 | (56,5)(56,1)(49,2)(49,2) |
+| `F around_suitcase_1` | Bf（この回） | 100 | 26 | — | 7 776 | (100,28)(100,28)(100,29)(100,26) |
+| `F near_traffic_cone_1` | R5（この回） | 72 | 1 | 7 | 1 584 | (63,8)(56,1)(63,4)(56,1) |
+| `F around_traffic_cone_1` | R5（この回） | 100 | 28 | — | 8 256 | (110,31)(110,31)(110,30)(121,35) |
+
+- どの始めとずれからも計画がある。この表は H5・H6 のための参考で、固定はしていない（固定の数は `MEASURED_POSES` の H3 の Bf と
+  導いた R5 のもの）。
+
+### テスト
+
+- 配置・単語帳・上書き・コードは変えていないので、§12.4 の数はそのまま。`T tests/test_household.py`：30 passed（41.3 秒、18:09:56〜18:10:38）。
+- 全部（`T tests nl_control/tests`、18:10:38〜18:16:04）：**2564 passed, 18 skipped, 29 deselected**（324.7 秒）。`feat/open-objects` の
+  `206fe97` と同じ数。終わり（18:16:13）は、こちらの container なし、電池 80%、`lowpowermode` 0、load 6.85 5.08 4.26。`pmset -g log` に、
+  16:56:54 の後の眠りはない。
+
+### 変えたもの
+
+- この記録だけ。配置・単語帳・`detector/yoloe.py` の `BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
