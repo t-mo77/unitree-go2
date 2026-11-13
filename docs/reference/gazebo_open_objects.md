@@ -1005,3 +1005,161 @@ sha256 と大きさに同じ（上の表と同じ値）。できたイメージ�
 **テスト。** build の前に `T tests/test_layout.py tests/test_fuel_image.py`：95 passed。後に `T tests/test_layout.py tests/test_fuel_image.py
 tests/test_household.py`：125 passed（39.1 秒）。2 回目より 1 つと 3 つ多いのは、見直しが足したテストの分。全部のテストは流していない
 （依頼が求めていない。見直しの直しの `bfdc636` で 2564 passed・18 skipped・29 deselected・0 failed）。
+
+## H5：logical の Gazebo の測り（S7、2026-11-13〜14）
+
+- 枝：`objects2/h5-logical`（`objects2/prefinal-fix` の `97da92a` から。R-PAR：logical の式は `objects_check` を通るだけで、
+  並べて直している種類の見張り（guard3）と追跡（tracker3）は触れない）。worktree `~/work/physicalAI/.go2-worktrees/oo-h5`。ROS の domain は 65
+  （`G` の回は compose project `go2oo` の自分の network で、domain は使わない）。
+- Gazebo：イメージ `go2-voice-ltl-gazebo:patch-0005-fuel2`（一覧の ID `c40a28c22024`、作り直していない）、`GO2_LAYOUT=household`、
+  `OBJECTS_SOURCE=logical`、画面あり（`G --profile gazebo up -d --no-build gazebo`、画面は port 6081）。**回ごとに `G down` で止めて起動し直した。**
+  橋渡しはどの回も「物 6 個」（box_1・chair_1・suitcase_1・traffic_cone_1・sofa_1・table_1。部屋の直しの後の部屋）を置いた。
+- app：`G run --rm --no-deps -T -e SIM_KIND=gazebo app …`（`go2-voice-ltl:dev`）。
+- コード・テスト・固定は変えていない。変えたのはこの記録だけ。
+- 順は R-PAR のとおり：§2 の組 1 → 新しい種類 → M0（RTF）を最後に。
+
+### 結論
+
+**H5 は終わっていない。** §2 の組 1 は 10 回とも通った（線をすべて満たした）。新しい種類はソファの手前 2/2・周回 1/1 まで通ったところで、
+20:29:55 に Mac が蓋を閉じて眠り（`Clamshell Sleep`、電池 43%）、その後は起きなかった（下の「眠り」）。残り（ソファの周回 1、
+スーツケース・コーン・テーブルの 12 回、M0 の 6 回）は流していない。眠りをまたいだソファの周回の 2 回目は数えない。
+
+| 線（計画 H5、設計書 §13.6・§13.4・§10.8） | しきい値 | 結果 |
+|---|---|---|
+| 一周 `F around_box_1` ×5 | 5 回で 4 回以上、うち 3 回続けて。巻き数 0.9 以上 1.5 未満、箱の縁まで 0.6 m 以上 | **5/5**（巻き数 1.042〜1.069、箱の縁まで 0.797〜0.872 m） |
+| 椅子 `F near_chair_1` ×3 | 3/3。中心から 1.5 m・45° 以内、縁まで 0.45 m 以上 | **3/3**（1.084〜1.135 m・25.2〜29.6°、縁まで 0.782〜0.838 m） |
+| 椅子と挨拶 `F(near_chair_1 & X F hello)` ×1 | 1/1、同じ線 | **1/1**（1.101 m・35.8°、縁まで 0.789 m） |
+| 「箱の前まで」`F near_box_1`（`--target box_1`）×1 | 1/1。縁まで 1.5 m 以内・足跡に 45° 以内・どの足跡にも 0.30 m 以上、箱の中心から 1.5 m・45° 以内（O16、logical） | **1/1**（縁まで 0.845 m・8.5°、どの足跡にも 0.841 m、中心まで 1.167 m・22.8°） |
+| §2 の組：転ばない | 傾き 1.0 rad 未満 | 10 回とも（最大 0.220） |
+| ソファ `F near_sofa_1` ×2（Bf から） | 2/2。縁まで 1.5 m 以内、足跡に 45° 以内、どの足跡にも 0.30 m 以上 | **2/2**（縁まで 1.102〜1.180 m・0.0〜2.3°、どの足跡にも 0.544〜0.780 m） |
+| ソファ `F around_sofa_1` ×2（Bf から） | 2/2。巻き数 0.9 以上 1.5 未満、縁まで 0.6 m 以上 | **1/1 を流した**（巻き数 0.923、縁まで 0.883 m）。2 回目は眠りで壊れ、数えない |
+| ソファの手前で前の物のビット（O14） | 記録だけ | 2 回とも立たなかった（`センサー:` の行 0） |
+| スーツケース・コーン・テーブルの手前 2/2・周回 2/2 | 同じ線 | **流していない**（眠り） |
+| M0：RTF、画面あり 3 回・なし 3 回 | 記録だけ（線なし。D7 の判断） | **流していない**（眠り） |
+
+### 命令
+
+計画の「Commands」の `G`（`WT` はこの worktree）。1 回ごとに：
+
+```bash
+docker ps --format '{{.Names}}'                       # D11：go2-gazebo-1 がないこと
+uptime; docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}'; pmset -g batt; pmset -g custom | grep -i lowpower
+G --profile gazebo down --remove-orphans; G --profile gazebo up -d --no-build gazebo
+# ログに「Configured and activated unitree_guide_controller」と「Gazebo の Go2 の橋渡しを起動しました」が出るまで待つ（8〜11 秒）
+# §2 の組 1：
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect lap "F around_box_1"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near "F near_chair_1"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near "F(near_chair_1 & X F hello)"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near --target box_1 "F near_box_1"
+# 新しい種類（Bf の例）：試験の姿勢の手順（計画「The room after the room fix」）を 1 つずつ
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F standing"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F(turned_left & X F turned_left)"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py resolve --target sofa_1 --timeout 300 &   # 姿勢に着く式の直前（F11）
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F moved_forward"
+wait                                                  # resolve の終わり
+G run --rm --no-deps -T app python3 -c '<odometry を 1 通読んで x, y, 向きを出す>'   # 着いた姿勢（R-H3i）
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py objects
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near --target sofa_1 "F near_sofa_1"
+G --profile gazebo down --remove-orphans
+```
+
+- 前の物のビット（O14）は、`run` の標準エラーに流れる Session のログの `センサー:` の行（`front_blocked` なら「前方に物が出た」）を数えた。
+- 回の前後の `docker stats`・`pmset`・`uptime`、`resolve` の出力、`objects` の 1 通、Gazebo のログは worktree の外の作業用のフォルダに残した（git に入れていない）。
+
+### D11 の門、ほかの container、電源、load
+
+- `go2-gazebo-1` はどの回の前にも動いていなかった（待たなかった）。こちらのほかの重い段もなかった。
+- **この Mac はほかの組（R-PAR の並べた道）と分けていた。** 回の間、ほかの組の container（compose project `go2` の `go2-app-run-…`、
+  名前を付けた `t3cmp-…`・`t3-after`）が 100〜815 % の CPU で動いていて、1 分の load は 2.8〜15.6、ほとんどの時に 4 を超えた。
+  `pgrep -f pytest` は 0 か 2（ほかの組の `T`）。**R-PAR の決まりで、load が 4 を超えた間に外れた線は数える前にやり直す。外れた線はなかった。**
+- 電源はずっと電池（`discharging`）。`lowpowermode` はどの時も 0。
+
+| 回 | 前（日本時間） | 前の load（1・5・15 分） | 前のほかの container（CPU） | 後の load | 後の `go2oo-gazebo-1`（CPU、メモリ） | 電池（前 → 後） | `pytest`（前 / 後） |
+|---|---|---|---|---|---|---|---|
+| lap1 | 20:03:11 | 2.81 2.00 2.11 | なし | 11.57 6.06 3.72 | 292 %、1.747 GiB | 61 → 59 % | 0 / 0 |
+| lap2 | 20:05:56 | 10.85 6.18 3.81 | なし | 6.33 6.26 4.22 | 372 %、1.246 GiB | 59 → 57 % | 0 / 0 |
+| lap3 | 20:08:26 | 6.06 6.21 4.21 | なし | 10.85 7.99 5.32 | 257 %、1.254 GiB | 57 → 55 % | 0 / 2 |
+| lap4 | 20:11:39 | 10.86 8.04 5.36 | `go2-app-run-2e2252b8de67` 751 % | 8.07 8.51 6.08 | 399 %、1.27 GiB | 55 → 53 % | 0 / 0 |
+| lap5 | 20:14:28 | 8.07 8.51 6.08 | なし | 9.66 8.35 6.38 | 292 %、1.254 GiB | 53 → 51 % | 0 / 0 |
+| chair1 | 20:17:09 | 9.66 8.35 6.38 | `go2-app-run-892888f07a08` 816 % | 9.79 8.60 6.58 | 254 %、1.258 GiB | 51 → 50 % | 0 / 2 |
+| chair2 | 20:18:00 | 9.79 8.60 6.58 | `go2-app-run-…` 4 つ、計 809 % | 13.43 9.95 7.23 | 229 %、1.262 GiB | 50 → 50 % | 2 / 2 |
+| chair3 | 20:19:01 | 13.43 9.95 7.23 | 同じ 4 つ、計 805 % | 12.93 10.44 7.60 | 231 %、1.262 GiB | 50 → 50 % | 2 / 2 |
+| hello1 | 20:20:00 | 12.93 10.44 7.60 | 同じ 4 つ、計 817 % | 11.44 10.47 7.80 | 184 %、1.244 GiB | 50 → 49 % | 2 / 2 |
+| box1 | 20:21:03 | 13.01 10.81 7.93 | 同じ 4 つ、計 807 % | 15.61 12.16 8.63 | 334 %、1.259 GiB | 49 → 48 % | 2 / 2 |
+| sofa_near1 | 20:23:17 | 6.46 10.10 8.14 | `t3cmp-AL` 100 %、`go2-app-run-06abdcfe63d7` 100 % | 5.66 9.15 7.93 | 391 %、1.261 GiB | 48 → 46 % | 2 / 2 |
+| sofa_near2 | 20:24:40 | 4.60 8.68 7.79 | `go2-app-run-06abdcfe63d7` 100 % | 6.93 8.57 7.80 | 382 %、1.252 GiB | 46 → 45 % | 2 / 2 |
+| sofa_lap1 | 20:25:44 | 7.02 8.56 7.80 | `go2-app-run-06abdcfe63d7` 100 % | 14.35 11.38 9.14 | 404 %、1.261 GiB | 45 → 43 % | 2 / 0 |
+| sofa_lap2（数えない） | 20:29:45 | 14.00 11.36 9.14 | `t3-after` 100 % | — | — | 43 % → | 0 / — |
+
+### §2 の組 1（設計書 §13.6、logical、`household`）
+
+どの回も起動し直した Gazebo で、伏せから始まり、最初の動作は「立つ」。`run_formula` の終了コードはどれも 0。
+
+| 回 | 起動（日本時間） | 式 | 判定 | 巻き数 / 箱の縁まで | 椅子の中心まで・角度 / 椅子の縁まで | 最大の傾き | RTF（歩く間の中央値） | load（前 → 後） |
+|---|---|---|---|---|---|---|---|---|
+| lap1 | 20:03:11 | `F around_box_1` | 合格 | 1.069 / 0.797 m | — | 0.065 | 0.738 | 2.81 → 11.57 |
+| lap2 | 20:05:56 | `F around_box_1` | 合格 | 1.043 / 0.872 m | — | 0.136 | 0.894 | 10.85 → 6.33 |
+| lap3 | 20:08:26 | `F around_box_1` | 合格 | 1.044 / 0.857 m | — | 0.220 | 0.695 | 6.06 → 10.85 |
+| lap4 | 20:11:39 | `F around_box_1` | 合格 | 1.042 / 0.869 m | — | 0.087 | 0.760（止まり 0.628） | 10.86 → 8.07 |
+| lap5 | 20:14:28 | `F around_box_1` | 合格 | 1.042 / 0.868 m | — | 0.058 | 0.878 | 8.07 → 9.66 |
+| chair1 | 20:17:09 | `F near_chair_1` | 合格 | — | 1.093 m・29.6° / 0.788 m | 0.128 | 0.771 | 9.66 → 9.79 |
+| chair2 | 20:18:00 | `F near_chair_1` | 合格 | — | 1.135 m・25.2° / 0.838 m | 0.064 | 0.624 | 9.79 → 13.43 |
+| chair3 | 20:19:01 | `F near_chair_1` | 合格 | — | 1.084 m・29.4° / 0.782 m | 0.058 | 0.664（止まり 0.642） | 13.43 → 12.93 |
+| hello1 | 20:20:00 | `F(near_chair_1 & X F hello)` | 合格 | — | 1.101 m・35.8° / 0.789 m | 0.141 | 0.639 | 12.93 → 11.44 |
+| box1 | 20:21:03 | `F near_box_1`（`--target box_1`） | 合格 | — | 箱：縁まで 0.845 m・足跡に 8.5°・中心まで 1.167 m・22.8°・どの足跡にも 0.841 m | 0.130 | 0.646 | 13.01 → 15.61 |
+
+- 一周は 5 回とも通り、3 回続けての線も満たす（5 回続けて）。巻き数の幅は 1.042〜1.069、箱の縁までの最小は 0.797 m（線は 0.6）。
+- 椅子は 3 回とも、中心まで 1.084〜1.135 m（線は 1.5）、角度 25.2〜29.6°（線は 45）、縁まで 0.782〜0.838 m（線は 0.45）。挨拶つきは 35.8°。
+- 「箱の前まで」は §10.8 の縁の線と、O16 の中心の線（logical のときだけ）を両方満たす。`source` は `logical`。
+- 回の RTF（`objects_check.py run` の `rtf_stats`、10 秒の窓の中央値、画面あり、上のほかの組の負荷の中）：歩いている間 0.624〜0.894。
+- 橋渡しの測った大きさ（設計書 §10.9「箱と椅子では測る値は変わらない（§13.6 で確かめる）」）：`household` の箱 0.524 × 0.540、椅子 0.462 × 0.477
+  （どちらも `measured: true`。ソファの回 1 の `/go2/objects`、始めの位置で見たもの）。設計書 §12.4 の「Gazebo で測ったような大きさ（箱 0.53 × 0.52、
+  椅子 0.5 × 0.5）」と同じくらいで、まわりのほかの物の点は入っていない。
+
+### 新しい種類（設計書 §13.4 の logical、計画 H5）
+
+目標は部屋の直しの後の部屋の 4 つ：`sofa_1`・`suitcase_1`（Bf から）、`traffic_cone_1`（R5 から）、`table_1`（L から。logical だけ）。
+回ごとに起動し直した Gazebo で、試験の姿勢の手順を流し、`resolve` を姿勢に着く式の直前に裏で始め（pre-final review F11）、目標の式を流した。
+
+| 回 | 起動 | 着いた姿勢（x, y, 向き） | `resolve` | 目標の行（`/go2/objects`） | 式 | 判定 | 線の値 | 前の物のビット | RTF（歩く間） |
+|---|---|---|---|---|---|---|---|---|---|
+| sofa_near1 | 20:23:17 | (−0.453, −0.112, −166.9°) | `sofa_1`、`measured: true` | (−4.58, 0.00)、1.052 × 1.797、`measured: true` | `F near_sofa_1`（前進 5） | 合格 | 縁まで 1.180 m、足跡に 2.3°、どの足跡にも 0.544 m（suitcase_1） | 立たない | 0.877 |
+| sofa_near2 | 20:24:40 | (−0.484, −0.060, −173.8°) | 同じ | (−4.58, 0.00)、1.054 × 1.830 | `F near_sofa_1`（前進 5） | 合格 | 縁まで 1.102 m、0.0°、どの足跡にも 0.780 m（suitcase_1） | 立たない | 0.857 |
+| sofa_lap1 | 20:25:44 | (−0.494, −0.046, −171.6°) | 同じ | (−4.58, 0.00)、1.053 × 1.808 | `F around_sofa_1`（49 手） | 合格 | 巻き数 0.923、縁まで 0.883 m（どの足跡にも 0.465 m、suitcase_1） | （記録だけ）0 | 0.670 |
+| sofa_lap2 | 20:29:45 | — | — | — | `F around_sofa_1` | **数えない**（眠り） | — | — | — |
+
+- `resolve` の `listed_after_still_s` は 3 回とも `null`。標準エラーは「the row was measured in the first /go2/objects message this tool got」：
+  logical では、ソファは B（2 回回った後）で論理カメラに入り、その止まりで測られる。`resolve` は Bf に着く式（`F moved_forward`）の直前に始めるので、
+  始めた時にはもう `measured: true`。待ちの時間は detector のときの線（H6 M4）で、logical の H5 には線がない。
+- ソファの手前はどちらも、Bf から前進 5 で縁まで 1.10〜1.18 m に止まり、`final_edge` は 0.50 m より大きいので notes はない。
+  `センサー:` の行は 0（前の物のビットは立たなかった。O14）。
+- 周回の巻き数 0.923 は 0.9 の線に近い（輪と `LAP_DONE` は変えない決まり。§10.8）。1 回だけなので、残りの回で幅を見る。
+- 着いた Bf の姿勢：x −0.453〜−0.494、y −0.046〜−0.112、向き −166.9〜−173.8°。`tests/test_household.py` の `MEASURED_RANGES["Bf"]`
+  （x −0.560〜−0.506、y −0.141〜−0.054、向き −172.4〜−166.6°）より、x は 3 回とも 0.012〜0.053 m 前（前進が短い）、
+  sofa_near2 の向きは 1.4° 回りすぎ。どの回も計画はあり、線は通った。R-H3i のとおり記録する（固定は変えていない）。
+- 測った大きさ：ソファ 1.052〜1.054 × 1.797〜1.830（配置 1.044 × 1.8）。スーツケース 0.502 × 0.313（配置の世界の軸で 0.468 × 0.291）。
+  テーブルは L に回らないので測られず、`measured: false`・1.5 × 1.2（F2 の裁定：[L, L] と配置の大きさの軸ごとの大きいほう）。
+
+### 眠り
+
+- **20:29:55 に Mac が蓋を閉じて眠った**（`pmset -g log`：`Entering Sleep state due to 'Clamshell Sleep'`、電池 43%）。ソファの周回の 2 回目を
+  20:29:45 に起動した 10 秒後で、その後は短く起きる間（`DarkWake`、数秒から十数秒、約 15 分ごと）だけが続いた。14 日 01:2x まで、
+  `DarkWake` 57 回・`Sleep` 57 回で、ふつうに起きた（`Wake`）ことはない。電池は 43 → 41 %。
+- 眠りをまたいだ sofa_lap2 は数えない：「立つ」は終わったが、Session が「姿勢が計画と違います（計画: 立ち / 実際: 伏せ）」で error にした
+  （橋渡しが fixed down → fixed stand を見たのは、起動からシミュレーションの時間で約 228 秒後）。回る間に「センサー（LiDAR か
+  /sportmodestate）が途切れています」で 2 回止まり、`resolve` は 21:27、`F moved_forward` は 21:29〜21:47、目標の式は 21:51 に始まって終わらなかった。
+- 22:25 の短い起きる間に、続きの回（`nk.sh` の組）を止め、こちらの container（`go2oo-gazebo-1`、`go2oo-app-run-e367c87c07c1`）を消して
+  `G down` した。その後、ふつうに起きるのを 60 秒ごとに見て 3 時間（14 日 01:33 まで）待った。眠っている間は何も流していない。
+- 眠りの前の 13 回は、どれも眠りの前に終わっている（最後の sofa_lap1 は 20:29:42 に Gazebo を止める所まで）。
+
+### 残っていること（流していない）
+
+| 段 | 回 |
+|---|---|
+| ソファ（Bf） | `F around_sofa_1` 1 回（2/2 のうち 2 回目） |
+| スーツケース（Bf） | `F near_suitcase_1` 2 回、`F around_suitcase_1` 2 回 |
+| コーン（R5） | `F near_traffic_cone_1` 2 回、`F around_traffic_cone_1` 2 回 |
+| テーブル（L、logical だけ） | `F near_table_1` 2 回、`F around_table_1` 2 回 |
+| M0（最後に。R-PAR） | 画面あり 3 回・なし 3 回、起動し直した `household` で 20 秒の後 `objects_check.py rtf --seconds 75`。ほかの組の `pytest` がなく、1 分の load が 4 未満のときだけ |
+
+手順と道具は上と同じで、Mac が起きていれば続きから流せる（1 回 1〜4 分、全部で約 1 時間 15 分）。
