@@ -1010,13 +1010,24 @@ class ObjectMemory:
     物の一覧のメッセージ（voice_ltl/objects.py の形、odom = Gazebo の世界）を作る。2 通り：
     - sizes なし（/go2/objects、logical のとき）：はじめの大きさは単語帳の [L, L]（objects.default_size）で
       measured False、LiDAR ではじめて測ったら（set_size）その大きさで measured True（O43）。
+      seed_sizes（id → 配置の世界の軸の大きさ。橋渡しが正解に持つもの）があれば、はじめの大きさは軸ごとに
+      [L, L] とその大きさの大きい方（measured は False のまま）。足跡は物より小さくならない（O12 の前提。
+      L が物より短いテーブル・コーン・スーツケース。pre-final review F2、R-PF）。
     - sizes あり（正解、/gazebo/objects_truth）：id → 配置の世界の軸の大きさ。大きさは変えず（set_size は無視）、
       measured は付けない。sizes にない id は覚えない。"""
 
-    def __init__(self, sizes: Optional[Mapping[str, Tuple[float, float]]] = None):
+    def __init__(self, sizes: Optional[Mapping[str, Tuple[float, float]]] = None,
+                 seed_sizes: Optional[Mapping[str, Tuple[float, float]]] = None):
         self._sizes = None if sizes is None else {k: (float(v[0]), float(v[1])) for k, v in sizes.items()}
+        self._seeds = {} if seed_sizes is None else {k: (float(v[0]), float(v[1])) for k, v in seed_sizes.items()}
         self._objects: Dict[str, Obj] = {}
         self._measured: set = set()   # LiDAR で大きさを測った物の id
+
+    def _first_size(self, obj_id: str, label: str) -> Tuple[float, float]:
+        """測るまでの大きさ：[L, L]、seed_sizes にあれば軸ごとにそれとの大きい方。"""
+        square = default_size(label)
+        seed = self._seeds.get(obj_id)
+        return square if seed is None else (max(square[0], seed[0]), max(square[1], seed[1]))
 
     def update(self, seen: Sequence[Tuple[str, str, float, float]], now: float) -> None:
         """カメラの 1 枚分：見えた物 (id, label, x, y)。見えた物は visible・seen = now、
@@ -1029,7 +1040,7 @@ class ObjectMemory:
                 size, measured = self._sizes[obj_id], None
             else:
                 old = self._objects.get(obj_id)
-                size = default_size(label) if old is None else old.size
+                size = self._first_size(obj_id, label) if old is None else old.size
                 measured = obj_id in self._measured
             ids.add(obj_id)
             self._objects[obj_id] = Obj(obj_id, label, float(x), float(y), size, True, float(now),
@@ -1040,8 +1051,9 @@ class ObjectMemory:
 
     def set_size(self, obj_id: str, size: Tuple[float, float]) -> None:
         """LiDAR で測った大きさ (x の幅, y の幅) を [SIZE_MIN, MAX_SIZE] に収めて入れる。
-        初めて測ったら単語帳の [L, L] と置き換え（0.45 m の椅子を膨らんだまま残さない）、その後は軸ごとに
-        測った中で大きい方を残す（一方からは手前の面しか見えないので）。知らない id と正解の控えでは何もしない。"""
+        初めて測ったら測るまでの大きさ（[L, L]、seed_sizes があればそれとの大きい方）と置き換え
+        （0.45 m の椅子を膨らんだまま残さない）、その後は軸ごとに測った中で大きい方を残す
+        （一方からは手前の面しか見えないので）。知らない id と正解の控えでは何もしない。"""
         o = self._objects.get(obj_id)
         if self._sizes is not None or o is None or not all(math.isfinite(v) for v in size):
             return

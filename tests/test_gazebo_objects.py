@@ -526,6 +526,44 @@ def test_memory_starts_at_the_vocabulary_square_and_marks_measured():
     assert [o.id for o in m.objects()] == ["box_2", "box_10", "chair_1", "sofa_1"]   # _id_key order
 
 
+def test_logical_memory_starts_no_smaller_than_the_model():   # pre-final review F2 (R-PF; O12's premise)
+    # seeded with the layout's world sizes, the first footprint is the per-axis max of [L, L] and that size
+    seeds = {"table_1": (1.5, 0.8), "traffic_cone_1": (0.503, 0.503), "suitcase_1": (0.468, 0.291)}
+    m = ObjectMemory(seed_sizes=seeds)
+    m.update([("table_1", "table", -2.4, 4.4), ("traffic_cone_1", "traffic_cone", -0.3, -4.45),
+              ("suitcase_1", "suitcase", -1.62, -1.14), ("chair_1", "chair", 2.5, -1.5)], 10.0)
+    rows = {o.id: o for o in m.objects()}
+    assert rows["table_1"].size == (1.5, 1.2)                      # L 1.2 < the model's 1.5 along x
+    assert rows["traffic_cone_1"].size == (0.503, 0.503)           # L 0.35 < 0.503
+    assert rows["suitcase_1"].size == (0.468, 0.45)                # L 0.45 < 0.468 along x
+    assert rows["chair_1"].size == (0.45, 0.45)                    # no seed: the vocabulary square, as before
+    assert all(o.measured is False for o in rows.values())        # still not measured (O43)
+    m.update([("table_1", "table", -2.4, 4.4)], 11.0)
+    assert next(o for o in m.objects() if o.id == "table_1").size == (1.5, 1.2)   # kept across frames
+    m.set_size("table_1", (1.48, 0.79))
+    table = next(o for o in m.objects() if o.id == "table_1")
+    assert (table.size, table.measured) == ((1.48, 0.79), True)    # the first LiDAR size replaces it, as before
+    # the household room: every first footprint covers the model in world axes and [L, L]; for the table, the
+    # cone and the suitcase it is larger than [L, L] (the review's three)
+    lay = layout.load("household")
+    sizes = {e.id: e.world_size() for e in lay.entries}
+    m = ObjectMemory(seed_sizes=sizes)
+    m.update([(e.id, e.label, e.x, e.y) for e in lay.entries], 10.0)
+    grown = set()
+    for o in m.objects():
+        square = bridge_core.default_size(o.label)
+        assert o.measured is False and all(a >= max(b, c) for a, b, c in zip(o.size, sizes[o.id], square)), o.id
+        if o.size != square:
+            grown.add(o.id)
+    assert grown == {"table_1", "traffic_cone_1", "suitcase_1"}
+    # the bridge node seeds its /go2/objects memory with the layout sizes its truth holds (the node needs rclpy,
+    # so its wiring is checked in its text, as for the publisher check)
+    node = (ROOT / "gazebo" / "gazebo_bridge.py").read_text(encoding="utf-8")
+    assert "sizes = {e.id: e.world_size() for e in lay.entries}" in node
+    assert "self.truth = ObjectMemory(sizes=sizes)" in node
+    assert "self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None" in node
+
+
 def test_measuring_radius_follows_the_kind():
     sofa = side_points(-4.38, 0.0, 1.8, 1.04, top=0.9)
     assert footprint_size(sofa, -4.38, 0.0, radius=measure_radius("sofa")) == pytest.approx((1.8, 1.04), abs=0.05)
