@@ -773,3 +773,138 @@ Part B と同じ 4 つのずれで撮った。
 どの Gazebo の回・検出の回の前にも `go2-gazebo-1` はなく、待たなかった。こちらの重い段は 1 つずつ。電池で 73 % → 43 %、`lowpowermode` 0。
 `pmset -g log` に眠りはない（16:00〜18:00）。Gazebo の回の間の container は `go2oo-gazebo` だけ（189〜285 %、0.72〜1.2 GiB）。
 時刻ごとの記録は提案に書いた。終わりに、こちらの container とネットワークはすべて止めて消した。
+
+## H1b：部屋の直しの後の Fuel のイメージ（patch-0005-fuel2）を作り、4 つのモデルを確かめた（2026-11-13）
+
+- 枝：`objects2/h1b-fuel`（`feat/open-objects` の `49a4158`、部屋の直しの merge から）。worktree `~/work/physicalAI/.go2-worktrees/oo-h1b`。ROS の domain は 61。
+- 場所：この Mac の Docker Desktop。
+- 前の試みはなかった（worktree・枝・`go2-voice-ltl-gazebo:patch-0005-fuel2` のどれもなかった）。1 回で済んだ（15:56〜16:06）。
+- 部屋は R-H3h・R-H3i の後のもの。モデルは Sofa（3）、Table（4）、Suitcase1（2）、Construction Cone（3）。TrashBin と LampAndStand は出た。
+  計画 H1 の Suitcase1 だけの手順は 1 回目の H1 で済んでいるので、同じ確かめを新しい 4 つの一覧に当てた。
+
+### 結論
+
+**H1b の線はすべて満たした。** `go2-voice-ltl-gazebo:patch-0005-fuel2` は `patch-0005` の 22 の層をそのままに、2 つの層と `ENV` を足しただけで、
+4 つのモデルのフォルダがあり、どの zip も固定の sha256 と大きさに同じ。作者は `model.config` と固定が同じ。`model_extent.py` の足跡・高さ・
+置く高さは、配置（`gazebo/layouts/household.json`）といちばん大きくて 2 mm しか違わない（設計書の値のまま置く Table のずれ。R-H1c）。
+だから固定は 1 つも動かしていない。受け入れの PLANT も目標の試験の数も変わらない。全部のテストは 0 failed。変えたのはこの記録だけ。
+
+| 線（計画 H1 を新しい一覧に） | 結果 |
+|---|---|
+| zip を 1 回だけ取り、sha256 と大きさを記録（host では開かない） | 取ったのは build の 4 つの zip だけ。どれも固定と同じ。Suitcase1 と Construction Cone は H3 の下見の zip も数え直して同じ（取り直していない） |
+| 固定のまま `T tests/test_layout.py tests/test_fuel_image.py` | 94 passed（build の前） |
+| build が通り、フォルダがそろい、`GZ_SIM_RESOURCE_PATH` の最後が `/opt/go2_models` | 通った。4 つのフォルダ |
+| イメージの中で、sha256・ライセンス・作者が固定と同じ | 同じ（ライセンスは下の注） |
+| イメージの中で 4 つを測り、足跡・高さ・z が配置と許す違いの中 | 中。測った値を写した 2 つは 0.11 mm 以内、設計書の値の 2 つは 2 mm 以内 |
+| `T tests/test_household.py` と全部のテスト | 122 passed、2561 passed・18 skipped・29 deselected |
+
+**許す違い。** 計画 H1 は、測ったモデル（ここでは Suitcase1 と Construction Cone）の足跡を `model_extent.py` から配置に写し、ほかのモデルは
+設計書 §12.2 の値と比べて違いを報告し、値はそのままにする（R-H1c）。だから、写した 2 つは mm への丸め（0.5 mm）の中、設計書の値の 2 つは
+H1 で報告した違い（1〜2 mm）から増えないことを線にした。どちらも §13.3 の位置と大きさの線（0.15・0.35・0.4 m）よりずっと小さい。
+
+### D11 の門と、ほかの container・電源
+
+どの回の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` |
+|---|---|---|---|---|
+| 15:56:52 | 始め（門） | なし | AC、100%、charged | 0 |
+| 15:57:07 | build の直前 | なし | AC、100%、charged | 0 |
+| 15:59:17 | build とイメージの中の確かめの後 | なし | AC、100%、charged | 0 |
+| 16:06:14 | 全部のテストの後 | なし | AC、100%、charged | 0 |
+
+- `pmset -g log` に、14:43 の後の眠りはない。
+- 動かしたのは、名前を付けた使い捨ての container（`docker run --rm --name oo-h1b-…`、`--network none`）と、本体の compose project の `app` の
+  `run --rm`（`T`）だけ。終わった後に残った container はない。compose project `go2oo` は使っていない（H1b は Gazebo を動かさない）。
+
+### zip
+
+- 新しく取ったのは、build の `RUN` が取った 4 つの zip だけ（R-H3b が認めた、固定した Fuel の zip）。host では開いていない。
+- Suitcase1 と Construction Cone は、H3 の下見が取った zip（`oo-h3s` の git に入れていない `out/h3s/models/`）を、取り直さずに数え直した：
+
+  ```bash
+  shasum -a 256 <h3s>/models/Suitcase1/Suitcase1.zip <h3s>/models/ConstructionCone/ConstructionCone.zip; wc -c < …
+  ```
+  Suitcase1 `8e0c23b7c34cd19f443253eecf7185ca1a949f955aba278f01029775972f8fe7`（1 802 850 B）、Construction Cone
+  `a6962fb5f787ba0ee21d0a9f1e96d95dde5160146852abcc45df35b33a46a34e`（622 427 B）。どちらも `docker/fuel_models.json` と同じ。
+- Construction Cone は、固定の `name`（R-H3h (3)）から作る Fuel の名前の URL（`Construction%20Cone/3/Construction%20Cone.zip`）で取れ、
+  フォルダ `construction_cone/` に開いた。
+
+### build
+
+```bash
+docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel2 \
+    -f docker/Dockerfile.gazebo-fuel docker
+```
+
+- 元：`go2-voice-ltl-gazebo:patch-0005`（`sha256:39fd601dc2a3…`、2026-11-11 10:08）。作り直していない（`FROM` は CACHED）。
+- できたイメージ：`go2-voice-ltl-gazebo:patch-0005-fuel2`（一覧の ID `a67719c022bc`、config `sha256:64551a7a3c5a…`、2026-11-13 15:57:17、7.28 GB）。
+  全部で 11 秒。層は 24 で、はじめの 22 は元と同じ。足したのは `COPY`（32.8 kB）と `RUN`（5.05 MB、9.7 秒）の 2 つと `ENV` だけ。
+- `patch-0005-fuel1`（`5ee232801b4e`、2026-11-12 10:30:54）は残してある（作り直していない）。
+- `RUN` の出力（4 つとも固定の sha256 と同じ）：
+
+  ```
+  fetch_fuel_models: Sofa 3: 1311028 B, sha256 6d19d1f1…0db1 ok -> /opt/go2_models/Sofa
+  fetch_fuel_models: Table 4: 899222 B, sha256 3a720ef2…163d ok -> /opt/go2_models/Table
+  fetch_fuel_models: Suitcase1 2: 1802850 B, sha256 8e0c23b7…8fe7 ok -> /opt/go2_models/Suitcase1
+  fetch_fuel_models: construction_cone 3: 622427 B, sha256 a6962fb5…a34e ok -> /opt/go2_models/construction_cone
+  ```
+- build の注意は H1 と同じ 1 つ（`UndefinedVar`：元のイメージにこの値がない。`${…:+…:}` の形なので値は `/opt/go2_models` だけになる）。
+
+### イメージの中の確かめ
+
+使い捨ての container で、作業用の小さいスクリプト（読むだけ。モデルの中の物は何も実行しない）を `python3 -I` で流した。
+
+- `/opt/go2_models` には `Sofa`、`Suitcase1`、`Table`、`construction_cone` の 4 つ（隠れたファイルも zip もない）。`/opt/go2_fuel` の
+  `fuel_models.json` と `fetch_fuel_models.py` は、枝のファイルと sha256 が同じ。
+- どれにも `model.config` と `model.sdf` があり、どの `.sdf` にも `<plugin` は 0 個。Construction Cone には `model-1_3.sdf`・`model-1_4.sdf` もあるが、
+  Gazebo は `model.config` のいちばん新しい版（1.5）の `model.sdf` を読み、`model_extent.py` もそれを測る（3 つとも当たり判定は同じ DAE と `<scale>`）。
+- 中身が同じこと：Suitcase1 と `construction_cone` のフォルダのどのファイルも、zip の中の同じ名前のファイルと sha256 が同じ（ファイルの数も同じ）。
+  Sofa・Table・Suitcase1 のフォルダは、`patch-0005-fuel1` の同じフォルダとファイルごとに同じ。
+- `GZ_SIM_RESOURCE_PATH`：値は表示せず、`:` で区切った数と、最後の項目が `/opt/go2_models` か（はい・いいえ）だけを確かめた。
+  `--entrypoint bash` では 1 項目で、最後が `/opt/go2_models`。いつもの入り口（`gazebo_entry.sh` が workspace を読み込んだ後）では 2 項目で、
+  `/opt/go2_models` はそのうちの 1 つ。
+- 橋渡しの止まる確かめ（`gazebo/bridge_core.bridge_settings`、`GO2_LAYOUT=household`、`OBJECTS_SOURCE=logical`、いつもの入り口の
+  `GZ_SIM_RESOURCE_PATH`）：`patch-0005-fuel2` では通り、6 つの物を置き、足りないフォルダはない。`patch-0005-fuel1` では
+  「`construction_cone` がない」の 1 行で止まる（計画の Wave 3「部屋の直しの後の部屋」のとおり）。
+
+### 作者・ライセンス・sha256 と固定
+
+| フォルダ | Fuel の名前（版） | zip の sha256（build で確かめた）・大きさ | 作者（`model.config`） | 固定の作者 | 固定のライセンス |
+|---|---|---|---|---|---|
+| Sofa | Sofa（3） | `6d19d1f1…0db1`、1 311 028 B | Wan Yi Seow | 同じ | CC BY 4.0 |
+| Table | Table（4） | `3a720ef2…163d`、899 222 B | Nate Koenig | 同じ | CC0 1.0 |
+| Suitcase1 | Suitcase1（2） | `8e0c23b7…8fe7`、1 802 850 B | Wan Yi Seow | 同じ | CC0 1.0 |
+| construction_cone | Construction Cone（3） | `a6962fb5…a34e`、622 427 B | Cole Biesemeyer、Nate Koenig | 同じ（`, ` でつないだ 2 人） | CC0 1.0 |
+
+- **ライセンスの注：** どの `model.config` にもライセンスの項目はなく、モデルのフォルダのどのファイルにも「licen」の字はない（設計書 §12.2 のとおり）。
+  だからイメージの中のライセンスは固定（`/opt/go2_fuel/fuel_models.json`、枝と同じ）だけで、モデルのファイルと比べることはできない。
+  取ってよいのは固定の zip だけなので、Fuel の情報は取り直していない。固定の値は、設計書 §12.2・§12.9 と、H3 の下見が Fuel の情報
+  （`license_name`、2026-11-12）から読んだ値と同じ。
+- Construction Cone の `model.config` の名前は `Construction Cone`、説明は「オレンジの工事用のコーン」。
+
+### 4 つのモデルを測った（イメージの中で、`gazebo/tools/model_extent.py`）
+
+```bash
+docker run --rm -v ~/work/physicalAI/.go2-worktrees/oo-h1b:/wt:ro -w /wt --entrypoint bash go2-voice-ltl-gazebo:patch-0005-fuel2 -c \
+  'for m in /opt/go2_models/*; do echo "$m"; python3 -I /wt/gazebo/tools/model_extent.py "$m"; done; cat /opt/go2_models/construction_cone/model.config'
+```
+
+| モデル（id） | 測った足跡（モデルの x × y）× 高さ、ずれ、z_min（collision） | 配置 | 違い（いちばん大きい） | 配置の値の出どころ |
+|---|---|---|---|---|
+| Sofa（sofa_1） | 1.04353 × 1.8 × 0.942733、(0.021071, 0)、−0.00012 | 1.044 × 1.8 × 0.943、(0.02, 0)、yaw 0 | ずれ x 1.07 mm | 設計書 §12.2（R-H1c） |
+| Suitcase1（suitcase_1） | 0.290914 × 0.467992 × 0.751915、(0, 0)、0.0 | 0.291 × 0.468 × 0.752、(0, 0)、yaw 90 | 0.09 mm | H1 の `model_extent.py` |
+| Table（table_1） | 1.5 × 0.8 × 1.015、(0, 0)、0.0 | 1.5 × 0.8 × 1.015、(0.002, 0)、yaw 0 | ずれ x 2.0 mm | 設計書 §12.2（R-H1c） |
+| Construction Cone（traffic_cone_1） | 0.50292 × 0.50292 × 1.088889、(0, 0)、0.0 | 0.503 × 0.503 × 1.089、(0, 0)、yaw 0 | 0.11 mm | H3 の下見の `model_extent.py` |
+
+- Sofa・Suitcase1・Table の出力は、H1（`patch-0005-fuel1`）の出力と 1 文字も違わない。Construction Cone は H3 の下見の値と同じ。
+- 置く高さ：z_min は 0 か −0.12 mm（ソファの床の誤差）なので、配置に `z` はなく、どれも既定の 0 のまま。
+- だから R-H1a のような固定の直しは要らない。配置も `docker/fuel_models.json` も `tests/test_household.py` の数も変えていない。
+
+### テスト
+
+- `T tests/test_layout.py tests/test_fuel_image.py`：94 passed（build の前。固定はそのまま）。
+- `T tests/test_layout.py tests/test_fuel_image.py tests/test_household.py`：122 passed（39.9 秒）。受け入れの PLANT が変わらないことと、
+  Bf・R5・L からの目標の数の固定（R-H3g）はこの中にある。
+- 全部（`T tests nl_control/tests`）：2561 passed, 18 skipped, 29 deselected（317.1 秒）。`feat/open-objects` の `49a4158` の merge と同じ数。
+- 変えたファイルはこの記録だけ。PR #4 のファイル（D12）には触れていない。
