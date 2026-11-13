@@ -80,7 +80,8 @@ docker compose --profile fake down    # 全部止める
 ## 3. Gazebo で動かす
 
 ```bash
-docker compose --profile gazebo build gazebo             # 初回だけ（時間がかかります）
+docker build -t go2-voice-ltl-gazebo:patch-0005 -f docker/Dockerfile.gazebo docker   # 初回だけ 1 つ目（controller。時間がかかります）
+docker compose --profile gazebo build gazebo             # 初回だけ 2 つ目（その上に Fuel の家具を足す薄いイメージ）
 SIM_KIND=gazebo docker compose --profile gazebo up -d    # Gazebo とアプリ
 docker compose logs -f app                               # 「ページ: http://localhost:8810」が出たら開く
 docker compose --profile gazebo down                     # 全部止める
@@ -88,6 +89,18 @@ docker compose --profile gazebo down                     # 全部止める
 
 - 操作画面：<http://localhost:8810>
 - Gazebo の画面：<http://localhost:6080/vnc.html?autoconnect=1>
+- 部屋は既定で家具のある `household`（箱・椅子・ソファ・スーツケース・コーン・テーブル）。前の箱と椅子だけの部屋は `GO2_LAYOUT=default SIM_KIND=gazebo docker compose --profile gazebo up -d`。
+
+カメラの絵から物を見つける検出器（YOLOE）で動かすとき：
+
+```bash
+docker compose --profile detector build detector         # 初回だけ（約 12 分、4.5 GB）
+OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d
+docker compose --profile gazebo --profile detector down  # 全部止める
+```
+
+検出器は AGPL-3.0 の ultralytics を使い、文字の符号化器の重みは研究のためだけに使えます（[docs/simulation.md](docs/simulation.md#検出器で物を見つける)）。
+実機の道（PR #4 の Linux 直接実行と `compose.robot.yaml`）は、この仕事で変えていません。
 
 LLM と声を使わずに、式から動かすとき：
 
@@ -141,8 +154,8 @@ docker compose run --rm --no-deps app python3 -m pytest -q -m "not slow" tests n
 |---|---|
 | [docs/overview.md](docs/overview.md) | これは何か・仕組み |
 | [docs/setup.md](docs/setup.md) | 準備の詳しい説明（LLM のログイン、`env.txt`、書き起こしのモデル、テスト） |
-| [docs/simulation.md](docs/simulation.md) | 偽の Go2 と Gazebo（ページ、物、`run_formula`、controller のパッチ、転んだとき） |
-| [docs/vocabulary.md](docs/vocabulary.md) | 話せること、物を使う指示、単語帳と状態遷移図の足し方 |
+| [docs/simulation.md](docs/simulation.md) | 偽の Go2 と Gazebo（ページ、物、家具の部屋、検出器、ライセンスと出典、`run_formula`、controller のパッチ、転んだとき） |
+| [docs/vocabulary.md](docs/vocabulary.md) | 話せること、物を使う指示（50 種類）、物の種類の足し方、単語帳と状態遷移図の足し方 |
 | [docs/real_robot.md](docs/real_robot.md) | 実機の Go2 を有線でつなぐ（用意するもの、確かめ、安全の注意、困ったとき） |
 | [docs/unknowns.md](docs/unknowns.md) | わかっていないこと |
 | [docs/design.md](docs/design.md) | 設計書 |
