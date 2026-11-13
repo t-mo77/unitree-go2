@@ -775,6 +775,15 @@ def test_preview_rule(tmp_path):
     assert lamp["passed"] is False and lamp["pose_hit"] is None        # no frame R
 
 
+def test_a_set_without_a_scored_frame_does_not_pass(tmp_path):   # pre-final review F16
+    # only spawn and spawn_lying frames (no detectable truth in range): nothing scored, nothing failed, no pass
+    frames = [f for f in detector_check.load_frames(fixture_set(tmp_path)) if f.view in ("spawn", "spawn_lying")]
+    out = detector_check.replay(frames, oracle(), LAYOUT, FIXTURE_TARGETS)
+    line = detector_check.set_line(out, "household", "oracle", LAYOUT, FIXTURE_TARGETS)
+    assert line["scored"] == [] and line["failed"] == [] and line["errors"] == []
+    assert line["passed"] is False                       # exit 0 only when one frame at least is scored
+
+
 def test_preview_lines_are_pinned():                       # pre-final review F10 (R-H3b, R-H3h (4))
     assert detector_check.PREVIEW_IOU == 0.5 and detector_check.PREVIEW_SHIFT_HITS == 2
     assert detector_check.PREVIEW_MIN_KINDS == 3 and detector_check.CONFUSION_IOU == 0.3

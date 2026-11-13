@@ -413,6 +413,23 @@ def test_publisher_note_names_the_missing_detector():    # Review Focus 3
         objects_publisher_note("fake", 1)
 
 
+def test_the_bridge_node_checks_the_publishers_every_10_s_and_stops_on_bad_settings():   # pre-final review F14
+    # the node needs rclpy and the Jazzy types, so its wiring is checked in its text (as test_bridge_core does
+    # for parse_switch): the 10 s timer, the error line, and exit 1 before GazeboBridge on bad settings
+    assert bridge_core.PUBLISHER_NOTE_S == 10.0
+    node = (ROOT / "gazebo" / "gazebo_bridge.py").read_text(encoding="utf-8")
+    assert "self.create_timer(PUBLISHER_NOTE_S, self._check_publishers, clock=wall)" in node
+    check = node[node.index("    def _check_publishers(self)"):]
+    check = check[:check.index("\n    def ", 1)]
+    assert "objects_publisher_note(self.source, self.count_publishers(OBJECTS_TOPIC))" in check
+    assert "self.get_logger().error(note)" in check
+    main = node[node.index("def main() -> None:"):]
+    settings = main[main.index("source, lay = bridge_settings()"):main.index("rclpy.init()")]
+    assert re.search(r"except ValueError as e:.*\n\s+rclpy\.logging\.get_logger\(NODE_NAME\)\.error\(str\(e\)\)"
+                     r"\n\s+sys\.exit\(1\)\n", settings)
+    assert main.index("sys.exit(1)") < main.index("GazeboBridge(source, lay)")
+
+
 def test_missing_model_folder_stops_the_bridge_before_spawning(tmp_path):   # Review Focus 5
     (tmp_path / "Sofa").mkdir()
     assert missing_models(household_like_layout(), str(tmp_path)) == ["LampAndStand", "Suitcase1", "Table", "TrashBin"]

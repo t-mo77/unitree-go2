@@ -788,6 +788,14 @@ def test_accuracy_check_reads_world_and_status():
     assert code == 0 and out["ids_retired"] is None and out["detector"] is None
 
 
+def test_median_position_line():                                # pre-final review F12 (spec §13.3)
+    # two of three pairs 0.3 m off: the max line (0.3 <= 0.35) holds, the median line (0.3 > 0.25) fails
+    det = tuple(replace(o, x=o.x + 0.3) if o.id in ("suitcase_1", "sofa_1") else o for o in PERFECT)
+    r = acc(det)
+    assert r["max_pos_err"] == pytest.approx(0.3, abs=0.002) and r["median_pos_err"] == pytest.approx(0.3, abs=0.002)
+    assert keys(r) == ["median_pos_err"] and r["passed"] is False
+
+
 def test_resolve_pairs_the_detector_row():
     truth = (SOFA_TRUTH, HOUSE.find("trash_can_1").obj())
     det = (Obj("bench_1", "bench", -4.3, 0.1, (1.0, 1.7)), Obj("trash_can_2", "trash_can", -1.45, -1.52, (0.3, 0.4)))

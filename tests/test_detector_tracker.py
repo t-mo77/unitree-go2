@@ -245,6 +245,16 @@ def test_in_view_misses_push_hits_out_of_the_window():
     assert run.ids() == []
 
 
+def test_a_tentative_track_whose_window_empties_is_dropped():    # pre-final review F15 (spec §11.7)
+    run = Run()
+    run.frame(obs())
+    assert run.stats()["tracks_tentative"] == 1
+    run.frame()
+    run.frame()
+    run.frame()                                          # three in-view frames without a hit: the window is empty
+    assert run.stats()["tracks_tentative"] == 0 and run.ids() == []
+
+
 def test_frames_beyond_6_m_do_not_count_toward_n():
     run = Run()
     for _ in range(4):
