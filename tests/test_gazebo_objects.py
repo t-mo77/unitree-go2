@@ -1,9 +1,11 @@
 """Gazebo の物（logical camera・配置ファイルの物・/go2/objects と /gazebo/objects_truth）の、ROS を使わない部品
 （Task D、open-objects Task 2.3）。"""
 
+import io
 import json
 import math
 import re
+import tokenize
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -415,11 +417,28 @@ def test_publisher_note_names_the_missing_detector():    # Review Focus 3
         objects_publisher_note("fake", 1)
 
 
+def code_text(path: Path) -> str:
+    """The file's text with every comment cut off (tokenize), so a line commented out passes no text check
+    (pre-final review round 2: 「# self.create_timer(…)」 and 「pass  # self.get_logger().error(note)」 passed)."""
+    text = path.read_text(encoding="utf-8")
+    cut = {tok.start[0]: tok.start[1] for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+           if tok.type == tokenize.COMMENT}
+    lines = io.StringIO(text).readlines()                       # numbered as tokenize numbers them
+    return "".join(line[:cut[n]].rstrip() + "\n" if n in cut else line for n, line in enumerate(lines, 1))
+
+
+def test_code_text_cuts_comments_only(tmp_path):
+    f = tmp_path / "m.py"
+    f.write_text('a = 1  # one\n# b = 2\nc = "# not a comment"\nif a:\n    pass  # d = 4\n', encoding="utf-8")
+    assert code_text(f) == 'a = 1\n\nc = "# not a comment"\nif a:\n    pass\n'
+
+
 def test_the_bridge_node_checks_the_publishers_every_10_s_and_stops_on_bad_settings():   # pre-final review F14
-    # the node needs rclpy and the Jazzy types, so its wiring is checked in its text (as test_bridge_core does
-    # for parse_switch): the 10 s timer, the error line, and exit 1 before GazeboBridge on bad settings
+    # the node needs rclpy and the Jazzy types, so its wiring is checked in its text without comments (as
+    # test_bridge_core does for parse_switch): the 10 s timer, the error line, and exit 1 before GazeboBridge on
+    # bad settings
     assert bridge_core.PUBLISHER_NOTE_S == 10.0
-    node = (ROOT / "gazebo" / "gazebo_bridge.py").read_text(encoding="utf-8")
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
     assert "self.create_timer(PUBLISHER_NOTE_S, self._check_publishers, clock=wall)" in node
     check = node[node.index("    def _check_publishers(self)"):]
     check = check[:check.index("\n    def ", 1)]
@@ -558,7 +577,7 @@ def test_logical_memory_starts_no_smaller_than_the_model():   # pre-final review
     assert grown == {"table_1", "traffic_cone_1", "suitcase_1"}
     # the bridge node seeds its /go2/objects memory with the layout sizes its truth holds (the node needs rclpy,
     # so its wiring is checked in its text, as for the publisher check)
-    node = (ROOT / "gazebo" / "gazebo_bridge.py").read_text(encoding="utf-8")
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
     assert "sizes = {e.id: e.world_size() for e in lay.entries}" in node
     assert "self.truth = ObjectMemory(sizes=sizes)" in node
     assert "self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None" in node
