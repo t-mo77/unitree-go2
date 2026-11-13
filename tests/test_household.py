@@ -1,15 +1,18 @@
 """The household layout gazebo/layouts/household.json and its grid checks (open-objects spec §12.1–§12.5).
 
 The layout keeps the default box_1 and chair_1 and adds four Fuel models: the room proposal after the H3 screening
-(R-H3b). Suitcase1 stands 1.5 m from Bf, Construction Cone (traffic_cone_1) is new and seen from R5, the sofa moved
-0.2 m back, the table is unchanged; TrashBin and LampAndStand left the room (R-H3c). The checks build the grid and
-the PLANT only (no synthesis):
+(R-H3b). Suitcase1 stands about 1.5 m from Bf (1.457-1.556 m from the base), Construction Cone (traffic_cone_1) is
+new and seen from R5, the sofa moved 0.2 m back, the table is unchanged; TrashBin and LampAndStand left the room
+(R-H3c). The checks build the grid and the PLANT only (no synthesis):
 - the acceptance runs from the spawn are unchanged by the new objects (spec §12.4, R-H3g);
 - every target formula has a plan from its test pose. The test poses (R-H3a, R-H3b) are reached from the spawn:
   Bf = two left turns, then one F moved_forward (the sofa and the suitcase); R5 = one right turn, then five
   F moved_forward (the cone); L = one left turn (the table, logical only). Each is pinned twice: at its nominal
-  pose (exact turns, 0.5 m steps) and at the pose Gazebo measured (H3: the turns overshoot, about 96° and 191.5°,
-  R-H3e). "Moves" means the shortest controllable path in the PLANT to a state with the target proposition.
+  pose (exact quarter turns; Bf one 0.5 m step, R5 five 0.55 m steps) and at the pose Gazebo measured (H3: the
+  turns overshoot, about 96° and 191.5°, R-H3e; the R5 one is derived from H3's R, see MEASURED_POSES). "Moves"
+  means the shortest controllable path in the PLANT to a state with the target proposition.
+- the geometry facts the room's thin margins rest on, from the camera (R-H3b's ±35° is about the image centre, and
+  the camera sits CAMERA_IN_BODY ahead of the base) and from the base.
 
 The pins are the code's numbers. They moved with the room (R-H3g), as R-H1a's moved with the measured Suitcase1;
 the spec's §12.3/§12.4 numbers are for the first room and Task 4.1 replaces them.
@@ -22,6 +25,9 @@ from collections import deque
 import pytest
 from go2_nl_control.actions import LYING, STANDING
 
+from detector.camera import CameraModel
+from detector.core import View
+from detector.oracle import project_box
 from sim.sim_core import FakeCamera, SimGo2, in_camera_view, layout_objects
 from voice_ltl import grid, layout, vocabulary
 from voice_ltl.grid import grid_shape, grid_world
@@ -29,11 +35,12 @@ from voice_ltl.objects import CAMERA_HFOV, CAMERA_IN_BODY, DEFAULT_LAYOUT, Obj, 
 
 NEW_IDS = ("suitcase_1", "traffic_cone_1", "sofa_1", "table_1")
 DETECTOR_TARGETS = {"Bf": {"sofa_1", "suitcase_1"}, "R5": {"traffic_cone_1"}}   # detector_check.PREVIEW_TARGETS
-# The test poses (x, y, yaw in degrees). Nominal: exact quarter turns and 0.5 m steps. Measured: Gazebo's (H3, R-H3e):
-# Bf after the two left turns and the step (H3 run 4), R5 = H3's R (0.027, 0.006, -95.8) plus five measured steps of
-# 0.55 m along that heading, L as H3 measured it.
+# The test poses (x, y, yaw in degrees). Nominal: exact quarter turns; Bf one 0.5 m step, R5 five 0.55 m steps (H3's
+# measured step length). Measured: Gazebo's (H3, R-H3e): Bf after the two left turns and the step (H3 run 4), L as H3
+# measured it. The R5 one is derived, not a run's: H3's R (0.027, 0.006, -95.8) plus five steps of 0.55 m along that
+# heading (-0.2509, -2.7299), the room proposal's pose; the 4 real R5 runs are in MEASURED_RANGES.
 TEST_POSES = {"Bf": (-0.5, 0.0, 180.0), "R5": (0.0, -2.75, -90.0), "L": (0.0, 0.0, 90.0)}
-MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.729, -95.8), "L": (0.011, 0.037, 96.1)}
+MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.730, -95.8), "L": (0.011, 0.037, 96.1)}
 # Every pose the H3 screening measured at the end of the procedure lies in these boxes (x, y, heading; 6 Bf runs,
 # 4 R5 runs): their 8 corners stand for them below.
 MEASURED_RANGES = {"Bf": ((-0.560, -0.506), (-0.141, -0.054), (-172.4, -166.6)),
@@ -43,6 +50,7 @@ JITTERS = ((0.1, 0.1, 5.0), (0.1, -0.1, 5.0), (-0.1, 0.1, -5.0), (-0.1, -0.1, -5
 # record_frames' four view shifts (dx forward, dy left, dyaw), in the Go2's own frame (plan H3)
 VIEW_SHIFTS = ((0.1, 0.1, 5.0), (0.1, -0.1, -5.0), (-0.1, 0.1, -5.0), (-0.1, -0.1, 5.0))
 RENDER_FAR = 10.0             # the rendered camera's far clip (m): what YOLOE could see, occlusion aside
+HALF_FOV = math.degrees(CAMERA_HFOV) / 2      # 59.99°: the bearing of the image's left and right edges
 # The acceptance starts of §12.4 (x, y, yaw in degrees).
 ACCEPTANCE_STARTS = ((0.0, 0.0, 0.0), (0.06, -0.04, 3.0), (-0.05, 0.05, -3.0), (0.1, 0.1, 5.0), (-0.1, -0.1, -5.0))
 ACCEPTANCE_FORMULAS = ("F around_box_1", "F near_chair_1", "F(near_chair_1 & X F hello)", "F near_box_1")
@@ -102,7 +110,26 @@ def bearings(start: tuple[float, float, float], o: Obj) -> list[tuple[float, flo
 
 def rendered(start: tuple[float, float, float], o: Obj) -> bool:
     """Some point of o's footprint lies in the rendered camera's 120° within RENDER_FAR (no occlusion)."""
-    return any(abs(b) <= math.degrees(CAMERA_HFOV) / 2 and d <= RENDER_FAR for b, d in bearings(start, o))
+    return any(abs(b) <= HALF_FOV and d <= RENDER_FAR for b, d in bearings(start, o))
+
+
+def sight(start: tuple[float, float, float], x: float, y: float, camera: bool = True) -> tuple[float, float]:
+    """(bearing in degrees, left +; distance) to the point (x, y), from the front camera or from the base."""
+    px, py, yaw = start
+    if camera:
+        c, s = math.cos(yaw), math.sin(yaw)
+        px, py = px + c * CAMERA_IN_BODY[0] - s * CAMERA_IN_BODY[1], py + s * CAMERA_IN_BODY[0] + c * CAMERA_IN_BODY[1]
+    b = math.atan2(y - py, x - px) - yaw
+    return math.degrees(math.atan2(math.sin(b), math.cos(b))), math.hypot(x - px, y - py)
+
+
+def truth_box(start: tuple[float, float, float], o: Obj) -> tuple[float, float, float, float] | None:
+    """o's image box (x0, y0, x1, y1), clipped to the image, as detector_check.truth_boxes projects it: the footprint
+    x the layout height through detector.oracle.project_box, with the camera model of the D7 ruling."""
+    x, y, yaw = start
+    view = View((x, y, 0.0), (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)), CameraModel.from_hfov(), 0.0)
+    got = project_box(view, o.x, o.y, o.size, household().find(o.id).height, view.camera.width, view.camera.height)
+    return None if got is None else got[0]
 
 
 def build(formula: str, start: tuple[float, float, float], objs) -> grid.GridWorld:
@@ -201,6 +228,30 @@ def test_acceptance_plants_are_unchanged_by_the_household_objects(formula):
                 (b.initial, b.states, b.transitions, b.event_label, b.forbidden, b.initial_label)
 
 
+def test_new_objects_keep_off_the_acceptance_cells():
+    """The screening's line for §12.1 (room proposal), stricter than the PLANT test above, which is the rule (§12.4):
+    every new footprint is at least 0.7 m from every cell centre of the acceptance grids (4 formulas x 5 starts).
+    So the right edge of §12.1 is a footprint edge, about y <= -4.2 (the cone's is -4.1985): the proposal's y -4.5
+    is the centre line of a 0.6 m object, not an edge (at y -4.0 the cone changed `F near_chair_1`)."""
+    near = tuple(o for o in scene() if o.id in ("box_1", "chair_1"))
+    centres = set()
+    for formula in ACCEPTANCE_FORMULAS:
+        for x, y, yaw_deg in ACCEPTANCE_STARTS:
+            g = grid_world(LYING, False, False, (x, y, math.radians(yaw_deg)), near, formula_atoms(formula)).grid
+            centres |= {g.center((i, j)) for i in range(g.i_range[0], g.i_range[1] + 1)
+                        for j in range(g.j_range[0], g.j_range[1] + 1)}
+
+    def gap(o: Obj, px: float, py: float) -> float:
+        return math.hypot(max(abs(px - o.x) - o.size[0] / 2, 0.0), max(abs(py - o.y) - o.size[1] / 2, 0.0))
+
+    gaps = {o.id: min(gap(o, px, py) for px, py in centres) for o in scene() if o.id in NEW_IDS}
+    assert gaps == pytest.approx({"suitcase_1": 0.701, "traffic_cone_1": 0.768, "sofa_1": 3.376, "table_1": 1.002},
+                                 abs=0.0005)
+    assert min(gaps.values()) >= 0.7
+    cone = household().find("traffic_cone_1")
+    assert cone.centre()[1] + cone.world_size()[1] / 2 == pytest.approx(-4.1985)
+
+
 # ---------------- the test formulas (§12.4) ----------------
 # formula, test pose, area [cells], moves, near keys (None for a lap), PLANT states, largest jittered area; the room
 # proposal's numbers (R-H3g), first at the nominal pose, then at the measured one
@@ -276,9 +327,16 @@ def test_each_test_pose_sees_its_targets():                     # §12.3: so the
 def test_no_undetectable_model_in_a_detector_test_view():
     """R-H3c: at a detector test pose and its 4 view shifts the rendered camera (120°, 10 m, no occlusion) shows no
     model but the pose's targets, so every matched pair of §13.3 is a target. Checked at the measured poses (H3's and
-    the corners of every screening run's): at the nominal Bf, exactly 180°, a corner of table_1 enters the view at the
-    s2 shift (R-H3e: the turns overshoot, so the room was placed with the measured yaws). Also R-H3b: from Bf the
-    suitcase never covers the sofa."""
+    the corners of every screening run's). At the nominal Bf, exactly 180°, table_1 enters the pose view (its corner
+    (-3.148, 4.0) at 59.88° against the 59.99° edge) and the s2 and s3 views (both -5°). At the measured headings it
+    stays at least 2.3° outside every view (the corner (-0.506, -0.054, -172.4°) with s3). R-H3e: the turns
+    overshoot, so the room was placed with the measured yaws; re-run this view check if the turn controller changes.
+    Also R-H3b: from Bf the suitcase never covers the sofa."""
+    table = next(o for o in scene() if o.id == "table_1")
+    nominal = anchor("Bf")
+    assert [rendered(v, table) for v in [nominal] + [shifted(nominal, s) for s in VIEW_SHIFTS]] == \
+        [True, False, True, True, False]                        # the pose view, s2 and s3
+    margins = []
     for pose, ids in DETECTOR_TARGETS.items():
         for start in [anchor(pose, poses=MEASURED_POSES)] + measured_corners(pose):
             for view in [start] + [shifted(start, s) for s in VIEW_SHIFTS]:
@@ -286,6 +344,47 @@ def test_no_undetectable_model_in_a_detector_test_view():
                 if pose == "Bf":
                     spans = {o.id: [b for b, _ in bearings(view, o)] for o in scene() if o.id in ids}
                     assert max(spans["sofa_1"]) < min(spans["suitcase_1"]), view    # the suitcase is left of it
+                    margins.append(min(abs(b) for b, _ in bearings(view, table)) - HALF_FOV)
+    assert min(margins) == pytest.approx(2.31, abs=0.005)       # table_1's least margin outside a Bf view
+
+
+def test_the_suitcase_from_the_camera_and_from_the_base():
+    """R-H3b's ±35° is about the image centre, so it is measured from the camera, which sits 0.327 m ahead of the base
+    (CAMERA_IN_BODY); its 1.5-2.5 m is about the test pose, the base. The room proposal and R-H3h (4) gave base ->
+    footprint centre (+29…+36°, 1.47-1.56 m over the screening's runs). From the camera, the suitcase's centre is
+    +41.3° at H3's Bf and +35.8…+47.2° over the box of measured Bf poses (+28.5…+38.1° from the base): outside ±35°
+    at every measured pose, not only in the -172.4° run (the least overshoot, 187.6° turned). It is 1.457-1.556 m
+    from the base, under R-H3b's 1.5 m in part of the box, and 1.184-1.308 m from the camera. Its truth box stays in
+    the image in the pose view and the s1, s3 and s4 views; in s2 (dyaw -5°) it runs past the left image edge at
+    every measured pose, so a miss in Bf_s2 reads as clipping, not as a detector fault. The placement stands as
+    R-H3h (4) accepted it (Part B passed on real renders; H3b is the gate). These pins make a change to the turn
+    controller show up."""
+    s = next(o for o in scene() if o.id == "suitcase_1")
+    h3 = anchor("Bf", poses=MEASURED_POSES)
+    poses = [h3] + measured_corners("Bf")
+
+    def span(rows, k):
+        return min(r[k] for r in rows), max(r[k] for r in rows)
+
+    assert sight(h3, s.x, s.y)[0] == pytest.approx(41.3, abs=0.05)
+    assert sight(h3, s.x, s.y, camera=False)[0] == pytest.approx(33.3, abs=0.05)
+    assert sight(h3, s.x, s.y, camera=False)[1] == pytest.approx(1.550, abs=0.0005)
+    cam = [sight(p, s.x, s.y) for p in poses]
+    base = [sight(p, s.x, s.y, camera=False) for p in poses]
+    assert span(cam, 0) == pytest.approx((35.8, 47.2), abs=0.05) and span(cam, 0)[0] > 35.0
+    assert span(base, 0) == pytest.approx((28.5, 38.1), abs=0.05)
+    assert span(base, 1) == pytest.approx((1.457, 1.556), abs=0.0005) and span(base, 1)[0] < 1.5
+    assert span(cam, 1) == pytest.approx((1.184, 1.308), abs=0.0005)
+    left = {}                                                   # per view: the footprint's leftmost bearing, box x0
+    for p in poses:
+        for k, view in enumerate([p] + [shifted(p, sh) for sh in VIEW_SHIFTS]):
+            box = truth_box(view, s)
+            far = max(b for b, _ in bearings(view, s))
+            assert box is not None and (box[0] == 0.0) == (far > HALF_FOV) == (k == 2), (k, view)
+            left.setdefault(k, []).append((far, box[0]))
+    assert span(left[2], 0) == pytest.approx((61.2, 70.9), abs=0.05)     # s2: past the 60° edge, clipped at u = 0
+    assert span(left[0], 0) == pytest.approx((48.9, 59.5), abs=0.05)     # the pose view: inside, by 0.5° at worst
+    assert span(left[0], 1) == pytest.approx((6.1, 108.3), abs=0.05)     # ... its left edge at u 6.1-108.3 px
 
 
 def test_vocabulary_sizes_also_plan():
