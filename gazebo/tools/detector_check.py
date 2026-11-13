@@ -21,11 +21,11 @@ Output: one JSON line per frame, the accuracy result of objects_check.accuracy_c
 /gazebo/objects_truth, the layout's detectable / accept, /sim/world's button boxes, the base position for the robot,
 the status for filled and still_inferences), plus "view", "code", "reason" (the status), "latency_ms", "hits" (the
 detections at or above the detector's sighting threshold) and "set_failures" (set_failures(): the failures that count
-for the set). Its targets (the 0.15 m line) are the PREVIEW_TARGETS of the frame's pose (spec §12.3: "B_s2" is pose
-B). Then one line for the set: the frames scored (with a detectable truth in range, so with a recall line), the
-no_recall ones (no detectable truth in range: accuracy's recall line has nothing to count there and is n/a, but their
-position, size, label and false-positive lines still count), passed and failed (a frame fails on any of its
-set_failures), data errors, confusion() and preview(). Exit 0 when no frame fails and one at least is scored, 1
+for the set). Its targets (the 0.15 m line) are the PREVIEW_TARGETS of the frame's pose ("Bf_s2" is pose Bf; a view
+of no test pose, such as B on the way to Bf, has none). Then one line for the set: the frames scored (with a
+detectable truth in range, so with a recall line), the no_recall ones (no detectable truth in range: accuracy's
+recall line has nothing to count there and is n/a, but their position, size, label and false-positive lines still
+count), passed and failed (a frame fails on any of its set_failures), data errors, confusion() and preview(). Exit 0 when no frame fails and one at least is scored, 1
 otherwise, 2 for data errors (no set, an unreadable record, a frame without truth for the layout, a detector that
 cannot load).
 
@@ -72,8 +72,10 @@ REPLAY_T0 = 100.0                          # sim time of the first odometry of a
 REPLAY_MAX_S = 10.0                        # sim seconds of still Go2 at most per frame
 ODOM_DT, SCAN_EVERY, IMAGE_EVERY = 0.02, 5, 25   # 50 Hz odometry; a scan every 0.1 s, an image every 0.5 s
 WALL0, CLOCK0 = 1000.0, 1.8e9              # the fake steady clock and time.time() at a replay's start
-# spec §12.3: the test pose of each detector target (§12.8 step 3: trash can, suitcase, sofa, lamp)
-PREVIEW_TARGETS: Mapping[str, str] = {"trash_can_1": "B", "suitcase_1": "B", "sofa_1": "B", "lamp_1": "R"}
+# the test pose of each detector target (§12.8 step 3), the room proposal after the H3 screening (R-H3a, R-H3b):
+# Bf = F standing, F(turned_left & X F turned_left), F moved_forward; R5 = F standing, F turned_right, five
+# F moved_forward in one formula. Each pose has the views <pose> and <pose>_s1 ... <pose>_s4 (record_frames --view)
+PREVIEW_TARGETS: Mapping[str, str] = {"sofa_1": "Bf", "suitcase_1": "Bf", "traffic_cone_1": "R5"}
 PREVIEW_IOU = 0.5                          # a hit is on the truth box at IoU >= 0.5
 PREVIEW_SHIFT_HITS = 2                     # ... in the pose view and in >= 2 of its (4) shifted views
 PREVIEW_MIN_KINDS = 3                      # new kinds needed (spec §12.8 step 5, §13.4)
@@ -121,7 +123,7 @@ class Replayed:
 
 
 def pose_of(view: str) -> str:
-    """The test pose of a view name: "B_s3" -> "B", "B" -> "B", "spawn_lying" -> "spawn_lying"."""
+    """The test pose of a view name: "Bf_s3" -> "Bf", "R5" -> "R5", "spawn_lying" -> "spawn_lying"."""
     m = _SHIFTED.fullmatch(view)
     return m.group("pose") if m else view
 

@@ -862,7 +862,7 @@ def bridge_settings(environ: Mapping[str, str] = os.environ) -> Tuple[str, Layou
     if missing:
         raise ValueError(
             f"GO2_LAYOUT={name} のモデルのフォルダ {', '.join(missing)} が GZ_SIM_RESOURCE_PATH のどのフォルダにも"
-            f"ありません。Fuel のモデルの入ったイメージ（go2-voice-ltl-gazebo:patch-0005-fuel1）で起動するか、"
+            f"ありません。Fuel のモデルの入ったイメージ（go2-voice-ltl-gazebo:patch-0005-fuel2）で起動するか、"
             f"GO2_LAYOUT=default にしてください。物を置かずに止めます")
     return source, lay
 

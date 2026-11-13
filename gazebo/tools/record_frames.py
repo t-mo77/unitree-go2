@@ -418,7 +418,8 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Record one still image and scan pair in Gazebo (spec §11.11).")
     p.add_argument("out_dir", help="the set's folder (made if missing)")
     p.add_argument("--view", required=True, help="the view name: the files are <view>.png, <view>_scan.npy, "
-                                                 "<view>.json (plan H3: spawn, spawn_lying, B, B_s1, ...)")
+                                                 "<view>.json (the preview set: spawn_lying, spawn, Bf, Bf_s1 ... Bf_s4, "
+                                                 "R5, R5_s1 ... R5_s4)")
     p.add_argument("--shift", type=_shift_arg, default=None, metavar="dx,dy,dyaw_deg",
                    help="emulate the Go2 moved by (dx, dy) m and dyaw deg in its own frame by moving the layout")
     p.add_argument("--layout", default=None, help="the layout (default: GO2_LAYOUT, else household)")

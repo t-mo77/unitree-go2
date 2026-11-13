@@ -84,9 +84,10 @@ def test_dockerfile_pins_the_base_and_reads_the_list():
     header = [line for line in text.splitlines() if line.startswith("#")]
     assert text.startswith("#") and len(header) >= 2
     joined = "\n".join(header)
-    assert "go2-voice-ltl-gazebo:patch-0005-fuel1" in joined                 # the tag
-    assert ("docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel1 "
+    assert "go2-voice-ltl-gazebo:patch-0005-fuel2" in joined                 # the tag (R-H3g: the room fix)
+    assert ("docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel2 "
             "-f docker/Dockerfile.gazebo-fuel docker") in joined             # the build command (plan H1)
+    assert "-t go2-voice-ltl-gazebo:patch-0005-fuel1" not in joined          # fuel1 is kept, never built over
     for name in ("fuel_models.json", "fetch_fuel_models.py"):               # the COPY sources are in the context
         assert (ROOT / "docker" / name).is_file()
 
@@ -216,6 +217,45 @@ def test_main_downloads_verifies_and_unpacks(tmp_path, capsys):
     assert "Alpha 3" in out and "Beta 12" in out
 
 
+def test_a_fuel_name_apart_from_the_folder(tmp_path, capsys):
+    # Construction Cone (H3 screening): Fuel serves the zip under the model's name, URL-encoded (the folder's URL
+    # gives HTTP 404), and its model.sdf finds its files as model://construction_cone/..., so the folder is another
+    # name (spec §12.6: "a name with a space needs the URL encoding and its own folder")
+    sdf = (b'<?xml version="1.0"?><sdf version="1.5"><model name="Construction Cone"><link name="l"><visual name="v">'
+           b'<geometry><mesh><uri>model://construction_cone/meshes/c.dae</uri></mesh></geometry></visual></link>'
+           b'</model></sdf>')
+    cone = zip_bytes({"model.config": CONFIG, "model.sdf": sdf, "meshes/c.dae": b"<COLLADA/>"})
+    lst = write_list(tmp_path / "list.json", [
+        {"folder": "construction_cone", "name": "Construction Cone", "version": 3,
+         "sha256": hashlib.sha256(cone).hexdigest()},
+        {"folder": "Beta", "name": None, "version": 1, "sha256": hashlib.sha256(cone).hexdigest()}])
+    (m, beta) = fetch.read_list(lst).models
+    assert (m.folder, m.name, m.fuel_name, m.version) == ("construction_cone", "Construction Cone", "Construction Cone", 3)
+    assert (beta.name, beta.fuel_name) == (None, "Beta")                # no name: the folder is the Fuel name
+    assert fetch.zip_url("https://f.example.test/m", m) == \
+        "https://f.example.test/m/Construction%20Cone/3/Construction%20Cone.zip"
+    urls = []
+
+    def fake_fetch(url):
+        urls.append(url)
+        return cone
+
+    dest = tmp_path / "models"
+    assert fetch.main(write_list(tmp_path / "one.json", [json.loads(lst.read_text())["models"][0]]), dest,
+                      fetch=fake_fetch) == 0
+    assert urls == ["https://fuel.example.test/1.0/Owner/models/Construction%20Cone/3/Construction%20Cone.zip"]
+    assert every_file(dest) == ["construction_cone", "construction_cone/meshes", "construction_cone/meshes/c.dae",
+                                "construction_cone/model.config", "construction_cone/model.sdf"]
+    assert "construction_cone 3" in capsys.readouterr().out
+    # the folder still has to be the model:// name: a name is never a way round that check
+    lst = write_list(tmp_path / "list.json", [
+        {"folder": "Construction_Cone", "name": "Construction Cone", "version": 3,
+         "sha256": hashlib.sha256(cone).hexdigest()}])
+    assert fetch.main(lst, tmp_path / "other", fetch=lambda url: cone) != 0
+    assert "model://construction_cone" in capsys.readouterr().err
+    assert every_file(tmp_path / "other") == []
+
+
 def test_main_checks_every_pin_before_downloading(tmp_path, capsys):
     calls = []
     lst = write_list(tmp_path / "list.json", [
@@ -278,7 +318,9 @@ def test_main_refuses_a_bad_list(tmp_path, capsys):
                                                                              "sha256": "abc"}]}),
         json.dumps({"base": "https://fuel.example.test/models", "models": [
             {"folder": "A", "version": 1, "sha256": pin}, {"folder": "A", "version": 2, "sha256": pin}]}),
-    ]
+    ] + [json.dumps({"base": "https://fuel.example.test/models", "models": [
+        {"folder": "A", "name": name, "version": 1, "sha256": pin}]})          # a Fuel name is one plain name
+        for name in ("", " Cone", "Cone ", "a/b", "../A", "..", "Cone\n", "%2e%2e", 3, ["A"], True)]
     for text in bad_lists:
         path = tmp_path / "list.json"
         path.write_text(text, encoding="utf-8")
@@ -293,11 +335,12 @@ def test_the_pinned_list_gives_the_fuel_urls():
     pinned = fetch.read_list(FUEL_MODELS)                               # a null pin is read; main refuses it
     assert [fetch.zip_url(pinned.base, m) for m in pinned.models] == [
         "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sofa/3/Sofa.zip",
-        "https://fuel.gazebosim.org/1.0/OpenRobotics/models/TrashBin/2/TrashBin.zip",
-        "https://fuel.gazebosim.org/1.0/OpenRobotics/models/LampAndStand/3/LampAndStand.zip",
         "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Table/4/Table.zip",
         "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Suitcase1/2/Suitcase1.zip",
+        # the H3 screening's URL (HTTP 200, 622 427 B); the folder's URL .../construction_cone/3/... gave 404
+        "https://fuel.gazebosim.org/1.0/OpenRobotics/models/Construction%20Cone/3/Construction%20Cone.zip",
     ]
+    assert [m.folder for m in pinned.models] == ["Sofa", "Table", "Suitcase1", "construction_cone"]
 
 
 def test_fetch_cli_needs_two_arguments():
