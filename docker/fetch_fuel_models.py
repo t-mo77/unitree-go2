@@ -210,8 +210,12 @@ def read_list(list_path) -> FuelList:
 
 def zip_url(base: str, model: Model) -> str:
     """Fuel's REST form {base}/{name}/{version}/{name}.zip with the Fuel name URL-encoded (spec §12.2, §12.6):
-    the folder, or the list's name ("Construction Cone" -> Construction%20Cone; the folder's URL gives HTTP 404)."""
+    the folder, or the list's name ("Construction Cone" -> Construction%20Cone; the folder's URL gives HTTP 404).
+    quote keeps "", "." and ".." as they are, and none of them is one model's path segment, so they are refused here
+    too (read_list refuses them first)."""
     name = urllib.parse.quote(model.fuel_name, safe="")
+    if name in ("", ".", ".."):
+        raise FuelError(f"the Fuel name {model.fuel_name!r} is not one path segment")
     return f"{base}/{name}/{model.version}/{name}.zip"
 
 
