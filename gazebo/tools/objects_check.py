@@ -19,6 +19,9 @@ app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのま
   /sim/world のボタンの箱と、状態の filled・ids_retired も使う。合格 0、不合格 1、データなし 2。
 - resolve：/go2/objects の行で、正解の --target と組になり measured: true のものを待ち、その id を出す
   （{"target", "id", "measured", "listed_after_still_s"}）。見つかれば 0、時間切れ 1、データなし 2。
+  listed_after_still_s は、このコマンドが見た止まり（歩いた後に止まった時刻）から、その行が measured: true で
+  初めて届くまでの秒数（ListedWait）。止まった後や行が出た後に始めると null（わけは標準エラー）なので、
+  目標が見えるようになる動きの前に、別に始めておく（H6 M4）。
 - rtf：実際の時間の窓（--seconds 秒、monotonic）の間に /clock が進んだ秒数を、窓の長さで割る。{"rtf": …} を JSON 1 行で。
 - objects：/go2/objects を 1 通、JSON 1 行で出す。どの行も objects.parse を通れば 0、
   通らない行があるか物がなければ 1、届かなければ 2。
@@ -314,6 +317,47 @@ def accuracy_check(det_payload: object, truth_payload: object, lay: layouts.Layo
 def resolve(det_rows: Sequence[Obj], truth_rows: Sequence[Obj], target: str) -> str | None:
     """正解の id target と組になった検出の行の id（M10。pair_rows と同じ組み方）。組がなければ None。"""
     return next((d.id for d, t in pair_rows(det_rows, truth_rows) if t.id == target), None)
+
+
+class ListedWait:
+    """resolve's wait (M10, spec §13.5), without ROS. message() takes each /go2/objects message in order, the
+    latest truth, the feed's still_wall (a stop this tool saw, _Feed) and the wall time; it is True once the wait
+    is over: a truth for another layout (error), or the target's row has measured: true (id, measured).
+    after (listed_after_still_s) = that wall time minus still_wall, only when the Go2 stood still since a stop
+    this tool saw and an earlier message had no measured row for the target. Else after is None and note says
+    why: a resolve started after the stop, or after the row was listed, must not time the latency from its own
+    start (pre-final review F11). So start resolve before the motion that should bring the target into view."""
+
+    def __init__(self, target: str, layout_name_: str):
+        self.target = target
+        self.layout = layout_name_
+        self.id: str | None = None
+        self.measured: bool | None = None
+        self.after: float | None = None
+        self.error: str | None = None
+        self.note: str | None = None
+        self._unlisted = False              # an earlier message had no measured row for the target
+
+    def message(self, objects_payload: object, truth_payload: object, still_wall: float | None,
+                now: float) -> bool:
+        self.error = layout_mismatch(truth_payload, self.layout)
+        if self.error is not None:
+            return True
+        rows = parse(objects_payload)
+        obj_id = resolve(rows, parse(truth_payload), self.target)
+        row = next((o for o in rows if o.id == obj_id), None)
+        self.id, self.measured = obj_id, (row.measured if row is not None else None)
+        if row is None or row.measured is not True:
+            self._unlisted = True
+            return False
+        if not self._unlisted:
+            self.note = "the row was measured in the first /go2/objects message this tool got"
+        elif still_wall is None:
+            self.note = ("the Go2 was not standing still after a stop this tool saw "
+                         "(it started with the Go2 already still, or the Go2 is moving)")
+        else:
+            self.after = round(now - still_wall, 2)
+        return True
 
 
 def layout_mismatch(truth_payload: object, name: str) -> str | None:
@@ -702,9 +746,11 @@ def _spin_until(rclpy, node, done, timeout: float) -> bool:
 
 class _Feed:
     """1 つのコマンドが受けたもの（コールバックは足すだけ）。JSON のトピックは読んだ dict（読めなければ None）。
-    gate（gazebo.bridge_core.StillGate）があれば odometry の速さを渡し、止まり始めの実際の時刻を still_wall に。"""
+    gate（gazebo.bridge_core.StillGate）があれば odometry の速さを渡し、止まり始めの実際の時刻（clock、既定は
+    time.monotonic）を still_wall に。ただし、このコマンドが見た止まり（動いていた後の止まり）だけ：最初の
+    odometry から止まっていれば、止まった時刻はわからないので、次に動くまで None（pre-final review F11）。"""
 
-    def __init__(self, gate=None):
+    def __init__(self, gate=None, clock=time.monotonic):
         self.samples: list[Sample] = []
         self.ticks: list[tuple[float, float]] = []      # (実際の時刻 monotonic, シミュレーションの時刻)
         self.objects: list[object] = []
@@ -713,6 +759,8 @@ class _Feed:
         self.world: list[object] = []
         self.gate = gate
         self.still_wall: float | None = None
+        self._clock = clock
+        self._moved = False                             # a not-still odometry seen since this command started
 
     def on_odom(self, msg) -> None:
         sample = odometry_sample(msg)
@@ -724,8 +772,9 @@ class _Feed:
                               (tw.angular.x, tw.angular.y, tw.angular.z))
             if self.gate.still_since is None:
                 self.still_wall = None
-            elif was is None:
-                self.still_wall = time.monotonic()
+                self._moved = True
+            elif was is None and self._moved:
+                self.still_wall = self._clock()
 
     def still(self) -> bool:
         return bool(self.gate is not None and self.samples and self.gate.allows(self.samples[-1][0]))
@@ -916,24 +965,17 @@ def _resolve(args: argparse.Namespace) -> int:
         return 2
     rclpy, node = _start_ros("go2_objects_check_resolve")
     feed = _listen(node, _Feed(StillGate()), odom=True, objects=True, truth=True)
-    state = {"seen": 0, "id": None, "measured": None, "after": None, "error": None}
+    wait = ListedWait(args.target, lay.name)
+    seen = [0]
 
     def done() -> bool:
-        if len(feed.objects) == state["seen"] or not feed.truth:
+        if not feed.truth:
             return False
-        state["seen"] = len(feed.objects)
-        state["error"] = layout_mismatch(feed.truth[-1], lay.name)
-        if state["error"] is not None:
-            return True
-        rows = parse(feed.objects[-1])
-        obj_id = resolve(rows, parse(feed.truth[-1]), args.target)
-        row = next((o for o in rows if o.id == obj_id), None)
-        state["id"], state["measured"] = obj_id, (row.measured if row is not None else None)
-        if row is None or row.measured is not True:
-            return False
-        if feed.still_wall is not None:
-            state["after"] = round(time.monotonic() - feed.still_wall, 2)
-        return True
+        while seen[0] < len(feed.objects):
+            seen[0] += 1
+            if wait.message(feed.objects[seen[0] - 1], feed.truth[-1], feed.still_wall, time.monotonic()):
+                return True
+        return False
 
     try:
         found = _spin_until(rclpy, node, done, args.timeout)
@@ -943,12 +985,13 @@ def _resolve(args: argparse.Namespace) -> int:
     finally:
         node.destroy_node()
         rclpy.try_shutdown()
-    if state["error"] is not None or not feed.objects or not feed.truth:
+    if wait.error is not None or not feed.objects or not feed.truth:
         missing = OBJECTS_TOPIC if not feed.objects else TRUTH_TOPIC
-        _print({"target": args.target, "error": state["error"] or f"no {missing}"})
+        _print({"target": args.target, "error": wait.error or f"no {missing}"})
         return 2
-    _print({"target": args.target, "id": state["id"], "measured": state["measured"],
-            "listed_after_still_s": state["after"]})
+    if found and wait.note is not None:
+        _say(f"listed_after_still_s を出せません：{wait.note}")
+    _print({"target": args.target, "id": wait.id, "measured": wait.measured, "listed_after_still_s": wait.after})
     return 0 if found else 1
 
 
