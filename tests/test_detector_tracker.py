@@ -485,13 +485,19 @@ ONE_STOP_ROWS = {   # (label, yaw, distance, cabinet width, cabinet y, faces, sw
     ("sofa", 40, 3.0, 1.2, 0.9, "plain", 0.002): (2.992, 0.010, 2.082, 1.968),
     ("table", 50, 3.0, 1.2, 0.7, "lean", 0.0): (2.980, 0.017, 1.446, 1.509),
     ("table", 45, 3.0, 0.6, -0.7, "lean", 0.0): (2.989, 0.019, 1.498, 1.497),
+    # a standing Go2's odometry wanders a few cm (the review of 8891c46, finding 2): a 3 cm sway puts the cameras
+    # up to 6 cm from the newest, still one stop (the row of 97da92a). With ONE_STOP below that the rule applies and
+    # this row becomes 2.959 x 2.959 m: neither face axis is observed longer than S + EDGE_PAD, and the views of the
+    # 2 x 1 m bed, seen only partly, fill L along the union's lateral axis
+    ("bed", 40, 2.5, 0.9, 0.6, "plain", 0.03): (2.502, -0.003, 2.321, 2.198),
 }
 
 
 def test_a_one_stop_union_keeps_its_own_lateral_sides():   # R-PF3b (the review of 67f9d75, finding 1)
     """A union whose views' cameras all lie within geometry.ONE_STOP of the newest camera comes from one stop: its
     lateral sides keep the union's own margins from that camera, as every view's rays are that camera's (the far end
-    is still judged from the views, R-PF3). A sway of 2 mm (a standing Go2's odometry) is still one stop."""
+    is still judged from the views, R-PF3). A sway of 2 mm or 3 cm (a standing Go2's odometry wanders a few cm) is
+    still one stop."""
     from detector import geometry as g
     from test_detector_geometry import BASE as STAND, cam_xy, covers, scan, solid
 
@@ -515,7 +521,7 @@ def test_a_one_stop_union_keeps_its_own_lateral_sides():   # R-PF3b (the review 
             tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, p, True, False, cam)],
                            t, wall, always)
             cams.append(cam)
-        # a 2 mm sway: the cameras lie up to 4 mm apart, so one stop is not one point
+        # a sway of 2 mm or 3 cm: the cameras lie up to 4 mm or 6 cm apart, so one stop is not one point
         assert max(math.dist(a, b) for a in cams for b in cams) == pytest.approx(2 * sway, abs=1e-9)
         rows = tracker.rows(wall, 3.0)
         assert len(rows) == 1, (scene, rows)
@@ -575,6 +581,43 @@ def _two_stop_row(solids, prior, stops, lean=0.0):
     rows = tracker.rows(wall, 3.0)
     assert len(rows) == 1, rows
     return (rows[0].x, rows[0].y, *rows[0].size), max(math.dist(c, cams[-1]) for c in cams)
+
+
+# Two stops a short move apart are two stops (geometry.ONE_STOP; the review of 8891c46, finding 2): a 0.5 m step
+# toward the object (B to Bf, R-H3a), a 0.15 m step, and a 96° turn in place (R-H3e; the camera, 0.327 m ahead of
+# the base, moves 0.486 m). Behind a cabinet, or with leaning faces, the thinned union and the single views take
+# different face axes as their depth there too, and R-PF3b's lateral rule completes the side that no view saw.
+# Without it (ONE_STOP above the move, or 97da92a) the first four miss by 0.6085, 0.9418, 0.4913 and 0.6512 m.
+# The fifth is what the rule costs where neither face axis is observed longer than S + EDGE_PAD (0.522 and 0.863 m
+# of a 1.8 x 0.9 m sofa): the union cannot tell its long side, its own depth is L, and the views' L along its
+# lateral axis makes it L x L, the box of both orientations; without the rule it is 1.971 x 2.084 m. The third
+# scene is its mirror image: the union took the short side as its depth and the views the long one, and only L x L
+# covers it.
+SHORT_MOVE_ROWS = {   # (scene, move, lean): (x, y, sx, sy); a scene is a cover case or a cabinet scene
+    ((2.0, 2.0, 0.8, 60, 1.0, 30), ("step", 0.5), 0.5): (2.329, 1.184, 2.867, 2.868),
+    (("sofa", 35, 2.5, 0.9, 0.6), ("turn", 96), 0.0): (2.504, -0.006, 2.139, 1.922),
+    (("sofa", 35, 2.5, 0.9, 0.7), ("step", 0.5), 0.0): (2.758, -0.369, 2.646, 2.646),
+    (("sofa", 40, 2.5, 0.6, -0.1), ("step", 0.15), 0.0): (2.788, -0.346, 2.675, 2.675),
+    (("sofa", 50, 2.5, 0.9, 0.5), ("step", 0.5), 0.0): (2.845, -0.289, 2.677, 2.677),
+}
+
+
+def test_two_stops_a_short_move_apart_are_two_stops():   # R-PF3b (the review of 8891c46, findings 1 and 2)
+    """A union whose cameras lie a step or a turn in place apart (0.15-0.56 m) is not one stop: the lateral rule
+    applies, and each pinned row covers the object. With ONE_STOP at or above the move the rows are 97da92a's, and
+    the first four miss (SHORT_MOVE_ROWS)."""
+    from detector import geometry as g
+    from test_detector_geometry import _cover_solid, covers
+
+    for (scene, move, lean), pinned in SHORT_MOVE_ROWS.items():
+        if isinstance(scene[0], str):
+            solids, prior = _cabinet_scene(*scene)
+        else:
+            solids, prior = [_cover_solid(*scene)], scene[:2]
+        row, apart = _two_stop_row(solids, prior, _stops(solids[0], move), lean)
+        assert apart > g.ONE_STOP and apart == pytest.approx(move[1] if move[0] == "step" else 0.486, abs=0.07)
+        assert row == pytest.approx(pinned, abs=1.5e-3), (scene, move, row)
+        assert covers(FP(*pinned[:2], pinned[2:], False), solids[0]), scene
 
 
 # An unseen lateral side reaches no farther than the prior allows (R-PF3b; the review of 8891c46, finding 3). Behind
