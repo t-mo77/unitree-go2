@@ -42,7 +42,9 @@ DETECTOR_TARGETS = {"Bf": {"sofa_1", "suitcase_1"}, "R5": {"traffic_cone_1"}}   
 TEST_POSES = {"Bf": (-0.5, 0.0, 180.0), "R5": (0.0, -2.75, -90.0), "L": (0.0, 0.0, 90.0)}
 MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.730, -95.8), "L": (0.011, 0.037, 96.1)}
 # Every pose the H3 screening measured at the end of the procedure lies in these boxes (x, y, heading; 6 Bf runs,
-# 4 R5 runs), and so do H3b's Bf and R5 and every pose H5 reached (H5_POSES): their 8 corners stand for them below.
+# 4 R5 runs), and so do H3b's Bf and R5 and every pose H5 reached (H5_POSES). Their 8 corners are checked below, but
+# they do not stand for the inside: the grid is anchored at the start (voice_ltl/grid.py, Grid.anchor), so whether
+# a plan exists is not monotone in the start pose (test_bf_plans_with_the_rows_the_bridge_publishes).
 # R-H3k (1) widened the R5 box to H3b's real R5 pose (H3B_R5: x 0.017 m and the heading 0.38° beyond the
 # screening's -0.342 and -97.6°). R-H5a widened it again: Bf to H5's x -0.501..-0.453 (the old box ended at
 # -0.506), y up to -0.032 (was -0.054) and heading down to -174.0° (was -172.4°), each with the old box; R5 to H5's
@@ -325,7 +327,9 @@ def test_every_measured_pose_plans():
     the runs: the old Bf box's corner (-0.56, -0.141, -172.4°) jittered by (+0.1, +0.1, +5°) loses the sofa lap, and
     so does the widened box's corner (-0.453, -0.141, -166.6°) jittered by (+0.1, -0.1, +5°) (R-H5a; no other corner
     jitter loses it), as does H5's sofa_near1 pose (-0.453, -0.112, -166.9°) with the same jitter: the thin margin
-    of the sofa lap from Bf that H5 and H6 should know. All three lie outside every real run."""
+    of the sofa lap from Bf that H5 and H6 should know. All three lie outside every real run. These are the layout's
+    sizes; with the rows the bridge publishes the sofa lap is thinner still, inside the box too
+    (test_bf_plans_with_the_rows_the_bridge_publishes)."""
     for pose, ids in POSE_TARGETS.items():
         for start in measured_corners(pose):
             for obj_id in sorted(ids):
@@ -428,6 +432,72 @@ def test_h5_poses_plan_and_see_only_their_targets():           # R-H5a: H5's rea
     assert (min(d for _, d in base), max(d for _, d in base)) == pytest.approx((1.694, 1.736), abs=0.0005)
     for run, _ in H5_POSES["L"]:
         assert in_camera_view(poses[run], table.x, table.y), run
+
+
+# The rows the bridge publishes from Bf (H5's record, "測った足跡の大きさ"): the sofa measured 1.052-1.054 x 1.782-1.830
+# and the suitcase 0.495-0.506 x 0.305-0.312 (world axes). R-H5d floors each axis at the layout's size, so the sofa
+# row is 1.052-1.054 x 1.8-1.830 and the suitcase's stays as measured (above the layout's 0.468 x 0.291). Each range
+# is checked at both ends.
+H5_BF_ROWS = {"suitcase_1": ((0.495, 0.305), (0.506, 0.312)), "sofa_1": ((1.052, 1.8), (1.054, 1.83))}
+# The sofa lap's moves from each H5 Bf pose with those rows: (with sofa 1.052 x 1.8, with sofa 1.054 x 1.83), the
+# same with either suitcase row. The first number is also the layout sizes' at every pose.
+H5_BF_SOFA_LAP = {"sofa_near1": (54, 50), "sofa_near2": (50, 50), "sofa_lap1": (49, 49), "sofa_lap2": (55, 55),
+                  "suitcase_near1": (56, 56), "suitcase_near2": (53, 51), "suitcase_lap1": (50, 50),
+                  "suitcase_lap2": (52, 52)}
+# Spots in the part of the Bf box that R-H5a added (no run was there) where the sofa lap has no plan: (x, y,
+# heading), then its moves with the layout sizes, with the smallest rows (suitcase 0.495 x 0.305, sofa 1.052 x 1.8)
+# and with the largest (0.506 x 0.312, 1.054 x 1.83); None: no plan.
+BF_LAP_HOLES = (((-0.453, -0.0974, -168.08), (52, None, None)),   # the review's two: the measured suitcase alone
+                ((-0.4744, -0.032, -166.6), (54, None, None)),
+                ((-0.485, -0.141, -167.1), (50, 50, None)),        # 0.5° from H5's suitcase_near2 pose
+                ((-0.458, -0.032, -167.35), (None, None, None)))   # the layout sizes too
+
+
+def test_bf_plans_with_the_rows_the_bridge_publishes():         # R-H5a with R-H5d's rows (fix round 2)
+    """The plan checks above use the layout's sizes; a run plans with the rows the bridge publishes, and from Bf the
+    suitcase's measured row is wider than the layout's along world x (0.495-0.506 against 0.468). From every H5 Bf
+    pose all four Bf formulas still plan with those rows (the sofa lap with each of the 4 row sets, the others with
+    the smallest and the largest), and the sofa lap's moves are pinned (H5_BF_SOFA_LAP).
+
+    The thin margin: the sofa lap's ring passes the suitcase, and where the grid (anchored at the start,
+    Grid.anchor) puts a ring cell within BLOCK_MARGIN of the suitcase's footprint, the ring breaks and the lap has no
+    plan. A wider suitcase row breaks it at more starts, so the box holds holes between starts that plan. On a
+    6 x 6 x 6 grid over the Bf box the lap has no plan at 6 of 216 points with the smallest rows, 11 with the
+    largest, 0 with the layout sizes. A finer scan (0.005 m, 0.25°, 6 y values) of x -0.503..-0.453, heading
+    -170.1..-166.6° finds 97 of 990 with the smallest rows, 234 with the largest, and 16 with the layout sizes too.
+    Every hole found lies at x -0.493..-0.453 and heading -169.1..-166.6°, in the part R-H5a added; none is at
+    H5's poses. BF_LAP_HOLES pins four: the review's two (the
+    first is 0.015 m and 1.2° from H5's sofa_near1 pose), one 0.5° from H5's suitcase_near2 pose with the largest
+    rows, and one with the layout sizes. At the review's two the suitcase's x width does it alone (0.495 x 0.291
+    empties the lap, 0.468 x 0.305 keeps the layout's moves). The box's corner (-0.453, -0.032, -166.6°) loses the
+    lap with the largest sofa row. So an H6 sofa lap from Bf that ends its procedure in that part can be refused
+    with no plan."""
+    sets = [{"suitcase_1": s, "sofa_1": f} for s in H5_BF_ROWS["suitcase_1"] for f in H5_BF_ROWS["sofa_1"]]
+    ends = (sets[0], sets[-1])                                  # the smallest and the largest rows
+    for run, (x, y, heading) in H5_POSES["Bf"]:
+        start = (x, y, math.radians(heading))
+        for sizes in sets:
+            got = moves(build("F around_sofa_1", start, scene(sizes)), "around_sofa_1")
+            assert got == H5_BF_SOFA_LAP[run][H5_BF_ROWS["sofa_1"].index(sizes["sofa_1"])], (run, sizes)
+        for sizes in ends:
+            for formula in ("F near_sofa_1", "F near_suitcase_1", "F around_suitcase_1"):
+                assert moves(build(formula, start, scene(sizes)), target(formula)) is not None, (run, formula, sizes)
+        assert moves(build("F around_sofa_1", start, scene()), "around_sofa_1") == H5_BF_SOFA_LAP[run][0], run
+    (x0, x1), (y0, y1), (h0, h1) = MEASURED_RANGES["Bf"]
+    for (x, y, heading), pinned in BF_LAP_HOLES:
+        assert x0 <= x <= x1 and y0 <= y <= y1 and h0 <= heading <= h1
+        assert not (-0.560 <= x <= -0.506 and -0.141 <= y <= -0.054 and -172.4 <= heading <= -166.6)   # old box
+        start = (x, y, math.radians(heading))
+        got = tuple(moves(build("F around_sofa_1", start, scene(sizes)), "around_sofa_1") for sizes in ({}, *ends))
+        assert got == pinned, start
+    for (x, y, heading), (steps, _, _) in BF_LAP_HOLES[:2]:   # the suitcase's x width does it alone, not its y
+        start = (x, y, math.radians(heading))
+        for sizes, steps_got in (({"suitcase_1": (0.468, 0.305)}, steps), ({"suitcase_1": (0.495, 0.291)}, None),
+                                 ({"suitcase_1": (0.495, 0.305)}, None)):
+            assert moves(build("F around_sofa_1", start, scene(sizes)), "around_sofa_1") == steps_got, (start, sizes)
+    corner = (x1, y1, math.radians(h1))                         # (-0.453, -0.032, -166.6°)
+    for sizes, steps_got in (({}, 54), (sets[0], 54), ({"sofa_1": (1.054, 1.83)}, None), (sets[1], None)):
+        assert moves(build("F around_sofa_1", corner, scene(sizes)), "around_sofa_1") == steps_got, sizes
 
 
 def test_each_test_pose_sees_its_targets():                     # §12.3: so the turn puts them in the Scene
