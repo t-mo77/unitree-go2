@@ -476,9 +476,10 @@ def test_two_stops_miss_only_the_pinned_residuals(deg, faces):   # R-PF3, R-PF3b
 # axis, then set a lateral side of the union. ('sofa', 40, 2.5, 1.2, 1.0) grew from 2.063 x 1.945 to 2.677 x
 # 2.677 m, its lateral margin from -0.005 to +0.950 m (the review of 67f9d75, finding 1; 9 rows of that sweep grew by
 # more than 0.05 m, up to 0.73 m; 0.70 m with noise, 0.94 m with the lean). Pinned: the rows of 3cc9d29, which cover
-# each object; with the rule the first three are 2.677 x 2.677, 2.677 x 2.677 and 1.831 x 1.831 m. The first three
-# are 97da92a's rows too. The fourth is not: from one stop too the far end is judged from the views (R-PF3), and
-# 97da92a gave it 1.494 x 1.493 m.
+# each object; with the rule the first three were 2.677 x 2.677, 2.677 x 2.677 and 1.831 x 1.831 m (67f9d75), and
+# with the rule bounded by the prior's other side (the review of 8891c46, finding 3) they are 2.098 x 1.987,
+# 2.098 x 1.987 and 1.831 x 1.831 m. The first three are 97da92a's rows too. The fourth is not: from one stop too the
+# far end is judged from the views (R-PF3), and 97da92a gave it 1.494 x 1.493 m.
 ONE_STOP_ROWS = {   # (label, yaw, distance, cabinet width, cabinet y, faces, sway): (x, y, sx, sy)
     ("sofa", 40, 2.5, 1.2, 1.0, "plain", 0.0): (2.482, 0.021, 2.063, 1.945),
     ("sofa", 40, 3.0, 1.2, 0.9, "plain", 0.002): (2.992, 0.010, 2.082, 1.968),
@@ -523,6 +524,88 @@ def test_a_one_stop_union_keeps_its_own_lateral_sides():   # R-PF3b (the review 
         assert covers(FP(x, y, (sx, sy), False), obj), scene      # the pinned row covers the object
     wrong = {scene: row for scene, row in rows_of.items() if row != pytest.approx(ONE_STOP_ROWS[scene], abs=1.5e-3)}
     assert wrong == {}
+
+
+def _cabinet_scene(label, yaw, dist, width, cabinet_y):
+    """R-G4's cabinet scene: the object (its vocabulary size, turned yaw°, its centre dist m ahead) and a cabinet
+    (0.45 m deep, width m wide, at (1.6, cabinet_y)) between it and the Go2; and the object's prior."""
+    from test_detector_geometry import solid
+
+    L, S = vocabulary.size_of(label)
+    return ([solid(dist, 0.0, L, S, yaw_deg=yaw, height=vocabulary.height_of(label)),
+             solid(1.6, cabinet_y, 0.45, width, height=vocabulary.height_of("cabinet"))], (L, S))
+
+
+def _stops(s, move):
+    """The two stops of a scene around the solid s: ("around", deg) BASE, then a stop turned deg around the object
+    (geometry's around); ("step", m) BASE, then BASE moved m toward the object's centre, facing it; ("turn", deg)
+    BASE turned -deg/2, then +deg/2 in place."""
+    from test_detector_geometry import BASE as STAND, Q0, around, yaw_q
+
+    kind, x = move
+    if kind == "around":
+        return [(STAND, Q0), around(s, x)]
+    if kind == "turn":
+        return [(STAND, yaw_q(-x / 2.0)), (STAND, yaw_q(x / 2.0))]
+    u = (np.array(s[:2]) - np.array(STAND[:2])) / math.hypot(s[0] - STAND[0], s[1] - STAND[1])
+    return [(STAND, Q0), ((STAND[0] + x * u[0], STAND[1] + x * u[1], STAND[2]),
+                          yaw_q(math.degrees(math.atan2(u[1], u[0]))))]
+
+
+def _two_stop_row(solids, prior, stops, lean=0.0):
+    """The row the tracker publishes for solids[0] (its own returns only): 3 hits from each stop, each hit a raw
+    view fused by geometry.footprint, as in the two-stop sweeps; and how far the cameras lie from the newest."""
+    from detector import geometry as g
+    from test_detector_geometry import cam_xy, scan
+
+    tracker = Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, g.footprint)
+    t, wall, seed, cams = 100.0, 5000.0, 0, []
+    for base, q in stops:
+        cam = cam_xy(base, q)
+        for _ in range(3):
+            seed += 1
+            pts, k = scan(solids, base=base, q=q, which=True, lean_deg=lean, seed=seed)
+            p = pts[(pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP) & (k == 0)][:, :2]
+            assert len(p) >= g.MIN_CLUSTER_POINTS
+            fp = g.footprint(p, cam, prior)
+            t, wall = t + 1.0, wall + 1.0
+            tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, p, True, False, cam)],
+                           t, wall, always)
+            cams.append(cam)
+    rows = tracker.rows(wall, 3.0)
+    assert len(rows) == 1, rows
+    return (rows[0].x, rows[0].y, *rows[0].size), max(math.dist(c, cams[-1]) for c in cams)
+
+
+# An unseen lateral side reaches no farther than the prior allows (R-PF3b; the review of 8891c46, finding 3). Behind
+# a cabinet every single view of a 2 x 1 m bed saw only part of its long face, so each filled L along its own depth
+# axis (R-G3), which runs along the union's lateral axis. The union saw the short face to its end, grazed beyond
+# 60° (so that side was unseen), and the tightest view set it: the union became an L x L square (2.959 x 2.959 and
+# 2.987 x 2.983 m), which an L x S object rules out once the union's observed depth (1.38 and 1.98 m) is longer
+# than S. Pinned: the first is the row of 97da92a and 3cc9d29; the second is theirs (2.334 x 2.204 m) but for the
+# unseen side's pad, one point spacing past the views' last return. The bound holds the views' own pads too: in the
+# third the union saw 1.787 m of a 1.8 m sofa's long face along its lateral axis, so 0.013 m can be left there,
+# while each view's pad there (one point spacing at 3.5 m and beyond 60°) is 0.139 m, which grew the row from
+# 2.042 x 2.042 m (3cc9d29) to 2.104 x 2.104 m (8891c46; 28 such rows of that sweep grew by 0.05-0.06 m).
+LATERAL_BOUNDED_ROWS = {   # (cabinet scene, move): (x, y, sx, sy)
+    (("bed", 50, 2.5, 1.2, -0.5), ("around", -90)): (2.510, -0.008, 2.212, 2.332),
+    (("bed", 40, 2.5, 0.6, -0.2), ("turn", 96)): (2.514, 0.012, 2.344, 2.217),
+    (("sofa", 45, 3.5, 1.2, -1.0), ("around", 90)): (3.500, -0.000, 2.051, 2.051),
+}
+
+
+def test_an_unseen_lateral_side_reaches_no_farther_than_the_prior_allows():   # R-PF3b (the review of 8891c46, finding 3)
+    """A union whose observed depth is longer than S + EDGE_PAD has its long side along the depth axis, so an
+    unseen lateral side reaches at most S - w_obs + EDGE_PAD past the union's last return there (S - w_obs is what
+    the object can have left; L - w_obs otherwise): the views' prior fill along that axis, and their own pads, stop
+    there. Each pinned row covers (LATERAL_BOUNDED_ROWS)."""
+    from test_detector_geometry import covers
+
+    for (scene, move), pinned in LATERAL_BOUNDED_ROWS.items():
+        solids, prior = _cabinet_scene(*scene)
+        row, _ = _two_stop_row(solids, prior, _stops(solids[0], move))
+        assert row == pytest.approx(pinned, abs=1.5e-3), (scene, move, row)
+        assert covers(FP(*pinned[:2], pinned[2:], False), solids[0]), scene
 
 
 def test_frames_beyond_6_m_do_not_count_toward_n():
