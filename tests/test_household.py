@@ -42,11 +42,26 @@ DETECTOR_TARGETS = {"Bf": {"sofa_1", "suitcase_1"}, "R5": {"traffic_cone_1"}}   
 TEST_POSES = {"Bf": (-0.5, 0.0, 180.0), "R5": (0.0, -2.75, -90.0), "L": (0.0, 0.0, 90.0)}
 MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.730, -95.8), "L": (0.011, 0.037, 96.1)}
 # Every pose the H3 screening measured at the end of the procedure lies in these boxes (x, y, heading; 6 Bf runs,
-# 4 R5 runs), and so do H3b's Bf and R5: their 8 corners stand for them below. R-H3k (1) widened the R5 box to H3b's
-# real R5 pose (H3B_R5: x 0.017 m and the heading 0.38° beyond the screening's -0.342 and -97.6°).
+# 4 R5 runs), and so do H3b's Bf and R5 and every pose H5 reached (H5_POSES): their 8 corners stand for them below.
+# R-H3k (1) widened the R5 box to H3b's real R5 pose (H3B_R5: x 0.017 m and the heading 0.38° beyond the
+# screening's -0.342 and -97.6°). R-H5a widened it again: Bf to H5's x -0.501..-0.453 (the old box ended at
+# -0.506), y up to -0.032 (was -0.054) and heading down to -174.0° (was -172.4°), each with the old box; R5 to H5's
+# x -0.413; and L got a box, H3's L and H5's four (it had none).
 H3B_R5 = (-0.359, -2.709, -98.0)
-MEASURED_RANGES = {"Bf": ((-0.560, -0.506), (-0.141, -0.054), (-172.4, -166.6)),
-                   "R5": ((-0.359, -0.225), (-2.804, -2.654), (-98.0, -95.1))}
+MEASURED_RANGES = {"Bf": ((-0.560, -0.453), (-0.141, -0.032), (-174.0, -166.6)),
+                   "R5": ((-0.413, -0.225), (-2.804, -2.654), (-98.0, -95.1)),
+                   "L": ((0.011, 0.037), (-0.045, 0.037), (92.5, 96.6))}
+# H5's poses at the end of the procedure (H5's record, "着いた姿勢"; odometry read after resolve): run, then
+# (x, y, heading). Each run walked the one formula of its name.
+H5_POSES = {"Bf": (("sofa_near1", (-0.453, -0.112, -166.9)), ("sofa_near2", (-0.484, -0.060, -173.8)),
+                   ("sofa_lap1", (-0.494, -0.046, -171.6)), ("sofa_lap2", (-0.501, -0.125, -170.7)),
+                   ("suitcase_near1", (-0.453, -0.057, -170.6)), ("suitcase_near2", (-0.485, -0.141, -167.6)),
+                   ("suitcase_lap1", (-0.466, -0.062, -174.0)), ("suitcase_lap2", (-0.471, -0.032, -169.1))),
+            "R5": (("cone_near1", (-0.345, -2.757, -97.5)), ("cone_near2", (-0.310, -2.723, -96.8)),
+                   ("cone_lap1", (-0.413, -2.718, -97.6)), ("cone_lap2", (-0.374, -2.755, -96.9))),
+            "L": (("table_near1", (0.037, -0.045, 96.6)), ("table_near2", (0.036, 0.035, 92.5)),
+                  ("table_lap1", (0.012, 0.024, 94.6)), ("table_lap2", (0.034, 0.019, 96.0)))}
+POSE_TARGETS = {**DETECTOR_TARGETS, "L": {"table_1"}}          # the targets of each test pose (L: logical only)
 # The four jittered starts of §12.4 (±0.1 m, ±5°), world axes, around the test pose. The yaw turns with the x shift.
 JITTERS = ((0.1, 0.1, 5.0), (0.1, -0.1, 5.0), (-0.1, 0.1, -5.0), (-0.1, -0.1, -5.0))
 # record_frames' four view shifts (dx forward, dy left, dyaw), in the Go2's own frame (plan H3)
@@ -306,16 +321,21 @@ def test_every_test_formula_has_a_plan_from_the_measured_pose(formula, pose, cel
 
 def test_every_measured_pose_plans():
     """The 8 corners of the boxes of measured poses plan near and lap of their targets (the H3 screening checked
-    every measured pose with its 4 jitters too). The box is wider than the runs: one corner jittered by
-    (+0.1, +0.1, +5°) loses the sofa lap, the thin margin of the sofa lap from Bf that H5 and H6 should know."""
-    for pose, ids in DETECTOR_TARGETS.items():
+    every measured pose with its 4 jitters too), L's table included since R-H5a gave L a box. The box is wider than
+    the runs: the old Bf box's corner (-0.56, -0.141, -172.4°) jittered by (+0.1, +0.1, +5°) loses the sofa lap, and
+    so does the widened box's corner (-0.453, -0.141, -166.6°) jittered by (+0.1, -0.1, +5°) (R-H5a; no other corner
+    jitter loses it), as does H5's sofa_near1 pose (-0.453, -0.112, -166.9°) with the same jitter: the thin margin
+    of the sofa lap from Bf that H5 and H6 should know. All three lie outside every real run."""
+    for pose, ids in POSE_TARGETS.items():
         for start in measured_corners(pose):
             for obj_id in sorted(ids):
                 for kind in ("near", "around"):
                     formula = f"F {kind}_{obj_id}"
                     assert moves(build(formula, start, scene()), target(formula)) is not None, (formula, start)
-    edge = (-0.56 + 0.1, -0.141 + 0.1, math.radians(-172.4 + 5.0))
-    assert moves(build("F around_sofa_1", edge, scene()), "around_sofa_1") is None
+    for edge in ((-0.56 + 0.1, -0.141 + 0.1, -172.4 + 5.0), (-0.453 + 0.1, -0.141 - 0.1, -166.6 + 5.0),
+                 (-0.453 + 0.1, -0.112 - 0.1, -166.9 + 5.0)):
+        x, y, heading = edge
+        assert moves(build("F around_sofa_1", (x, y, math.radians(heading)), scene()), "around_sofa_1") is None
 
 
 def test_h3b_r5_pose_plans_and_sees_only_the_cone():           # R-H3k (1): H3b's real R5, pinned as R-H3g
@@ -346,6 +366,70 @@ def test_h3b_r5_pose_plans_and_sees_only_the_cone():           # R-H3k (1): H3b'
     assert min(min(abs(b) for b, _ in bearings(v, table)) for v in views) - HALF_FOV == pytest.approx(84.8, abs=0.05)
 
 
+# R-H5a: the plan of the formula each H5 run walked, from its own pose with the layout's sizes: (area [cells], moves,
+# near keys or None, PLANT states). The moves are H5's ("計画の手") in 14 of the 16 runs. The two table laps planned
+# with the bridge's table row instead of the layout's 1.5 x 0.8 (table_lap1 measured 1.412 x 0.807, table_lap2 still
+# on F2's seed 1.5 x 1.2, R-H5c); with that row they give the run's moves (H5_TABLE_ROWS).
+H5_PLANS = {"sofa_near1": (154, 5, 20, 3072), "sofa_near2": (154, 5, 18, 3120),
+            "sofa_lap1": (208, 49, None, 14160), "sofa_lap2": (224, 55, None, 14928),
+            "suitcase_near1": (56, 2, 7, 1224), "suitcase_near2": (64, 6, 5, 1416),
+            "suitcase_lap1": (100, 26, None, 7920), "suitcase_lap2": (100, 26, None, 8016),
+            "cone_near1": (64, 1, 6, 1416), "cone_near2": (72, 1, 8, 1584),
+            "cone_lap1": (100, 28, None, 8208), "cone_lap2": (100, 28, None, 8400),
+            "table_near1": (150, 10, 19, 3024), "table_near2": (165, 10, 15, 3456),
+            "table_lap1": (221, 54, None, 14256), "table_lap2": (221, 49, None, 14016)}
+H5_TABLE_ROWS = {"table_lap1": ((1.412, 0.807), 56), "table_lap2": ((1.5, 1.2), 54)}   # run: (table size, moves)
+H5_RUN_TARGETS = {"sofa": "sofa_1", "suitcase": "suitcase_1", "cone": "traffic_cone_1", "table": "table_1"}
+
+
+def h5_formula(run: str) -> str:
+    """The formula an H5 run walked ("cone_lap2" -> "F around_traffic_cone_1")."""
+    obj, what = run.split("_")
+    return f"F {'near' if what.startswith('near') else 'around'}_{H5_RUN_TARGETS[obj]}"
+
+
+def test_h5_poses_plan_and_see_only_their_targets():           # R-H5a: H5's real poses, pinned as R-H3k (1)
+    """Every pose H5 reached lies in its widened box. From each, every near and lap formula of the pose's targets
+    plans, and the formula the run walked has its pinned plan (H5_PLANS). The Bf and R5 pose views and their 4 shifts
+    show the pose's targets alone (R-H3c): table_1 stays at least 0.34° outside a Bf view (suitcase_lap1's pose,
+    the most turned run, with s3), the thinnest margin of a real pose. From R5 the cone stays well inside ±35°
+    (R-H3b); from L the logical camera sees the table (§12.3)."""
+    for pose, runs in H5_POSES.items():
+        (x0, x1), (y0, y1), (h0, h1) = MEASURED_RANGES[pose]
+        for run, (x, y, heading) in runs:
+            assert x0 <= x <= x1 and y0 <= y <= y1 and h0 <= heading <= h1, run
+            start = (x, y, math.radians(heading))
+            for obj_id in sorted(POSE_TARGETS[pose]):
+                for kind in ("near", "around"):
+                    formula = f"F {kind}_{obj_id}"
+                    prop = target(formula)
+                    gw = build(formula, start, scene())
+                    assert moves(gw, prop) is not None, (run, formula)
+                    if formula == h5_formula(run):
+                        keys = len(gw.near[prop]) if kind == "near" else None
+                        assert (area(gw), moves(gw, prop), keys, len(gw.world.states)) == H5_PLANS[run], run
+    assert sorted(H5_PLANS) == sorted(run for runs in H5_POSES.values() for run, _ in runs)
+    poses = {run: (x, y, math.radians(heading)) for runs in H5_POSES.values() for run, (x, y, heading) in runs}
+    for run, (size, steps) in H5_TABLE_ROWS.items():
+        assert moves(build(h5_formula(run), poses[run], scene({"table_1": size})), "around_table_1") == steps, run
+    table, cone = (next(o for o in scene() if o.id == i) for i in ("table_1", "traffic_cone_1"))
+    margins = []
+    for pose, ids in DETECTOR_TARGETS.items():
+        for run, _ in H5_POSES[pose]:
+            views = [poses[run]] + [shifted(poses[run], s) for s in VIEW_SHIFTS]
+            assert [{o.id for o in scene() if rendered(v, o)} for v in views] == [ids] * 5, run
+            if pose == "Bf":
+                margins.append((min(min(abs(b) for b, _ in bearings(v, table)) for v in views) - HALF_FOV, run))
+    assert min(margins)[0] == pytest.approx(0.344, abs=0.001) and min(margins)[1] == "suitcase_lap1"
+    r5 = [poses[run] for run, _ in H5_POSES["R5"]]
+    cam, base = [sight(p, cone.x, cone.y) for p in r5], [sight(p, cone.x, cone.y, camera=False) for p in r5]
+    assert (min(b for b, _ in cam), max(b for b, _ in cam)) == pytest.approx((8.8, 13.9), abs=0.05)
+    assert (min(b for b, _ in base), max(b for b, _ in base)) == pytest.approx((7.1, 11.3), abs=0.05)
+    assert (min(d for _, d in base), max(d for _, d in base)) == pytest.approx((1.694, 1.736), abs=0.0005)
+    for run, _ in H5_POSES["L"]:
+        assert in_camera_view(poses[run], table.x, table.y), run
+
+
 def test_each_test_pose_sees_its_targets():                     # §12.3: so the turn puts them in the Scene
     targets = {**DETECTOR_TARGETS, "L": {"table_1"}}
     for poses in (TEST_POSES, MEASURED_POSES):
@@ -357,11 +441,14 @@ def test_each_test_pose_sees_its_targets():                     # §12.3: so the
 def test_no_undetectable_model_in_a_detector_test_view():
     """R-H3c: at a detector test pose and its 4 view shifts the rendered camera (120°, 10 m, no occlusion) shows no
     model but the pose's targets, so every matched pair of §13.3 is a target. Checked at the measured poses (H3's and
-    the corners of the box of every screening run's and H3b's, R-H3k (1)). At the nominal Bf, exactly 180°, table_1 enters the pose view (its corner
-    (-3.148, 4.0) at 59.88° against the 59.99° edge) and the s2 and s3 views (both -5°). At the measured headings it
-    stays at least 2.3° outside every view (the corner (-0.506, -0.054, -172.4°) with s3). R-H3e: the turns
-    overshoot, so the room was placed with the measured yaws; re-run this view check if the turn controller changes.
-    Also R-H3b: from Bf the suitcase never covers the sofa."""
+    the corners of the box of every screening run's, H3b's and H5's, R-H3k (1) and R-H5a; H5's own poses in
+    test_h5_poses_plan_and_see_only_their_targets). At the nominal Bf, exactly 180°, table_1 enters the pose view
+    (its corner (-3.148, 4.0) at 59.88° against the 59.99° edge) and the s2 and s3 views (both -5°). At the
+    measured headings it stays outside every view, but only just at the widened box's extremes: 0.03° at the
+    corner (-0.453, -0.032, -174.0°) with s3 (2.3° at the corner (-0.506, -0.054, -172.4°) of the box before
+    R-H5a; 0.34° at H5's most turned real pose). R-H3e: the turns overshoot, so the room was placed with the measured
+    yaws; re-run this view check if the turn controller changes. Also R-H3b: from Bf the suitcase never covers the
+    sofa."""
     table = next(o for o in scene() if o.id == "table_1")
     nominal = anchor("Bf")
     assert [rendered(v, table) for v in [nominal] + [shifted(nominal, s) for s in VIEW_SHIFTS]] == \
@@ -375,23 +462,27 @@ def test_no_undetectable_model_in_a_detector_test_view():
                     spans = {o.id: [b for b, _ in bearings(view, o)] for o in scene() if o.id in ids}
                     assert max(spans["sofa_1"]) < min(spans["suitcase_1"]), view    # the suitcase is left of it
                     margins.append(min(abs(b) for b, _ in bearings(view, table)) - HALF_FOV)
-    assert min(margins) == pytest.approx(2.31, abs=0.005)       # table_1's least margin outside a Bf view
+    assert min(margins) == pytest.approx(0.029, abs=0.0005) and min(margins) > 0   # table_1's least margin, Bf
 
 
 def test_the_suitcase_from_the_camera_and_from_the_base():
     """R-H3b's ±35° is about the image centre, so it is measured from the camera, which sits 0.327 m ahead of the base
     (CAMERA_IN_BODY); its 1.5-2.5 m is about the test pose, the base. The room proposal and R-H3h (4) gave base ->
     footprint centre (+29…+36°, 1.47-1.56 m over the screening's runs). From the camera, the suitcase's centre is
-    +41.3° at H3's Bf and +35.8…+47.2° over the box of measured Bf poses (+28.5…+38.1° from the base): outside ±35°
-    at every measured pose, not only in the -172.4° run (the least overshoot, 187.6° turned). It is 1.457-1.556 m
-    from the base, under R-H3b's 1.5 m in part of the box, and 1.184-1.308 m from the camera. Its truth box stays in
-    the image in the pose view and the s1, s3 and s4 views; in s2 (dyaw -5°) it runs past the left image edge at
-    every measured pose, so a miss in Bf_s2 reads as clipping, not as a detector fault. The placement stands as
-    R-H3h (4) accepted it (Part B passed on real renders; H3b is the gate). These pins make a change to the turn
-    controller show up."""
+    +41.3° at H3's Bf, +35.3…+46.0° at H5's eight Bf poses and +34.0…+49.6° over the box of measured Bf poses
+    (+27.2…+40.3° from the base): outside ±35° at every real pose (H3's, H5's), and inside it only near the widened
+    box's corner (-0.453, -0.141, -166.6°), 34.0° (R-H5a). It is 1.457-1.609 m from the base, under R-H3b's 1.5 m
+    in part of the box, and 1.184-1.364 m from the camera. At every real pose its truth box stays in the image in
+    the pose view and the s1, s3 and s4 views (the pose view's far edge 2.0° inside at worst); in s2 (dyaw -5°) it
+    runs past the left image edge at H3's pose and at 7 of H5's 8 (sofa_near1's keeps it 0.2° inside), so a miss in
+    Bf_s2 reads as clipping, not as a detector fault. Two corners of the widened box leave that pattern, where no run
+    was: (-0.453, -0.141, -166.6°) clips no view, and (-0.56, -0.032, -174.0°) clips the pose view and s3 too (far
+    edges 61.7° and 61.3°). The placement stands as R-H3h (4) accepted it (Part B passed on real renders; H3b is the
+    gate). These pins make a change to the turn controller show up."""
     s = next(o for o in scene() if o.id == "suitcase_1")
     h3 = anchor("Bf", poses=MEASURED_POSES)
-    poses = [h3] + measured_corners("Bf")
+    real = [h3] + [(x, y, math.radians(heading)) for _, (x, y, heading) in H5_POSES["Bf"]]
+    poses = real + measured_corners("Bf")
 
     def span(rows, k):
         return min(r[k] for r in rows), max(r[k] for r in rows)
@@ -401,20 +492,29 @@ def test_the_suitcase_from_the_camera_and_from_the_base():
     assert sight(h3, s.x, s.y, camera=False)[1] == pytest.approx(1.550, abs=0.0005)
     cam = [sight(p, s.x, s.y) for p in poses]
     base = [sight(p, s.x, s.y, camera=False) for p in poses]
-    assert span(cam, 0) == pytest.approx((35.8, 47.2), abs=0.05) and span(cam, 0)[0] > 35.0
-    assert span(base, 0) == pytest.approx((28.5, 38.1), abs=0.05)
-    assert span(base, 1) == pytest.approx((1.457, 1.556), abs=0.0005) and span(base, 1)[0] < 1.5
-    assert span(cam, 1) == pytest.approx((1.184, 1.308), abs=0.0005)
-    left = {}                                                   # per view: the footprint's leftmost bearing, box x0
+    assert span(cam, 0) == pytest.approx((34.0, 49.6), abs=0.05) and span(cam, 0)[0] < 35.0
+    assert span(cam[1:len(real)], 0) == pytest.approx((35.25, 45.99), abs=0.005) and span(cam[:len(real)], 0)[0] > 35.0
+    assert span(base, 0) == pytest.approx((27.2, 40.3), abs=0.05)
+    assert span(base, 1) == pytest.approx((1.457, 1.609), abs=0.0005) and span(base, 1)[0] < 1.5
+    assert span(cam, 1) == pytest.approx((1.184, 1.364), abs=0.0005)
+    left, clipped = {}, []                       # per view: the footprint's leftmost bearing, box x0; clipped views
     for p in poses:
+        cut = set()
         for k, view in enumerate([p] + [shifted(p, sh) for sh in VIEW_SHIFTS]):
             box = truth_box(view, s)
             far = max(b for b, _ in bearings(view, s))
-            assert box is not None and (box[0] == 0.0) == (far > HALF_FOV) == (k == 2), (k, view)
+            assert box is not None and (box[0] == 0.0) == (far > HALF_FOV), (k, view)
+            if box[0] == 0.0:
+                cut.add(k)
             left.setdefault(k, []).append((far, box[0]))
-    assert span(left[2], 0) == pytest.approx((61.2, 70.9), abs=0.05)     # s2: past the 60° edge, clipped at u = 0
-    assert span(left[0], 0) == pytest.approx((48.9, 59.5), abs=0.05)     # the pose view: inside, by 0.5° at worst
-    assert span(left[0], 1) == pytest.approx((6.1, 108.3), abs=0.05)     # ... its left edge at u 6.1-108.3 px
+        clipped.append(cut)
+    assert clipped[:len(real)] == [{2}, set()] + [{2}] * 7           # H3's, then H5's (sofa_near1 clips none)
+    assert clipped[len(real):] == [{2}, {2}, {0, 2, 3}, {2}, {2}, set(), {2}, {2}]   # measured_corners' order
+    assert span(left[2], 0) == pytest.approx((58.94, 72.78), abs=0.005)  # s2: past the 60° edge, clipped at u = 0
+    assert span(left[2][:len(real)], 0) == pytest.approx((59.76, 69.23), abs=0.005)
+    assert span(left[0][:len(real)], 0) == pytest.approx((47.70, 57.945), abs=0.005)  # the pose view: inside
+    assert span(left[0][:len(real)], 1) == pytest.approx((24.825, 116.85), abs=0.005)  # its left edge at u (px)
+    assert span(left[0], 0)[1] == pytest.approx(61.68, abs=0.005)       # ... but past the edge at the box corner
 
 
 def test_vocabulary_sizes_also_plan():
