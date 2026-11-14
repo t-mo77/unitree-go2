@@ -296,16 +296,16 @@ def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final revi
 # own footprints there. That closed every lateral miss of an unseen side above 0.05 m: 0.0935 m at -45 and 0.0654 m
 # at +90 (plain), and 0.350 m (-45, noise), 0.271 m (±45, lean) and 0.451 m (-45, lean), which existed on 97da92a.
 # The rule needs views from more than one stop (geometry.ONE_STOP; test_a_one_stop_union_keeps_its_own_lateral_sides).
-# UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (the name stands until the ruling after
-# R-PF3b). Mostly they are not the thinning. All but two are short on a lateral side, and all but four of those on
-# a side that one view saw at <= 60° incidence, which keeps the union's own margin from the newest camera (EDGE_PAD
-# where two stops' face ends lie at one lateral coordinate, as if a face lay along that side, or one point spacing
-# at the newest camera's incidence). The four are on an unseen side, no larger than the second stop's own
+# UNION_LATERAL (R-PF3b (a); named UNION_THINNING before it): the misses left within §11.6's 0.05 m thinning step,
+# each pinned with its size. Few of them are the thinning. All but two are short on a lateral side, and all but four
+# of those on a side that one view saw at <= 60° incidence, which keeps the union's own margin from the newest camera
+# (EDGE_PAD where two stops' face ends lie at one lateral coordinate, as if a face lay along that side, or one point
+# spacing at the newest camera's incidence). The four are on an unseen side, no larger than the second stop's own
 # footprint alone misses there: (2.0, 2.0, 0.8, yaw 30, 1.0 m, 30) at -45 (plain, noise and lean; alone 0.053,
 # 0.056 and 0.029 m) and (2.0, 2.0, 0.8, 15, 1.0, 30) at +45 with the lean (alone 0.0011 m). The two others: the
 # near side of (2.0, 2.0, 0.8, 0, 1.0, 0) at -90 and the far side of (0.9, 0.45, 1.2, 90, 3.0, 30) at -45 with
 # noise. Among them F7's rest, (0.4, 0.3, 0.7, 15, 2.0, 0) at -45 (accepted by R-PF3).
-UNION_THINNING = {
+UNION_LATERAL = {
     (45, "plain"): {(1.2, 0.4, 0.45, 75, 1.0, 0): 0.0015},
     (-45, "plain"): {(0.3, 0.3, 0.45, 15, 2.0, 0): 0.0004, (0.4, 0.3, 0.7, 15, 2.0, 0): 0.0025,
                      (1.8, 0.9, 0.85, 90, 1.0, 30): 0.0099, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0316},
@@ -389,11 +389,14 @@ UNION_THINNING = {
                     (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0404, (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0265,
                     (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0142},
 }
-# Larger than the thinning step, reported to the controller with these numbers (R-PF3, R-PF3b: not hidden by wider
-# pads). A lateral side that the first stop saw at <= 60° (its last return 0.121 m short of the end, one point
-# spacing 0.206 m there at 5.4 m), where both stops' face ends lie at one lateral coordinate, so the union's own
-# margin is EDGE_PAD. The tightest bound of the views that saw it would cover it, but the same bound widens sides
-# that were observed to their end by up to 0.125 m and loses rows at the 6 m window (tracker3-report.md, R-PF3b).
+# Larger than the thinning step: R-PF3b (a) accepts it as a documented O12 limit of two-stop unions, with these
+# numbers (the same on 97da92a; not hidden by wider pads, R-PF3). A lateral side that the first stop saw only as a
+# face ending there at <= 60° (its last return 0.121 m short of the end, one point spacing 0.206 m there at 5.4 m),
+# where both stops' face ends lie at one lateral coordinate, which the union takes as a face along that side, so
+# the union's own margin is EDGE_PAD, while each view alone bounds that side 0.19-0.21 m out. The tightest bound of
+# the views that saw it would cover it, but the same evidence (a face end seen at <= 60° from about 5 m) cannot
+# tell it from (2.0, 1.0, 0.5, 75, 4.0, 30), whose side was observed to within 1 mm: that bound widens sides
+# observed to their end by up to 0.125 m and loses rows at the 6 m window (tracker3-report.md, R-PF3b).
 LATERAL_FROM_NEWEST = {
     (90, "plain"): {(2.0, 2.0, 0.8, 75, 4.0, 30): 0.0554},
     (90, "noise"): {(2.0, 2.0, 0.8, 75, 4.0, 30): 0.0539},
@@ -420,11 +423,11 @@ def _outside(row, s):
 
 
 @pytest.mark.parametrize("deg, faces", TWO_STOP_SWEEPS)
-def test_two_stops_miss_only_within_the_thinning_step(deg, faces):   # R-PF3, R-PF3b (spec §11.6, O12)
+def test_two_stops_miss_only_the_pinned_residuals(deg, faces):   # R-PF3, R-PF3b (spec §11.6, O12)
     """O12 at the tracker level: the 630 cover cases, 3 hits from BASE and then 3 from a stop turned ±45° or ±90°
     around the object, fused by geometry.footprint with each hit as a raw view; plain faces, 2 mm of range noise
     (seeded per hit) or every side face leaning back 0.5°. Every published case covers the object except
-    UNION_THINNING (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far end that only
+    UNION_LATERAL (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far end that only
     an older stop grazed is taken as seen any more, and no lateral side that no single view saw. The case of
     VIEWS_MISSED covers, and as many cases are published as on 97da92a (PUBLISHED)."""
     from detector import geometry as g
@@ -457,7 +460,7 @@ def test_two_stops_miss_only_within_the_thinning_step(deg, faces):   # R-PF3, R-
         size = _outside(rows[0], s)
         if size > 1e-9:
             missed[case] = round(size, 4)
-    thin, wide = UNION_THINNING.get((deg, faces), {}), LATERAL_FROM_NEWEST.get((deg, faces), {})
+    thin, wide = UNION_LATERAL.get((deg, faces), {}), LATERAL_FROM_NEWEST.get((deg, faces), {})
     assert published == PUBLISHED[deg, faces]
     assert sorted(missed) == sorted({**thin, **wide})
     assert missed == pytest.approx({**thin, **wide}, abs=5e-4)
