@@ -291,10 +291,11 @@ def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final revi
 # and -90 (plain), up to 0.177 m. A far end counts as seen only when one single view's own returns reach it at
 # <= 60°, otherwise the prior fills it; a far end that several views saw takes the tightest of their bounds (round-3
 # review, finding 1). No miss left is short at its far end (one at -45 with noise, 0.0017 m).
-# R-PF3b: a lateral side of the union counts as seen only when one single view's own returns reach it the same way;
-# otherwise it reaches as far as the views' own pads past their last returns and the tightest of their own
-# footprints there. That closed every lateral miss of an unseen side above 0.05 m: 0.0935 m at -45 and 0.0654 m at
-# +90 (plain), and 0.350 m (-45, noise), 0.271 m (±45, lean) and 0.451 m (-45, lean), which existed on 97da92a.
+# R-PF3b: a lateral side of a union from two stops counts as seen only when one single view's own returns reach it
+# the same way; otherwise it reaches as far as the views' own pads past their last returns and the tightest of their
+# own footprints there. That closed every lateral miss of an unseen side above 0.05 m: 0.0935 m at -45 and 0.0654 m
+# at +90 (plain), and 0.350 m (-45, noise), 0.271 m (±45, lean) and 0.451 m (-45, lean), which existed on 97da92a.
+# The rule needs views from more than one stop (geometry.ONE_STOP; test_a_one_stop_union_keeps_its_own_lateral_sides).
 # UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (the name stands until the ruling after
 # R-PF3b). Mostly they are not the thinning. All but two are short on a lateral side, and all but four of those on
 # a side that one view saw at <= 60° incidence, which keeps the union's own margin from the newest camera (EDGE_PAD
@@ -462,6 +463,63 @@ def test_two_stops_miss_only_within_the_thinning_step(deg, faces):   # R-PF3, R-
     assert missed == pytest.approx({**thin, **wide}, abs=5e-4)
     assert max(thin.values(), default=0.0) <= tracker_module.THIN_CELL
     assert min(wide.values(), default=1.0) > tracker_module.THIN_CELL
+
+
+# One stop, the tracker's usual case (every hit taken from one standstill): R-G4's cabinet scenes (geometry's
+# test_partly_hidden_furniture_claims_no_small_seen_footprint) through the tracker, 6 hits from BASE, the base
+# swaying on a circle of `sway` m around BASE from hit to hit (0: still). R-PF3b's cause, another stop's grazed face
+# ends, does not exist there, but its lateral rule applied all the same: the thinned union and a raw single view can
+# take different face axes as their depth, and the view's footprint alone, filled with the prior along its own depth
+# axis, then set a lateral side of the union. ('sofa', 40, 2.5, 1.2, 1.0) grew from 2.063 x 1.945 to 2.677 x
+# 2.677 m, its lateral margin from -0.005 to +0.950 m (the review of 67f9d75, finding 1; 9 rows of that sweep grew by
+# more than 0.05 m, up to 0.73 m; 0.70 m with noise, 0.94 m with the lean). Pinned: the rows of 3cc9d29, which cover
+# each object; with the rule the first three are 2.677 x 2.677, 2.677 x 2.677 and 1.831 x 1.831 m. The first three
+# are 97da92a's rows too. The fourth is not: from one stop too the far end is judged from the views (R-PF3), and
+# 97da92a gave it 1.494 x 1.493 m.
+ONE_STOP_ROWS = {   # (label, yaw, distance, cabinet width, cabinet y, faces, sway): (x, y, sx, sy)
+    ("sofa", 40, 2.5, 1.2, 1.0, "plain", 0.0): (2.482, 0.021, 2.063, 1.945),
+    ("sofa", 40, 3.0, 1.2, 0.9, "plain", 0.002): (2.992, 0.010, 2.082, 1.968),
+    ("table", 50, 3.0, 1.2, 0.7, "lean", 0.0): (2.980, 0.017, 1.446, 1.509),
+    ("table", 45, 3.0, 0.6, -0.7, "lean", 0.0): (2.989, 0.019, 1.498, 1.497),
+}
+
+
+def test_a_one_stop_union_keeps_its_own_lateral_sides():   # R-PF3b (the review of 67f9d75, finding 1)
+    """A union whose views' cameras all lie within geometry.ONE_STOP of the newest camera comes from one stop: its
+    lateral sides keep the union's own margins from that camera, as every view's rays are that camera's (the far end
+    is still judged from the views, R-PF3). A sway of 2 mm (a standing Go2's odometry) is still one stop."""
+    from detector import geometry as g
+    from test_detector_geometry import BASE as STAND, cam_xy, covers, scan, solid
+
+    rows_of = {}
+    for scene in ONE_STOP_ROWS:
+        label, yaw, dist, width, cabinet_y, faces, sway = scene
+        L, S = vocabulary.size_of(label)
+        obj = solid(dist, 0.0, L, S, yaw_deg=yaw, height=vocabulary.height_of(label))
+        cabinet = solid(1.6, cabinet_y, 0.45, width, height=vocabulary.height_of("cabinet"))
+        tracker = Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": (L, S)}, g.footprint)
+        t, wall, cams = 100.0, 5000.0, []
+        for seed in range(1, 7):
+            turn = math.radians(60.0 * seed)
+            base = (STAND[0] + sway * math.cos(turn), STAND[1] + sway * math.sin(turn), STAND[2])
+            cam = cam_xy(base)
+            pts, k = scan([obj, cabinet], base=base, which=True, lean_deg=0.5 if faces == "lean" else 0.0, seed=seed)
+            p = pts[(pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP) & (k == 0)][:, :2]
+            assert len(p) >= g.MIN_CLUSTER_POINTS
+            fp = g.footprint(p, cam, (L, S))
+            t, wall = t + 1.0, wall + 1.0
+            tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, p, True, False, cam)],
+                           t, wall, always)
+            cams.append(cam)
+        # a 2 mm sway: the cameras lie up to 4 mm apart, so one stop is not one point
+        assert max(math.dist(a, b) for a in cams for b in cams) == pytest.approx(2 * sway, abs=1e-9)
+        rows = tracker.rows(wall, 3.0)
+        assert len(rows) == 1, (scene, rows)
+        rows_of[scene] = (rows[0].x, rows[0].y, *rows[0].size)
+        x, y, sx, sy = ONE_STOP_ROWS[scene]
+        assert covers(FP(x, y, (sx, sy), False), obj), scene      # the pinned row covers the object
+    wrong = {scene: row for scene, row in rows_of.items() if row != pytest.approx(ONE_STOP_ROWS[scene], abs=1.5e-3)}
+    assert wrong == {}
 
 
 def test_frames_beyond_6_m_do_not_count_toward_n():

@@ -42,11 +42,17 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     observed depth);
   - the margin is EDGE_PAD on the near side and on sides along which a face lies, and one point spacing along
     the face (range x 1° / cos(incidence), up to 60°) where a face ends; beyond about 2.9 m the spacing exceeds
-    EDGE_PAD. For a union, a lateral side keeps that margin only when one of its single views saw that side
-    with its own returns from its own camera; otherwise the side is unseen and reaches at least as far as each
-    view's own pad past its last return there and as far as the tightest of the views' own footprints there
-    (R-PF3b: a face end that one stop grazed can lie across the union's depth axis, and two stops' grazed face
-    ends at one lateral coordinate look like a face lying along that side).
+    EDGE_PAD. For a union of views from more than one stop (a view's camera more than ONE_STOP from the
+    newest), a lateral side keeps that margin only when one of its single views saw that side with its own
+    returns from its own camera; otherwise the side is unseen and reaches at least as far as each view's own pad
+    past its last return there and as far as the tightest of the views' own footprints there (R-PF3b: a face
+    end that one stop grazed can lie across the union's depth axis, and two stops' grazed face ends at one
+    lateral coordinate look like a face lying along that side). A union from one stop keeps its own lateral
+    margins: the newest camera's rays are every view's, and a single view's footprint, filled with the prior
+    along its own depth axis, can lie along the union's lateral axis and widen it by up to the prior's depth
+    (the review of 67f9d75, finding 1). Where two stops' face ends lie at one lateral coordinate while one view
+    saw a face ending there at <= 60°, the side keeps the union's EDGE_PAD and can stop short of the object
+    (R-PF3b (a): 0.055 m in the tracker's two-stop sweeps, pinned there).
 The depth rule is otherwise the design's, along the face axis that is thinner (one face seen) or nearer the ray
 (a corner): L if the observed width is < 0.7 L, else S; and L also when the observed width is <= S + EDGE_PAD
 (R-G3), since then it cannot exclude the short face: a near-square kind (S > 0.7 L - EDGE_PAD, like the
@@ -88,6 +94,7 @@ PAD_SPACINGS = 1.1                           # where a face ends: this many poin
 PAD_GAIN_MAX = 2.0                           # ... with the incidence counted up to 60°
 FLAT_TOL, FLAT_SPREAD = 0.02, 0.1            # m: points within FLAT_TOL of a side spread FLAT_SPREAD along it = a face
 VIEW_MARGIN = 0.1                            # m: a single view's returns this far outside the union's rectangle count
+ONE_STOP = 0.1                               # m: a union's views with cameras all this close to the newest: one stop
 GROW_Z_MARGIN = 0.3                          # m above the vocabulary height
 PLAUSIBLE_GAIN, PLAUSIBLE_MARGIN = 2.0, 0.5  # a side > 2 L + 0.5 m merged with something else
 TRIM_MAD, TRIM_MARGIN = 3.0, 0.1             # the core: within 3 MAD + 0.1 m of the median (per axis)
@@ -389,13 +396,17 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     evidence. Otherwise the far end is unseen and gets O12's far pad: the prior's depth + EDGE_PAD (filled),
     unless the observed depth reaches the prior's (the rule for any view). A far end seen keeps the larger of
     the union's pad and the views' margin: the tightest bound of the views that saw it, but at least the
-    farthest return of any view beyond the union's (what the union's thinning left out). A lateral side keeps
-    the union's margin only when one single view saw it the same way (_lateral_unseen; R-PF3b); otherwise it is
-    unseen and gets O12's unseen lateral pad from the views: at least each view's own pad past its last return
-    there, and as far as the tightest of the views' own footprints (each view alone) reaches there. A side seen
-    keeps the union's own margin from cam_xy, also EDGE_PAD where two stops' face ends lie at one lateral
-    coordinate while a view saw only a face ending there (a documented limit: up to 0.055 m short in the tracker's
-    two-stop sweeps). Without views the points are judged as one view from cam_xy throughout."""
+    farthest return of any view beyond the union's (what the union's thinning left out). When a view's camera
+    lies more than ONE_STOP from cam_xy (views from more than one stop), a lateral side keeps the union's margin
+    only when one single view saw it the same way (_lateral_unseen; R-PF3b); otherwise it is unseen and gets
+    O12's unseen lateral pad from the views: at least each view's own pad past its last return there, and as far
+    as the tightest of the views' own footprints (each view alone) reaches there. A side seen keeps the union's
+    own margin from cam_xy, also EDGE_PAD where two stops' face ends lie at one lateral coordinate while a view
+    saw only a face ending there (a documented limit, R-PF3b (a): up to 0.055 m short in the tracker's two-stop
+    sweeps). From one stop the lateral sides keep the union's own margins: cam_xy's rays are every view's, and
+    another stop's grazed face ends, the cause the rule answers, do not exist there, while a single view's
+    footprint, filled with the prior along its own depth axis, can lie along the union's lateral axis. Without
+    views the points are judged as one view from cam_xy throughout."""
     r = _rect(points_xy, cam_xy, prior, views)
     if r is None:
         return None
@@ -442,11 +453,12 @@ def _rect(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, fl
         returns = _view_returns(views, depth, lateral, near, near + d_obs, v_lo, v_hi, diag)
         seen_by_view = _far_end_seen(returns, lateral, near + d_obs) if corner else None
         far_sampled, view_pad = seen_by_view is not None, seen_by_view or 0.0
-        rects: dict[int, _Rect | None] = {}
-        unseen_lo = _lateral_unseen(returns, views, prior, depth, lateral, v_lo, -1, rects)
-        unseen_hi = _lateral_unseen(returns, views, prior, depth, lateral, v_hi, +1, rects)
-        pad_lo = pad_lo if unseen_lo is None else max(pad_lo, unseen_lo)
-        pad_hi = pad_hi if unseen_hi is None else max(pad_hi, unseen_hi)
+        if not _one_stop(views, cam):        # from one stop the newest camera's rays are every view's
+            rects: dict[int, _Rect | None] = {}
+            unseen_lo = _lateral_unseen(returns, views, prior, depth, lateral, v_lo, -1, rects)
+            unseen_hi = _lateral_unseen(returns, views, prior, depth, lateral, v_hi, +1, rects)
+            pad_lo = pad_lo if unseen_lo is None else max(pad_lo, unseen_lo)
+            pad_hi = pad_hi if unseen_hi is None else max(pad_hi, unseen_hi)
     # L when the width cannot be the long side's: < 0.7 L, or not wider than the short side (R-G3)
     d_prior = big if w_obs < SHORT_FACE * big or w_obs <= small + EDGE_PAD else small
     # the observed depth: in a corner view (the depth axis nearer the ray, so the face along it is the more
@@ -499,6 +511,12 @@ def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.nd
 _ViewReturns = list[tuple[int, np.ndarray, np.ndarray, np.ndarray]]
 
 
+def _one_stop(views: Sequence[tuple[np.ndarray, Sequence[float]]], cam: np.ndarray) -> bool:
+    """For a union: every single view's camera lies within ONE_STOP of the newest camera cam (one standstill, as
+    the tracker's hits during one stop), so the newest camera's rays are every view's."""
+    return all(math.hypot(*(np.asarray(c, dtype=np.float64)[:2] - cam)) <= ONE_STOP for _, c in views)
+
+
 def _view_returns(views: Sequence[tuple[np.ndarray, Sequence[float]]], depth: np.ndarray, lateral: np.ndarray,
                   u_near: float, u_far: float, v_lo: float, v_hi: float, diag: float) -> _ViewReturns:
     """For a union: each single view's own returns, trimmed as the union is (from that view's camera), that lie
@@ -540,11 +558,12 @@ def _far_end_seen(returns: _ViewReturns, lateral: np.ndarray, u_far: float) -> f
 def _lateral_unseen(returns: _ViewReturns, views: Sequence[tuple[np.ndarray, Sequence[float]]],
                     prior: tuple[float, float], depth: np.ndarray, lateral: np.ndarray, extreme: float, side: int,
                     rects: dict[int, _Rect | None]) -> float | None:
-    """For a union, one lateral side (+1: the side at the largest lateral coordinate, `extreme`; -1: the
-    smallest): None when one of its single views saw it, so the union's own margin stands; otherwise the margin
-    beyond extreme that the unseen side gets (R-PF3b). A view saw the side when its own returns near the union's
-    rectangle (_view_returns) end there as _side calls sampled, from that view's camera (a face along that side,
-    or a face ending there seen at <= 60° incidence), and that end plus its pad reaches extreme. An unseen side
+    """For a union of views from more than one stop (footprint skips it for one stop, _one_stop), one lateral
+    side (+1: the side at the largest lateral coordinate, `extreme`; -1: the smallest): None when one of its
+    single views saw it, so the union's own margin stands; otherwise the margin beyond extreme that the unseen
+    side gets (R-PF3b). A view saw the side when its own returns near the union's rectangle (_view_returns) end
+    there as _side calls sampled, from that view's camera (a face along that side, or a face ending there seen at
+    <= 60° incidence), and that end plus its pad reaches extreme. An unseen side
     gets O12's unseen lateral pad from the views that saw the object: at least each view's own pad past its last
     return there (one point spacing at up to 60°), and as far as the tightest of those views' own footprints
     (each view alone, as footprint makes it; kept in rects) reaches on that side. A face end that one stop
