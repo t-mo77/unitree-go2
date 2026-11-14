@@ -624,6 +624,33 @@ def test_a_union_takes_a_far_end_as_seen_only_from_a_view_that_saw_it():
             assert covers(g.footprint(pts, cam, case[:2]), s), case
 
 
+# Two stops: a lateral side of the union that no single view saw. A face end that one stop grazed, short of the
+# end, lies across the union's depth axis (that axis comes from the newest camera), or two stops' grazed face ends
+# lie at one lateral coordinate, which the union's own points take as a face along that side. Judged from the
+# newest camera, the union missed by 0.121, 0.066, 0.271, 0.271 and 0.451 m (as on 97da92a; R-PF3b): (case,
+# degrees around the object, the faces' lean)
+LATERAL_ONLY_GRAZED = (((2.0, 1.0, 0.5, 15, 1.0, 0), 45, 0.0), ((2.0, 2.0, 0.8, 75, 3.0, 30), 90, 0.0),
+                       ((2.0, 1.0, 0.5, 90, 1.0, 0), 45, 0.5), ((2.0, 1.0, 0.5, 90, 1.0, 0), -45, 0.5),
+                       ((2.0, 2.0, 0.8, 15, 1.0, 30), -45, 0.5))
+
+
+def test_a_union_takes_a_lateral_side_as_seen_only_from_a_view_that_saw_it():
+    """R-PF3b (spec §11.6, O12), the lateral counterpart of the far-end rule: a lateral side of a union counts as
+    seen only when one single view's own returns reach it (a face along that side, or a face ending there seen at
+    <= 60° incidence, from that view's camera). Otherwise it takes O12's unseen lateral pad from the views: at
+    least each view's own pad past its last return there, and as far as the tightest of the views' own
+    footprints reaches on that side. One scan from BASE and one from the stop turned around the object, fused
+    raw, the newest last. The union covers, as the first stop's view does alone (a view of the O12 grid)."""
+    for case, deg, lean in LATERAL_ONLY_GRAZED:
+        s = _cover_solid(*case)
+        views = [(g.cut(scan([s], base=b, q=q, lean_deg=lean))[:, :2], cam_xy(b, q))
+                 for b, q in ((BASE, Q0), around(s, deg))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], case[:2], views=views)
+        assert covers(fp, s), (case, deg, lean, fp)
+        assert covers(g.footprint(*views[0], case[:2]), s), case
+
+
 def facing(centre, dist, deg):
     """A base dist m from centre (XY), in the direction deg as seen from it, facing it (and its quaternion)."""
     t = math.radians(deg)

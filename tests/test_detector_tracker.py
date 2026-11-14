@@ -283,69 +283,130 @@ def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final revi
 
 
 
-# O12 at the tracker level from two stops (spec §11.6; pre-final review round 2, findings 7 and 8; R-PF3): every
-# cover case the tracker publishes short of the object, by how far the object reaches outside the published
-# rectangle (m, its worst corner, from the row's rounded values). Before R-PF3 the union's far end was judged from
-# the newest camera, whose rays also reach the returns only an older stop saw: 9, 20, 29 and 34 misses at +45,
-# -45, +90 and -90, up to 0.177 m. Now a far end counts as seen only when one single view's own returns reach it
-# at <= 60°, otherwise the prior fills it; a far end that several views saw takes the tightest of their bounds
-# (round-3 review, finding 1). No miss left is short at its far end.
-# UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (R-PF3). Among them F7's rest, (0.4, 0.3,
-# 0.7, yaw 15, 2.0 m, 0) at -45 (accepted by R-PF3): the thinned union is 3.9 cm short of the raw union on a lateral
-# side. Most of the others are not the thinning: 61 of the 62 are short on a lateral side (one at -90 on its near
-# side), and fused unthinned 1 / 2 / 22 / 28 of them (+45 / -45 / +90 / -90) still miss. The union's lateral sides
-# are still judged as one view from the newest camera (their pad from its rays; the ends of two stops' faces at one
-# lateral coordinate count as a face lying along that side), so their size is no bound: the same mechanism gives
-# LATERAL_FROM_NEWEST. The name stands until the controller's ruling on that limit (round-3 review, finding 2).
+# O12 at the tracker level from two stops (spec §11.6; pre-final review round 2, findings 7 and 8; R-PF3; R-PF3b):
+# every cover case the tracker publishes short of the object, by how far the object reaches outside the published
+# rectangle (m, its worst corner, from the row's rounded values), for each sweep: (degrees around the object, the
+# faces: plain, 2 mm of range noise, or leaning back 0.5°). Before R-PF3 the union's far end was judged from the
+# newest camera, whose rays also reach the returns only an older stop saw: 9, 20, 29 and 34 misses at +45, -45, +90
+# and -90 (plain), up to 0.177 m. A far end counts as seen only when one single view's own returns reach it at
+# <= 60°, otherwise the prior fills it; a far end that several views saw takes the tightest of their bounds (round-3
+# review, finding 1). No miss left is short at its far end (one at -45 with noise, 0.0017 m).
+# R-PF3b: a lateral side of the union counts as seen only when one single view's own returns reach it the same way;
+# otherwise it reaches as far as the views' own pads past their last returns and the tightest of their own
+# footprints there. That closed every lateral miss of an unseen side above 0.05 m: 0.0935 m at -45 and 0.0654 m at
+# +90 (plain), and 0.350 m (-45, noise), 0.271 m (±45, lean) and 0.451 m (-45, lean), which existed on 97da92a.
+# UNION_THINNING: the misses left within §11.6's 0.05 m thinning step (the name stands until the ruling after
+# R-PF3b). Mostly they are not the thinning. All but two are short on a lateral side, and all but four of those on
+# a side that one view saw at <= 60° incidence, which keeps the union's own margin from the newest camera (EDGE_PAD
+# where two stops' face ends lie at one lateral coordinate, as if a face lay along that side, or one point spacing
+# at the newest camera's incidence). The four are on an unseen side, no larger than the second stop's own
+# footprint alone misses there: (2.0, 2.0, 0.8, yaw 30, 1.0 m, 30) at -45 (plain, noise and lean; alone 0.053,
+# 0.056 and 0.029 m) and (2.0, 2.0, 0.8, 15, 1.0, 30) at +45 with the lean (alone 0.0011 m). The two others: the
+# near side of (2.0, 2.0, 0.8, 0, 1.0, 0) at -90 and the far side of (0.9, 0.45, 1.2, 90, 3.0, 30) at -45 with
+# noise. Among them F7's rest, (0.4, 0.3, 0.7, 15, 2.0, 0) at -45 (accepted by R-PF3).
 UNION_THINNING = {
-    45: {(1.2, 0.4, 0.45, 75, 1.0, 0): 0.0015, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0396},
-    -45: {(0.3, 0.3, 0.45, 15, 2.0, 0): 0.0004, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0316,
-          (1.2, 0.4, 0.45, 90, 1.0, 0): 0.0020, (1.8, 0.9, 0.85, 90, 1.0, 30): 0.0099,
-          (0.4, 0.3, 0.7, 15, 2.0, 0): 0.0025},
-    90: {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0013, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0298,
-         (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0105,
-         (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0440, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0274,
-         (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0114, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
-         (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154, (2.0, 2.0, 0.8, 75, 2.0, 30): 0.0044,
-         (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0081, (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0188,
-         (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0455, (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0167,
-         (1.2, 0.4, 0.45, 75, 5.0, 30): 0.0142, (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0083,
-         (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0142, (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081,
-         (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0051, (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0496,
-         (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0037, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0243},
-    -90: {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0139, (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0024,
-          (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0110,
-          (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0345, (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0024,
-          (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0273, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0113,
-          (2.0, 2.0, 0.8, 0, 1.0, 0): 0.0175, (2.0, 2.0, 0.8, 45, 3.0, 0): 0.0227,
-          (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154, (2.0, 2.0, 0.8, 75, 1.0, 30): 0.0045,
-          (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0275, (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0172,
-          (1.2, 0.4, 0.45, 0, 4.0, 30): 0.0072, (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0020,
-          (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009, (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0065,
-          (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0038, (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0180,
-          (1.8, 0.9, 0.85, 45, 2.0, 0): 0.0011, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0031,
-          (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0264, (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0289,
-          (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0384, (2.0, 1.0, 0.5, 45, 1.0, 0): 0.0172,
-          (2.0, 1.0, 0.5, 45, 3.0, 0): 0.0212, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0063,
-          (2.0, 1.0, 0.5, 75, 1.0, 30): 0.0104, (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0424,
-          (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0285, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0276,
-          (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0296},
+    (45, "plain"): {(1.2, 0.4, 0.45, 75, 1.0, 0): 0.0015},
+    (-45, "plain"): {(0.3, 0.3, 0.45, 15, 2.0, 0): 0.0004, (0.4, 0.3, 0.7, 15, 2.0, 0): 0.0025,
+                     (1.8, 0.9, 0.85, 90, 1.0, 30): 0.0099, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0316},
+    (90, "plain"): {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0013, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0298,
+                    (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0243, (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066,
+                    (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0105, (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0440,
+                    (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0081, (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0188,
+                    (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0455, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0274,
+                    (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0114, (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0167,
+                    (1.2, 0.4, 0.45, 75, 5.0, 30): 0.0142, (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0083,
+                    (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0142, (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081,
+                    (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0051, (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0496,
+                    (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0037, (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154},
+    (-90, "plain"): {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0139, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0276,
+                     (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0296, (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0024,
+                     (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0110,
+                     (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0345, (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0024,
+                     (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0275, (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0172,
+                     (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0273, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0113,
+                     (1.2, 0.4, 0.45, 0, 4.0, 30): 0.0072, (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0020,
+                     (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009, (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0065,
+                     (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0038, (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0180,
+                     (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0031, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0264,
+                     (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0289, (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0384,
+                     (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0063, (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0424,
+                     (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0285, (2.0, 2.0, 0.8, 0, 1.0, 0): 0.0175,
+                     (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0154},
+    (45, "noise"): {(0.9, 0.45, 1.2, 90, 3.0, 30): 0.0047, (1.2, 0.4, 0.45, 75, 1.0, 0): 0.0020},
+    (-45, "noise"): {(0.4, 0.3, 0.7, 15, 2.0, 0): 0.0000, (0.9, 0.45, 1.2, 90, 3.0, 30): 0.0017,
+                     (1.8, 0.9, 0.85, 90, 1.0, 30): 0.0104, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0271},
+    (90, "noise"): {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0033, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0288,
+                    (0.4, 0.3, 0.7, 60, 5.0, 30): 0.0003, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0293,
+                    (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0061, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0095,
+                    (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0415, (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0073,
+                    (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0176, (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0460,
+                    (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0274, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0104,
+                    (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0157, (1.2, 0.4, 0.45, 75, 5.0, 30): 0.0167,
+                    (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0073, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0131,
+                    (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0081, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0036,
+                    (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0476, (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0037,
+                    (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0119},
+    (-90, "noise"): {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0119, (0.3, 0.3, 0.45, 75, 4.0, 30): 0.0165,
+                     (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0251, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0311,
+                     (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0034, (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0061,
+                     (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0095, (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0350,
+                     (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0034, (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0250,
+                     (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0177, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0268,
+                     (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0093, (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0010,
+                     (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0030, (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0008,
+                     (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0165, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0021,
+                     (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0284, (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0274,
+                     (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0369, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0033,
+                     (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0429, (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0270,
+                     (2.0, 2.0, 0.8, 0, 1.0, 0): 0.0160, (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0137},
+    (45, "lean"): {(0.5, 0.5, 0.5, 15, 1.0, 30): 0.0039, (0.9, 0.45, 1.2, 90, 3.0, 30): 0.0042,
+                   (0.9, 0.45, 1.2, 90, 4.0, 30): 0.0002, (2.0, 2.0, 0.8, 0, 4.0, 30): 0.0186,
+                   (2.0, 2.0, 0.8, 15, 1.0, 30): 0.0009, (2.0, 2.0, 0.8, 90, 4.0, 30): 0.0186},
+    (-45, "lean"): {(1.8, 0.9, 0.85, 90, 1.0, 30): 0.0084, (2.0, 2.0, 0.8, 30, 1.0, 30): 0.0246},
+    (90, "lean"): {(0.3, 0.3, 0.45, 75, 3.0, 30): 0.0008, (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0233,
+                   (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0090,
+                   (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0415, (0.9, 0.45, 1.2, 45, 4.0, 0): 0.0031,
+                   (0.9, 0.45, 1.2, 45, 5.0, 0): 0.0186, (0.9, 0.45, 1.2, 75, 4.0, 30): 0.0430,
+                   (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0264, (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0089,
+                   (1.2, 0.4, 0.45, 75, 4.0, 30): 0.0152, (1.2, 0.4, 0.45, 75, 5.0, 30): 0.0117,
+                   (1.8, 0.9, 0.85, 30, 3.0, 0): 0.0058, (1.8, 0.9, 0.85, 45, 5.0, 0): 0.0141,
+                   (1.8, 0.9, 0.85, 60, 3.0, 30): 0.0056, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0001,
+                   (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0476, (2.0, 1.0, 0.5, 15, 4.0, 0): 0.0022,
+                   (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0017, (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0142},
+    (-90, "lean"): {(0.3, 0.3, 0.45, 15, 2.0, 30): 0.0144, (0.4, 0.3, 0.7, 0, 5.0, 30): 0.0241,
+                    (0.4, 0.3, 0.7, 75, 5.0, 30): 0.0281, (0.5, 0.5, 0.5, 0, 4.0, 30): 0.0004,
+                    (0.5, 0.5, 0.5, 45, 5.0, 0): 0.0066, (0.5, 0.5, 0.5, 75, 4.0, 30): 0.0085,
+                    (0.5, 0.5, 0.5, 75, 5.0, 30): 0.0330, (0.5, 0.5, 0.5, 90, 4.0, 30): 0.0004,
+                    (0.9, 0.45, 1.2, 75, 5.0, 0): 0.0051, (0.9, 0.45, 1.2, 90, 3.0, 0): 0.0270,
+                    (0.9, 0.45, 1.2, 90, 5.0, 30): 0.0157, (1.0, 1.0, 0.8, 75, 3.0, 30): 0.0273,
+                    (1.0, 1.0, 0.8, 75, 4.0, 30): 0.0088, (1.2, 0.4, 0.45, 0, 4.0, 30): 0.0057,
+                    (1.2, 0.4, 0.45, 75, 2.0, 0): 0.0010, (1.2, 0.4, 0.45, 75, 2.0, 30): 0.0009,
+                    (1.2, 0.4, 0.45, 75, 3.0, 30): 0.0035, (1.2, 0.4, 0.45, 90, 1.0, 30): 0.0038,
+                    (1.8, 0.9, 0.85, 0, 5.0, 30): 0.0135, (1.8, 0.9, 0.85, 75, 3.0, 30): 0.0234,
+                    (1.8, 0.9, 0.85, 75, 4.0, 30): 0.0239, (1.8, 0.9, 0.85, 75, 5.0, 30): 0.0324,
+                    (2.0, 1.0, 0.5, 15, 4.0, 30): 0.0090, (2.0, 1.0, 0.5, 45, 4.0, 0): 0.0047,
+                    (2.0, 1.0, 0.5, 75, 4.0, 30): 0.0404, (2.0, 1.0, 0.5, 75, 5.0, 30): 0.0265,
+                    (2.0, 2.0, 0.8, 45, 4.0, 0): 0.0142},
 }
-# Larger than the thinning step, reported to the controller with these numbers (R-PF3: not hidden by wider pads).
-# Both are a lateral side of the union judged from the newest camera: at -45 the end of the 2 m face that the first
-# stop grazed from 1 m (its last return 0.21 m short of the end, which no pad bounds and no prior completes on a
-# lateral side; fused unthinned, the median moves, that face becomes the depth axis and the prior completes it);
-# at +90 two stops' grazed face ends at one lateral coordinate, taken as a face lying along it.
+# Larger than the thinning step, reported to the controller with these numbers (R-PF3, R-PF3b: not hidden by wider
+# pads). A lateral side that the first stop saw at <= 60° (its last return 0.121 m short of the end, one point
+# spacing 0.206 m there at 5.4 m), where both stops' face ends lie at one lateral coordinate, so the union's own
+# margin is EDGE_PAD. The tightest bound of the views that saw it would cover it, but the same bound widens sides
+# that were observed to their end by up to 0.125 m and loses rows at the 6 m window (tracker3-report.md, R-PF3b).
 LATERAL_FROM_NEWEST = {
-    -45: {(2.0, 1.0, 0.5, 0, 1.0, 30): 0.0935},
-    90: {(2.0, 2.0, 0.8, 75, 3.0, 30): 0.0654, (2.0, 2.0, 0.8, 75, 4.0, 30): 0.0554},
+    (90, "plain"): {(2.0, 2.0, 0.8, 75, 4.0, 30): 0.0554},
+    (90, "noise"): {(2.0, 2.0, 0.8, 75, 4.0, 30): 0.0539},
+    (90, "lean"): {(2.0, 2.0, 0.8, 75, 4.0, 30): 0.0514},
 }
 # The +45 case where F3's thinned views missed by 6 mm, which the old call (no views) covered (round 2, finding 7)
-VIEWS_MISSED = ((0.9, 0.45, 1.2, 0, 1.0, 30), 45)
+VIEWS_MISSED = ((0.9, 0.45, 1.2, 0, 1.0, 30), 45, "plain")
 # The cases published, of 630 (the rest: the object's centre beyond 6 m of a camera), as on 97da92a. A far pad
 # taken as the largest of the views' margins lost one at ±90: (2.0, 1.0, 0.5, yaw 45, 5.0 m, 0), whose centre it
 # moved past 6 m of the second camera (round-3 review, finding 1)
-PUBLISHED = {45: 610, -45: 609, 90: 607, -90: 607}
+PUBLISHED = {(45, "plain"): 610, (-45, "plain"): 609, (90, "plain"): 607, (-90, "plain"): 607,
+             (45, "noise"): 610, (-45, "noise"): 609, (90, "noise"): 608, (-90, "noise"): 607,
+             (45, "lean"): 610, (-45, "lean"): 610, (90, "lean"): 607, (-90, "lean"): 607}
+TWO_STOP_SWEEPS = [(deg, faces) for faces in ("plain", "noise", "lean") for deg in (45, -45, 90, -90)]
 
 
 def _outside(row, s):
@@ -357,16 +418,18 @@ def _outside(row, s):
                float((np.abs(c[:, 1] - row.y) - row.size[1] / 2).max()))
 
 
-@pytest.mark.parametrize("deg", (45, -45, 90, -90))
-def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, findings 7 and 8; spec §11.6, O12)
+@pytest.mark.parametrize("deg, faces", TWO_STOP_SWEEPS)
+def test_two_stops_miss_only_within_the_thinning_step(deg, faces):   # R-PF3, R-PF3b (spec §11.6, O12)
     """O12 at the tracker level: the 630 cover cases, 3 hits from BASE and then 3 from a stop turned ±45° or ±90°
-    around the object, fused by geometry.footprint with each hit as a raw view. Every published case covers the
-    object except UNION_THINNING (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far
-    end that only an older stop grazed is taken as seen any more. The case of VIEWS_MISSED covers, and as many
-    cases are published as on 97da92a (PUBLISHED)."""
+    around the object, fused by geometry.footprint with each hit as a raw view; plain faces, 2 mm of range noise
+    (seeded per hit) or every side face leaning back 0.5°. Every published case covers the object except
+    UNION_THINNING (each <= THIN_CELL, by its pinned size) and the pinned LATERAL_FROM_NEWEST; no far end that only
+    an older stop grazed is taken as seen any more, and no lateral side that no single view saw. The case of
+    VIEWS_MISSED covers, and as many cases are published as on 97da92a (PUBLISHED)."""
     from detector import geometry as g
     from test_detector_geometry import BASE as STAND, Q0, _cover_cases, _cover_solid, around, cam_xy, scan
 
+    lean, noise = (0.5 if faces == "lean" else 0.0), (0.002 if faces == "noise" else 0.0)
     missed, published = {}, 0
     for case in _cover_cases():
         prior = case[:2]
@@ -377,7 +440,7 @@ def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, 
             cam = cam_xy(base, q)
             for _ in range(3):
                 seed += 1
-                points = g.cut(scan([s], base=base, q=q, seed=seed))[:, :2]
+                points = g.cut(scan([s], base=base, q=q, seed=seed, lean_deg=lean, noise=noise))[:, :2]
                 if len(points) < g.MIN_CLUSTER_POINTS:
                     continue
                 fp = g.footprint(points, cam, prior)
@@ -385,7 +448,7 @@ def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, 
                 tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False,
                                             cam)], t, wall, always)
         rows = tracker.rows(wall, 3.0)
-        if (case, deg) == VIEWS_MISSED:
+        if (case, deg, faces) == VIEWS_MISSED:
             assert rows
         if not rows:                         # the object's centre beyond 6 m of a camera: no frame counted
             continue
@@ -393,12 +456,12 @@ def test_two_stops_miss_only_within_the_thinning_step(deg):   # R-PF3 (round 2, 
         size = _outside(rows[0], s)
         if size > 1e-9:
             missed[case] = round(size, 4)
-    pinned = {**UNION_THINNING[deg], **LATERAL_FROM_NEWEST.get(deg, {})}
-    assert published == PUBLISHED[deg]
-    assert sorted(missed) == sorted(pinned)
-    assert missed == pytest.approx(pinned, abs=5e-4)
-    assert max(UNION_THINNING[deg].values()) <= tracker_module.THIN_CELL
-    assert min(LATERAL_FROM_NEWEST.get(deg, {}).values(), default=1.0) > tracker_module.THIN_CELL
+    thin, wide = UNION_THINNING.get((deg, faces), {}), LATERAL_FROM_NEWEST.get((deg, faces), {})
+    assert published == PUBLISHED[deg, faces]
+    assert sorted(missed) == sorted({**thin, **wide})
+    assert missed == pytest.approx({**thin, **wide}, abs=5e-4)
+    assert max(thin.values(), default=0.0) <= tracker_module.THIN_CELL
+    assert min(wide.values(), default=1.0) > tracker_module.THIN_CELL
 
 
 def test_frames_beyond_6_m_do_not_count_toward_n():
