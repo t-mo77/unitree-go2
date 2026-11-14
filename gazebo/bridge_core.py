@@ -45,6 +45,7 @@ logical camera が見た model を世界（= odom）の位置に直し（compose
 （logical_rows）覚えておく（ObjectMemory）。正解（/gazebo/objects_truth）は配置の大きさのまま、/go2/objects は
 画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）胴が止まっている間（StillGate）の
 LiDAR の点で、種類ごとの半径（objects.measure_radius）で底面の大きさを測る（footprint_size）。
+その大きさは、測る前も後も軸ごとに配置の大きさより小さくしない（ObjectMemory の seed_sizes。F2、R-H5d）。
 /go2/objects を出すのは OBJECTS_SOURCE=logical のときだけ（objects_topics。detector のときは検出器が出す）。
 /go2/objects の形は voice_ltl/objects.py。
 """
@@ -1012,7 +1013,8 @@ class ObjectMemory:
       measured False、LiDAR ではじめて測ったら（set_size）その大きさで measured True（O43）。
       seed_sizes（id → 配置の世界の軸の大きさ。橋渡しが正解に持つもの）があれば、はじめの大きさは軸ごとに
       [L, L] とその大きさの大きい方（measured は False のまま）。足跡は物より小さくならない（O12 の前提。
-      L が物より短いテーブル・コーン・スーツケース。pre-final review F2、R-PF）。
+      L が物より短いテーブル・コーン・スーツケース。pre-final review F2、R-PF）。測った後も、軸ごとに
+      その大きさより小さくしない（細くなるコーン。R-H5d。measured は True）。
     - sizes あり（正解、/gazebo/objects_truth）：id → 配置の世界の軸の大きさ。大きさは変えず（set_size は無視）、
       measured は付けない。sizes にない id は覚えない。"""
 
@@ -1053,13 +1055,19 @@ class ObjectMemory:
         """LiDAR で測った大きさ (x の幅, y の幅) を [SIZE_MIN, MAX_SIZE] に収めて入れる。
         初めて測ったら測るまでの大きさ（[L, L]、seed_sizes があればそれとの大きい方）と置き換え
         （0.45 m の椅子を膨らんだまま残さない）、その後は軸ごとに測った中で大きい方を残す
-        （一方からは手前の面しか見えないので）。知らない id と正解の控えでは何もしない。"""
+        （一方からは手前の面しか見えないので）。seed_sizes にある id は、測った後も軸ごとにその大きさ
+        （配置の世界の軸の大きさ）より小さくしない。上の方で細くなるコーンでは、LiDAR の帯が底より上の
+        細い所に当たり、底より小さく測れるので（H5、R-H5d）。measured は測った後 True のまま。
+        知らない id と正解の控えでは何もしない。"""
         o = self._objects.get(obj_id)
         if self._sizes is not None or o is None or not all(math.isfinite(v) for v in size):
             return
         sx, sy = (min(max(float(v), SIZE_MIN), MAX_SIZE) for v in size)
         if obj_id in self._measured:
             sx, sy = max(sx, o.size[0]), max(sy, o.size[1])
+        seed = self._seeds.get(obj_id)
+        if seed is not None:                              # 配置の大きさより小さくしない（R-H5d）
+            sx, sy = max(sx, seed[0]), max(sy, seed[1])
         self._measured.add(obj_id)
         self._objects[obj_id] = replace(o, size=(sx, sy), measured=True)
 
