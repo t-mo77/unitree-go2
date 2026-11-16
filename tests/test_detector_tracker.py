@@ -486,10 +486,12 @@ ONE_STOP_ROWS = {   # (label, yaw, distance, cabinet width, cabinet y, faces, sw
     ("table", 50, 3.0, 1.2, 0.7, "lean", 0.0): (2.980, 0.017, 1.446, 1.509),
     ("table", 45, 3.0, 0.6, -0.7, "lean", 0.0): (2.989, 0.019, 1.498, 1.497),
     # a standing Go2's odometry wanders a few cm (the review of 8891c46, finding 2): a 3 cm sway puts the cameras
-    # up to 6 cm from the newest, still one stop (the row of 97da92a). With ONE_STOP below that the rule applies and
-    # this row becomes 2.959 x 2.959 m: neither face axis is observed longer than S + EDGE_PAD, and the views of the
-    # 2 x 1 m bed, seen only partly, fill L along the union's lateral axis
+    # up to 6 cm from the newest, still one stop (the rows of 97da92a). With ONE_STOP below that the rule applies:
+    # the table's row becomes 1.489 x 1.585 m. The bed's became 2.959 x 2.959 m on 1a09cba (neither face axis is
+    # observed longer than S + EDGE_PAD, and the views of the 2 x 1 m bed, seen only partly, filled L along the
+    # union's lateral axis); since R-PF3c such a union takes only the views' own pads, and its row is the same
     ("bed", 40, 2.5, 0.9, 0.6, "plain", 0.03): (2.502, -0.003, 2.321, 2.198),
+    ("table", 55, 3.0, 0.9, 0.3, "plain", 0.03): (3.006, -0.004, 1.434, 1.547),
 }
 
 
@@ -559,8 +561,17 @@ def _stops(s, move):
 
 
 def _two_stop_row(solids, prior, stops, lean=0.0):
-    """The row the tracker publishes for solids[0] (its own returns only): 3 hits from each stop, each hit a raw
-    view fused by geometry.footprint, as in the two-stop sweeps; and how far the cameras lie from the newest."""
+    """The row the tracker publishes for solids[0] (_two_stop_rows; it publishes one), and how far the cameras lie
+    from the newest."""
+    rows, apart = _two_stop_rows(solids, prior, stops, lean)
+    assert len(rows) == 1, rows
+    return rows[0], apart
+
+
+def _two_stop_rows(solids, prior, stops, lean=0.0):
+    """Every row the tracker publishes for solids[0] (its own returns only), in id order, as (x, y, sx, sy): 3 hits
+    from each stop, each hit a raw view fused by geometry.footprint, as in the two-stop sweeps; and how far the
+    cameras lie from the newest."""
     from detector import geometry as g
     from test_detector_geometry import cam_xy, scan
 
@@ -578,46 +589,123 @@ def _two_stop_row(solids, prior, stops, lean=0.0):
             tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, p, True, False, cam)],
                            t, wall, always)
             cams.append(cam)
-    rows = tracker.rows(wall, 3.0)
-    assert len(rows) == 1, rows
-    return (rows[0].x, rows[0].y, *rows[0].size), max(math.dist(c, cams[-1]) for c in cams)
+    rows = [(r.x, r.y, *r.size) for r in tracker.rows(wall, 3.0)]
+    return rows, max(math.dist(c, cams[-1]) for c in cams)
 
 
 # Two stops a short move apart are two stops (geometry.ONE_STOP; the review of 8891c46, finding 2): a 0.5 m step
 # toward the object (B to Bf, R-H3a), a 0.15 m step, and a 96° turn in place (R-H3e; the camera, 0.327 m ahead of
 # the base, moves 0.486 m). Behind a cabinet, or with leaning faces, the thinned union and the single views take
-# different face axes as their depth there too, and R-PF3b's lateral rule completes the side that no view saw.
-# Without it (ONE_STOP above the move, or 97da92a) the first four miss by 0.6085, 0.9418, 0.4913 and 0.6512 m.
-# The fifth is what the rule costs where neither face axis is observed longer than S + EDGE_PAD (0.522 and 0.863 m
-# of a 1.8 x 0.9 m sofa): the union cannot tell its long side, its own depth is L, and the views' L along its
-# lateral axis makes it L x L, the box of both orientations; without the rule it is 1.971 x 2.084 m. The third
-# scene is its mirror image: the union took the short side as its depth and the views the long one, and only L x L
-# covers it.
-SHORT_MOVE_ROWS = {   # (scene, move, lean): (x, y, sx, sy); a scene is a cover case or a cabinet scene
-    ((2.0, 2.0, 0.8, 60, 1.0, 30), ("step", 0.5), 0.5): (2.329, 1.184, 2.867, 2.868),
-    (("sofa", 35, 2.5, 0.9, 0.6), ("turn", 96), 0.0): (2.504, -0.006, 2.139, 1.922),
-    (("sofa", 35, 2.5, 0.9, 0.7), ("step", 0.5), 0.0): (2.758, -0.369, 2.646, 2.646),
-    (("sofa", 40, 2.5, 0.6, -0.1), ("step", 0.15), 0.0): (2.788, -0.346, 2.675, 2.675),
-    (("sofa", 50, 2.5, 0.9, 0.5), ("step", 0.5), 0.0): (2.845, -0.289, 2.677, 2.677),
+# different face axes as their depth there too, and R-PF3b's lateral rule completes the side that no view saw: the
+# first row (a 2 m square, leaning faces) misses by 0.6085 m without it (ONE_STOP above the move, or 97da92a).
+# The other unions observe neither face axis longer than S + EDGE_PAD (0.522 and 0.863 m of a 1.8 x 0.9 m sofa in
+# the fifth), so they cannot tell their long side. 1a09cba let an unseen side take L - w_obs + EDGE_PAD there, from
+# the views' footprints filled with L along the union's lateral axis: L x L, the box of both orientations. That
+# covered the second to fourth, which miss by 0.9418, 0.4913 and 0.6512 m on 97da92a and 3cc9d29, but it grew sides
+# whose returns end within EDGE_PAD of the object by up to 1.10 m and lost rows (the review of 1a09cba, findings 1
+# and 2): the fifth was 2.677 x 2.677 m (1.971 x 2.084 m on 3cc9d29), and in the sixth and seventh it bought
+# nothing: 2.638 x 2.638 and 2.937 x 2.938 m, missing as on 3cc9d29 (0.2113 and 0.6947 m), each without its second
+# row. Narrowed (R-PF3c): such a union takes only the views' own pads there, unless its prior is square. The rows
+# are 3cc9d29's or within 0.03 m of them, and the second to fourth miss again, by no more than on 3cc9d29.
+SHORT_MOVE_ROWS = {   # (scene, move, lean): (every row in id order as (x, y, sx, sy), the best row's miss in m)
+    ((2.0, 2.0, 0.8, 60, 1.0, 30), ("step", 0.5), 0.5): ([(2.329, 1.184, 2.867, 2.868)], 0.0),
+    (("sofa", 35, 2.5, 0.9, 0.6), ("turn", 96), 0.0): ([(2.000, -0.360, 1.130, 1.215)], 0.9303),
+    (("sofa", 35, 2.5, 0.9, 0.7), ("step", 0.5), 0.0): ([(2.358, -0.649, 1.845, 2.085)], 0.4913),
+    (("sofa", 40, 2.5, 0.6, -0.1), ("step", 0.15), 0.0): ([(3.147, -0.045, 1.958, 2.073)], 0.6467),
+    (("sofa", 50, 2.5, 0.9, 0.5), ("step", 0.5), 0.0): ([(2.498, 0.002, 1.984, 2.095)], 0.0),
+    (("sofa", 35, 2.5, 0.6, 0.0), ("step", 0.5), 0.0): ([(2.585, -0.130, 1.942, 1.607),
+                                                         (2.252, -1.236, 1.228, 1.687)], 0.2113),
+    (("bed", 55, 2.5, 1.2, -0.3), ("step", 0.5), 0.0): ([(3.280, 0.252, 2.137, 1.837),
+                                                         (3.140, 1.652, 1.503, 1.737)], 0.6947),
 }
 
 
-def test_two_stops_a_short_move_apart_are_two_stops():   # R-PF3b (the review of 8891c46, findings 1 and 2)
-    """A union whose cameras lie a step or a turn in place apart (0.15-0.56 m) is not one stop: the lateral rule
-    applies, and each pinned row covers the object. With ONE_STOP at or above the move the rows are 97da92a's, and
-    the first four miss (SHORT_MOVE_ROWS)."""
-    from detector import geometry as g
-    from test_detector_geometry import _cover_solid, covers
+def _rows_match(rows, pinned):
+    return len(rows) == len(pinned) and all(r == pytest.approx(p, abs=1.5e-3) for r, p in zip(rows, pinned))
 
-    for (scene, move, lean), pinned in SHORT_MOVE_ROWS.items():
+
+def test_two_stops_a_short_move_apart_are_two_stops():   # R-PF3b (the review of 8891c46, findings 1 and 2), R-PF3c
+    """A union whose cameras lie a step or a turn in place apart (0.15-0.56 m) is not one stop: the lateral rule
+    applies (SHORT_MOVE_ROWS: every row, and how far the object reaches outside the best one). With ONE_STOP at or
+    above the move the rows are 97da92a's, and the first misses by 0.6085 m."""
+    from detector import geometry as g
+    from test_detector_geometry import _cover_solid
+
+    for (scene, move, lean), (pinned, miss) in SHORT_MOVE_ROWS.items():
         if isinstance(scene[0], str):
             solids, prior = _cabinet_scene(*scene)
         else:
             solids, prior = [_cover_solid(*scene)], scene[:2]
-        row, apart = _two_stop_row(solids, prior, _stops(solids[0], move), lean)
+        rows, apart = _two_stop_rows(solids, prior, _stops(solids[0], move), lean)
         assert apart > g.ONE_STOP and apart == pytest.approx(move[1] if move[0] == "step" else 0.486, abs=0.07)
-        assert row == pytest.approx(pinned, abs=1.5e-3), (scene, move, row)
-        assert covers(FP(*pinned[:2], pinned[2:], False), solids[0]), scene
+        assert _rows_match(rows, pinned), (scene, move, rows)
+        best = min(_outside(FP(*p[:2], p[2:], False), solids[0]) for p in pinned)
+        assert best == pytest.approx(miss, abs=5e-4), (scene, move, best)
+
+
+# A union from two stops that observes neither face axis longer than S + EDGE_PAD cannot tell its long side (the
+# review of 1a09cba, finding 1). After a second stop 45° around R-G4's cabinet, 1a09cba let its unseen side take
+# L - w_obs + EDGE_PAD: the 1.2 x 0.75 m table (0.446 and 0.648 m observed, leaning faces) grew to 1.831 x 1.831 m and
+# took the second stop's later returns, so its second row, the only one covering the table's +y side (by 0.043 m),
+# was never made, and the table's +y side was missed by 0.507 m; the 2 x 1 m bed's side, whose returns reach within
+# 2 mm of its edge, grew by 0.72 m (2.959 x 2.959 m). Now such a union takes only the views' own pads (R-PF3c), and
+# the rows are those of 97da92a and 3cc9d29.
+AMBIGUOUS_ROWS = {   # (cabinet scene, move, lean): every row in id order, as (x, y, sx, sy)
+    (("table", 50, 3.0, 1.2, 0.7), ("around", -45), 0.5): [(2.503, -0.566, 1.460, 1.520),
+                                                          (3.414, 0.150, 1.253, 1.188)],
+    (("bed", 40, 2.5, 0.9, 0.6), ("around", -45), 0.0): [(1.426, -0.937, 2.351, 2.234),
+                                                        (3.338, 0.056, 1.812, 2.029)],
+    # the views' pads stop at S - w_obs + EDGE_PAD here (one point spacing past their last return would give
+    # 1.637 x 1.629 m). 1a09cba's L made this one row of 2.383 x 2.151 m, which covered the bed; it misses by
+    # 0.6804 m again, as on 97da92a and 3cc9d29
+    (("bed", 35, 3.0, 1.2, 0.9), ("around", -45), 0.0): [(2.625, -0.296, 1.601, 1.603),
+                                                        (3.925, 0.041, 1.605, 2.031)],
+}
+
+
+def test_a_union_that_cannot_tell_its_long_side_takes_only_the_views_pads():   # R-PF3c (the review of 1a09cba)
+    """An unseen lateral side of a union that observed neither face axis longer than S + EDGE_PAD (a non-square
+    prior) reaches only as far as the views' own pads, capped at S - w_obs + EDGE_PAD: their footprints, filled with
+    the prior along their own depth axes, say nothing about which side is long. The rows are pinned
+    (AMBIGUOUS_ROWS), and each side of the table is covered by one of its rows."""
+    from test_detector_geometry import corners_xy
+
+    for (scene, move, lean), pinned in AMBIGUOUS_ROWS.items():
+        solids, prior = _cabinet_scene(*scene)
+        rows, _ = _two_stop_rows(solids, prior, _stops(solids[0], move), lean)
+        assert _rows_match(rows, pinned), (scene, move, rows)
+        if scene[0] == "table":
+            c = corners_xy(solids[0])
+            reach = [[c[:, 0].min() - (x - sx / 2), x + sx / 2 - c[:, 0].max(),
+                      c[:, 1].min() - (y - sy / 2), y + sy / 2 - c[:, 1].max()] for x, y, sx, sy in rows]
+            assert all(max(r[i] for r in reach) >= 0.0 for i in range(4)), reach
+
+
+# What stays against 3cc9d29 in R-G4's cabinet scenes after R-PF3c (UNION_LATERAL's counterpart there, R-PF3b (a)),
+# all from R-PF3b's lateral rule before this round and the same on 1a09cba. Rows lost: a row grows over a second
+# row's hits, which then join it. In the sweeps 18 scenes publish one row fewer than on 3cc9d29 (every one also on
+# 1a09cba). In none is a side of the object left that a row of 3cc9d29 covered: in 8 the miss closes or shrinks
+# (the first here: two partial rows that missed by 0.5268 m at best become one that covers), and in the other 10
+# the lost row was a stray piece that missed the object by more than 1.3 m, while the best row's miss changes by at
+# most 0.5 mm (the second: 0.0552 m, 0.0547 m on 3cc9d29). A seen side grown: an unseen side gets the views' pad
+# past the true edge, where 3cc9d29 had 0.016 m
+# (the third: +0.054 m on a side whose returns reach within 3.5 mm of the edge; the only side in the sweeps grown
+# by more than 0.05 m whose returns reach within 5 mm; 28 rows of the bed's +90 sweep with noise grow by up to
+# 0.051 m on sides their returns reach within 50 mm of).
+UNION_LATERAL_ROWS = {   # (cabinet scene, move, lean): every row in id order, as (x, y, sx, sy)
+    (("sofa", 35, 3.0, 1.2, 0.9), ("around", -45), 0.0): [(3.008, -0.011, 2.145, 1.931)],
+    (("sofa", 40, 3.0, 0.6, 0.1), ("step", 0.5), 0.0): [(3.046, -0.055, 1.980, 1.846)],
+    (("bed", 50, 3.0, 0.6, 0.1), ("around", 90), 0.5): [(3.001, 0.000, 2.191, 2.315)],
+}
+
+
+def test_the_lateral_rules_residuals_behind_a_cabinet_are_pinned():   # R-PF3c (R-PF3b (a))
+    """UNION_LATERAL_ROWS: the rows that still differ from 3cc9d29's by a lost row or a seen side grown by more than
+    0.05 m, each pinned with every row."""
+    for (scene, move, lean), pinned in UNION_LATERAL_ROWS.items():
+        solids, prior = _cabinet_scene(*scene)
+        rows, _ = _two_stop_rows(solids, prior, _stops(solids[0], move), lean)
+        assert _rows_match(rows, pinned), (scene, move, rows)
 
 
 # An unseen lateral side reaches no farther than the prior allows (R-PF3b; the review of 8891c46, finding 3). Behind
@@ -640,8 +728,8 @@ LATERAL_BOUNDED_ROWS = {   # (cabinet scene, move): (x, y, sx, sy)
 def test_an_unseen_lateral_side_reaches_no_farther_than_the_prior_allows():   # R-PF3b (the review of 8891c46, finding 3)
     """A union whose observed depth is longer than S + EDGE_PAD has its long side along the depth axis, so an
     unseen lateral side reaches at most S - w_obs + EDGE_PAD past the union's last return there (S - w_obs is what
-    the object can have left; L - w_obs otherwise): the views' prior fill along that axis, and their own pads, stop
-    there. Each pinned row covers (LATERAL_BOUNDED_ROWS)."""
+    the object can have left; L - w_obs only where the observed width exceeds S + EDGE_PAD, R-PF3c): the views'
+    prior fill along that axis, and their own pads, stop there. Each pinned row covers (LATERAL_BOUNDED_ROWS)."""
     from test_detector_geometry import covers
 
     for (scene, move), pinned in LATERAL_BOUNDED_ROWS.items():
