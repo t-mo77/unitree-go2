@@ -29,7 +29,6 @@
   - 横の辺も、2 つの止まりの和では当たりが自分の点で見たときだけ見えたとし、ほかは当たりの余白と足跡まで（R-PF3b）。
   - どの当たりのカメラもいちばん新しいものから ONE_STOP（0.1 m）以内なら 1 つの止まりで、横の辺は和のまま。
   - どちらの軸も S + EDGE_PAD より長く見えない和は長い辺が分からず、見えない横の辺は当たりの余白だけ（R-PF3c）。
-  - 見えない横の辺は、足跡の箱が MAX_SIZE（3 m）を超えない所までしか広げない（R-PF3d、R-PF3e）。
 
 名前は見え方の label だけから取る（ほかのトピックやファイルは読まない）。出すときに単語帳の label か確かめ直し、
 仮の追跡は出さない。時刻：frame_t・scan_t はセンサーの時刻（シミュレーション）、wall_t・wall_now は `seen` の
@@ -133,8 +132,7 @@ class Tracker:
         review F3, round 2 and R-PF3). From two stops a lateral side too counts as seen only when one hit's own
         returns reached it; an unseen one gets the hits' pads and footprints there, within the prior (R-PF3b).
         Hits whose cameras all lie within geometry.ONE_STOP (0.1 m) of the newest are one stop: no lateral rule.
-        A union that observes neither face axis longer than S + EDGE_PAD takes only the hits' pads there (R-PF3c).
-        An unseen lateral side grows only as far as keeps the axis-aligned box within MAX_SIZE (R-PF3d, R-PF3e)."""
+        A union that observes neither face axis longer than S + EDGE_PAD takes only the hits' pads there (R-PF3c)."""
         check_thresholds(thresholds, vocabulary.LABELS)
         self._th = thresholds
         self._priors = dict(priors)
