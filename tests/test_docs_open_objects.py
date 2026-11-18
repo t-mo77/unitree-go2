@@ -27,7 +27,7 @@ MOBILECLIP = ("文字の符号化器の重み `mobileclip_blt.ts`（Apple の Mo
 OUT_OF_IMAGES = ("ultralytics と torch は検出器のイメージと `detector/yoloe.py` にだけあり、app のイメージにも Gazebo の"
                  "イメージにも、本来の Linux の準備にも入りません。検出器は取り替え口（`detector/protocol.py`）の後ろにあります。")
 LICENSE_FILE = "リポジトリに LICENSE ファイルを足すかどうかは、利用者の別の判断です（この仕事では足していません）。"
-Q4 = "ただの形の箱（box_1）と椅子（chair_1）は、検出器ではまず見つかりません。"
+Q4 = "ただの形の箱（box_1）と椅子（chair_1）は、検出器の目標ではなく、検出器で見つかることを当てにできません。"
 REAL_ROBOT = "実機の道（PR #4 の Linux 直接実行と `compose.robot.yaml`）は、この仕事で変えていません。"
 DETECTOR_UP = "OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d"
 DETECTOR_BUILD = "docker compose --profile detector build detector"
