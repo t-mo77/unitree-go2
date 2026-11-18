@@ -55,7 +55,10 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     tell its long side, and the views' footprints, each filled along its own depth axis, say nothing about the
     side: it reaches only as far as the views' own pads, within that bound (R-PF3c; the review of 1a09cba: L there,
     the box of both orientations, grew sides observed to their end by up to 1.10 m and lost rows; three rows it
-    covered miss again, by no more than on 97da92a). A union from one stop keeps its own lateral
+    covered miss again, by no more than on 97da92a). An unseen side grows past the union's own margin only as far
+    as keeps the rectangle's axis-aligned box within MAX_SIZE (R-PF3d: the box is clipped about its centre, so a
+    side grown beyond it cut the opposite side, which the union saw; a prior 1.25 x a turned 2 m square was then
+    0.268 m short, 0.102 m on 97da92a; restored by R-PF3e). A union from one stop keeps its own lateral
     margins: the newest camera's rays are every view's, and a single view's footprint, filled with the prior
     along its own depth axis, can lie along the union's lateral axis and widen it by up to the prior's depth
     (the review of 67f9d75, finding 1). Where two stops' face ends lie at one lateral coordinate while one view
@@ -413,8 +416,9 @@ def footprint(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float
     as the tightest of the views' own footprints (each view alone) reaches there, but no farther than the prior's
     other side, (L if the observed width > S + EDGE_PAD >= the observed depth, else S) - w_obs + EDGE_PAD past the
     union's last return there; a union that observed neither axis longer than S + EDGE_PAD (a prior that is not
-    square) takes only the views' own pads there, within that bound (R-PF3c). A side seen keeps the union's own
-    margin from cam_xy, also EDGE_PAD where two stops' face ends lie at
+    square) takes only the views' own pads there, within that bound (R-PF3c); and an unseen side grows past the
+    union's own margin only as far as keeps the axis-aligned box within MAX_SIZE (R-PF3d). A side seen keeps the
+    union's own margin from cam_xy, also EDGE_PAD where two stops' face ends lie at
     one lateral coordinate while a view saw only a face ending there (a documented limit, R-PF3b (a): up to
     0.055 m short in the tracker's two-stop sweeps). From one stop the lateral sides keep the union's own margins:
     cam_xy's rays are every view's, and
@@ -461,6 +465,7 @@ def _rect(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, fl
     pad_seen, far_sampled = _side(u, v, rays, lateral, +1)
     view_pad = 0.0
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
+    own = (pad_lo, pad_hi)                   # the union's own lateral margins
     if views:    # a union: the newest camera's rays also reach returns that only an older stop saw, so its far end
         # (R-PF3) and its lateral sides (R-PF3b) count as seen only when one single view's own returns reached them
         v_lo, v_hi = float(v.min()), float(v.max())
@@ -493,6 +498,8 @@ def _rect(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, fl
     else:                                    # the far side is hidden (or its face grazed): the prior's depth
         d, pad_far, filled = max(d_prior, d_obs), EDGE_PAD, True
     w_half = max(w_obs, SIZE_MIN) / 2.0
+    pad_lo, pad_hi = _within_max_size(depth, near + d + pad_far - (near - EDGE_PAD), 2.0 * w_half, own,
+                                      (pad_lo, pad_hi))
     v0, v1 = v_mid - w_half - pad_lo, v_mid + w_half + pad_hi
     return _Rect(depth, lateral, near - EDGE_PAD, near + d + pad_far, v0, v1, near + d_obs + pad_seen, filled)
 
@@ -615,6 +622,28 @@ def _lateral_unseen(returns: _ViewReturns, views: Sequence[tuple[np.ndarray, Seq
         if rects[k] is not None:
             reach.append(float((side * (rects[k].corners() @ lateral)).max()) - side * extreme)
     return min(max(max(pads), min(reach)) if reach else max(pads), cap)
+
+
+def _within_max_size(depth: np.ndarray, length: float, width: float, own: tuple[float, float],
+                     pads: tuple[float, float]) -> tuple[float, float]:
+    """The lateral pads (lo, hi) with what the unseen sides grew past the union's own margins (own; R-PF3b) shrunk
+    by one factor so that the rectangle (length along depth, width + pads across) has an axis-aligned box within
+    MAX_SIZE on both odom axes, or to nothing when the box with the own margins is already beyond it (R-PF3d).
+    _aabb clips a box beyond MAX_SIZE about its centre: a side grown there moved the centre and cut the opposite
+    side, which the union saw (a prior 1.25 x a turned 2 m square: up to 0.268 m short, where 97da92a and 3cc9d29
+    were 0.102 m short)."""
+    grown = (pads[0] - own[0]) + (pads[1] - own[1])
+    if grown <= 0.0:
+        return pads
+    widest = math.inf
+    for along, across in ((abs(float(depth[0])), abs(float(depth[1]))), (abs(float(depth[1])), abs(float(depth[0])))):
+        if across > 1e-9:                    # an odom axis: along x length + across x width <= MAX_SIZE
+            widest = min(widest, (MAX_SIZE - along * length) / across)
+    room = widest - width - own[0] - own[1]
+    if grown <= room:
+        return pads
+    k = max(room, 0.0) / grown
+    return own[0] + k * (pads[0] - own[0]), own[1] + k * (pads[1] - own[1])
 
 
 def plausible(fp: Footprint, prior: tuple[float, float]) -> bool:
