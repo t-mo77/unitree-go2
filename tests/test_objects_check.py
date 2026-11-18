@@ -788,6 +788,14 @@ def test_accuracy_check_reads_world_and_status():
     assert code == 0 and out["ids_retired"] is None and out["detector"] is None
 
 
+def test_median_position_line():                                # pre-final review F12 (spec §13.3)
+    # two of three pairs 0.3 m off: the max line (0.3 <= 0.35) holds, the median line (0.3 > 0.25) fails
+    det = tuple(replace(o, x=o.x + 0.3) if o.id in ("suitcase_1", "sofa_1") else o for o in PERFECT)
+    r = acc(det)
+    assert r["max_pos_err"] == pytest.approx(0.3, abs=0.002) and r["median_pos_err"] == pytest.approx(0.3, abs=0.002)
+    assert keys(r) == ["median_pos_err"] and r["passed"] is False
+
+
 def test_resolve_pairs_the_detector_row():
     truth = (SOFA_TRUTH, HOUSE.find("trash_can_1").obj())
     det = (Obj("bench_1", "bench", -4.3, 0.1, (1.0, 1.7)), Obj("trash_can_2", "trash_can", -1.45, -1.52, (0.3, 0.4)))
@@ -804,7 +812,9 @@ def test_layout_mismatch_is_no_data():
     assert layout_mismatch(truth_message(), "household") is None
     other = truth_message(name="default")
     error = layout_mismatch(other, "household")
-    assert "default" in error and "household" in error and "--layout" in error
+    assert "default" in error and "household" in error and "--layout default" in error
+    # the app service passes no GO2_LAYOUT, so the hint names compose run's -e (pre-final review F7)
+    assert "or set GO2_LAYOUT" not in error and "-e GO2_LAYOUT=default" in error
     unnamed = {k: v for k, v in truth_message().items() if k != "layout"}
     assert layout_mismatch(unnamed, "household") is not None
     assert layout_mismatch(None, "household") is not None
@@ -833,20 +843,22 @@ def test_cli_arguments():
             _parse(bad)
 
 
+def odom(t, x, speed):
+    """A nav_msgs/Odometry stand-in: sim stamp t, at (x, 0), moving at speed along x."""
+    sec = int(t)
+    v = SimpleNamespace(x=speed, y=0.0, z=0.0)
+    w = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+    return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=int((t - sec) * 1e9))),
+                           pose=SimpleNamespace(pose=SimpleNamespace(
+                               position=SimpleNamespace(x=x, y=0.0, z=0.33),
+                               orientation=SimpleNamespace(w=1.0, x=0.0, y=0.0, z=0.0))),
+                           twist=SimpleNamespace(twist=SimpleNamespace(linear=v, angular=w)))
+
+
 def test_feed_tracks_the_still_gate():
     """accuracy and resolve wait on bridge_core.StillGate fed from odometry (the bridge's own gate)."""
     from gazebo.bridge_core import StillGate
     from gazebo.tools.objects_check import _Feed
-
-    def odom(t, x, speed):
-        sec = int(t)
-        v = SimpleNamespace(x=speed, y=0.0, z=0.0)
-        w = SimpleNamespace(x=0.0, y=0.0, z=0.0)
-        return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=int((t - sec) * 1e9))),
-                               pose=SimpleNamespace(pose=SimpleNamespace(
-                                   position=SimpleNamespace(x=x, y=0.0, z=0.33),
-                                   orientation=SimpleNamespace(w=1.0, x=0.0, y=0.0, z=0.0))),
-                               twist=SimpleNamespace(twist=SimpleNamespace(linear=v, angular=w)))
 
     feed = _Feed(StillGate())
     assert feed.still() is False and feed.robot_xy() is None
@@ -860,3 +872,121 @@ def test_feed_tracks_the_still_gate():
     feed.on_odom(odom(1.5, 0.05, 0.2))                  # walks again
     assert feed.still() is False and feed.still_wall is None
     assert len(feed.samples) == 4
+
+
+class Wall:
+    """A settable wall clock for _Feed and ListedWait."""
+
+    def __init__(self, t=0.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def test_feed_does_not_date_a_stop_it_did_not_see():      # pre-final review F11
+    from gazebo.bridge_core import StillGate
+    from gazebo.tools.objects_check import _Feed
+
+    wall = Wall(100.0)
+    feed = _Feed(StillGate(), clock=wall)
+    feed.on_odom(odom(5.0, 1.0, 0.0))                    # the Go2 already stands still at the first odometry
+    wall.t = 101.0
+    feed.on_odom(odom(5.5, 1.0, 0.0))
+    assert feed.still() is True and feed.still_wall is None      # the stop came before this tool: no time for it
+    wall.t = 110.0
+    feed.on_odom(odom(6.0, 1.1, 0.3))                    # walks
+    assert feed.still() is False and feed.still_wall is None
+    wall.t = 112.0
+    feed.on_odom(odom(6.5, 1.2, 0.0))                    # stops: this stop was seen
+    assert feed.still_wall == 112.0
+
+
+def test_resolve_times_the_listing_from_the_stop_it_saw():   # pre-final review F11, spec §13.5
+    from gazebo.bridge_core import StillGate
+    from gazebo.tools.objects_check import ListedWait, _Feed
+
+    truth = truth_message()
+    sofa = replace(SOFA_TRUTH, id="sofa_3", measured=True)
+    unlisted, unmeasured, listed = det_message(()), det_message((replace(sofa, measured=False),)), det_message((sofa,))
+
+    def run(odoms, messages):
+        """odoms: (wall, sim t, speed); messages: (wall, payload), interleaved by wall time."""
+        wall = Wall()
+        feed = _Feed(StillGate(), clock=wall)
+        wait = ListedWait("sofa_1", HOUSE)
+        events = sorted([(w, 0, (t, v)) for w, t, v in odoms] + [(w, 1, m) for w, m in messages],
+                        key=lambda e: (e[0], e[1]))
+        for w, kind, item in events:
+            wall.t = w
+            if kind == 0:
+                feed.on_odom(odom(item[0], 0.0, item[1]))
+            elif wait.message(item, truth, feed.still_wall, w):
+                return wait
+        return wait
+
+    walk_then_stop = [(10.0, 1.0, 0.3), (12.0, 3.0, 0.0), (13.0, 4.0, 0.0)]
+    # the Go2 walks, stops at wall 12.0, the row is listed at 16.5: 4.5 s
+    w = run(walk_then_stop, [(11.0, unlisted), (14.0, unmeasured), (16.5, listed)])
+    assert (w.id, w.measured, w.after, w.note) == ("sofa_3", True, 4.5, None)
+    # the tool started with the Go2 already still (the review's example: stopped at T, resolve's odometry at
+    # T+4, the row at T+6): no number, though the row was unlisted in an earlier message
+    w = run([(4.0, 3.0, 0.0), (5.0, 4.0, 0.0)], [(4.5, unlisted), (6.0, listed)])
+    assert w.id == "sofa_3" and w.measured is True and w.after is None and "still" in w.note
+    # the row was listed in the first message the tool got: listed before it started, no number
+    w = run(walk_then_stop, [(13.5, listed)])
+    assert w.id == "sofa_3" and w.after is None and "first" in w.note
+    # listed while the Go2 walks (no stop to measure from)
+    w = run([(10.0, 1.0, 0.3), (11.0, 2.0, 0.3)], [(10.5, unlisted), (11.5, listed)])
+    assert w.after is None and w.note is not None
+    # not measured yet: not done
+    w = run(walk_then_stop, [(11.0, unlisted), (14.0, unmeasured)])
+    assert w.id == "sofa_3" and w.measured is False and w.after is None
+    # a truth message for another layout ends the wait with an error
+    other = ListedWait("sofa_1", HOUSE)
+    assert other.message(listed, truth_message(name="default"), 1.0, 2.0) is True and "default" in other.error
+
+
+def test_resolve_waits_for_a_row_with_an_accepted_label():   # pre-final review round 2 (F11, M10)
+    """The Bf procedure stops at B before F moved_forward, and at B the sofa was listed as chair (H3: 'chair
+    0.734'). The tracker retires that id when it relabels the track at Bf. So resolve ends only on a paired row
+    whose label the target's layout entry accepts, notes a row with another label, and times the listing from
+    the stop at Bf."""
+    from gazebo.bridge_core import StillGate
+    from gazebo.tools.objects_check import ListedWait, _Feed
+
+    truth = truth_message()
+    as_chair = replace(SOFA_TRUTH, id="chair_1", label="chair", x=SOFA_TRUTH.x + 0.2, size=(0.6, 0.6), measured=True)
+    as_sofa = replace(SOFA_TRUTH, id="sofa_1", size=(1.0, 1.9), measured=True)
+
+    def run(events):
+        wall = Wall()
+        feed = _Feed(StillGate(), clock=wall)
+        wait = ListedWait("sofa_1", HOUSE)
+        for w, kind, item in events:
+            wall.t = w
+            if kind == "odom":
+                feed.on_odom(odom(item[0], 0.0, item[1]))
+            elif wait.message(item, truth, feed.still_wall, w):
+                return w, wait
+        return None, wait
+
+    to_b = [(0.0, "odom", (1.0, 0.0)), (1.0, "msg", det_message(())),            # lying still, then unlisted
+            (2.0, "odom", (2.0, 0.3)), (20.0, "odom", (20.0, 0.3)),              # stand and two left turns
+            (21.0, "odom", (21.0, 0.0)),                                          # the stop at B
+            (24.5, "msg", det_message((as_chair,)))]                              # the sofa listed as chair
+    to_bf = [(27.0, "odom", (27.0, 0.3)), (33.0, "odom", (33.0, 0.0)),           # F moved_forward, the stop at Bf
+             (36.0, "msg", det_message((as_sofa,)))]                              # relabelled: sofa_1
+    end, wait = run(to_b + to_bf)
+    assert end == 36.0 and (wait.id, wait.measured, wait.after, wait.note) == ("sofa_1", True, 3.0, None)
+    assert len(wait.notes) == 1 and "chair_1" in wait.notes[0] and "'chair'" in wait.notes[0]
+    # only the chair row: no id (never the retired chair_1), and the wait goes on
+    end, wait = run(to_b)
+    assert end is None and (wait.id, wait.measured, wait.after) == (None, None, None) and len(wait.notes) == 1
+    # a label the entry accepts besides its own ends the wait (table_1 accepts desk)
+    table = HOUSE.find("table_1").obj()
+    desk = replace(table, id="desk_2", label="desk", measured=True)
+    wait = ListedWait("table_1", HOUSE)
+    assert wait.message(det_message((desk,)), truth_message(), None, 1.0) is True and wait.id == "desk_2"
+    with pytest.raises(ValueError):
+        ListedWait("lamp_9", HOUSE)

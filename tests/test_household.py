@@ -42,9 +42,11 @@ DETECTOR_TARGETS = {"Bf": {"sofa_1", "suitcase_1"}, "R5": {"traffic_cone_1"}}   
 TEST_POSES = {"Bf": (-0.5, 0.0, 180.0), "R5": (0.0, -2.75, -90.0), "L": (0.0, 0.0, 90.0)}
 MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.730, -95.8), "L": (0.011, 0.037, 96.1)}
 # Every pose the H3 screening measured at the end of the procedure lies in these boxes (x, y, heading; 6 Bf runs,
-# 4 R5 runs): their 8 corners stand for them below.
+# 4 R5 runs), and so do H3b's Bf and R5: their 8 corners stand for them below. R-H3k (1) widened the R5 box to H3b's
+# real R5 pose (H3B_R5: x 0.017 m and the heading 0.38° beyond the screening's -0.342 and -97.6°).
+H3B_R5 = (-0.359, -2.709, -98.0)
 MEASURED_RANGES = {"Bf": ((-0.560, -0.506), (-0.141, -0.054), (-172.4, -166.6)),
-                   "R5": ((-0.342, -0.225), (-2.804, -2.654), (-97.6, -95.1))}
+                   "R5": ((-0.359, -0.225), (-2.804, -2.654), (-98.0, -95.1))}
 # The four jittered starts of §12.4 (±0.1 m, ±5°), world axes, around the test pose. The yaw turns with the x shift.
 JITTERS = ((0.1, 0.1, 5.0), (0.1, -0.1, 5.0), (-0.1, 0.1, -5.0), (-0.1, -0.1, -5.0))
 # record_frames' four view shifts (dx forward, dy left, dyaw), in the Go2's own frame (plan H3)
@@ -316,6 +318,34 @@ def test_every_measured_pose_plans():
     assert moves(build("F around_sofa_1", edge, scene()), "around_sofa_1") is None
 
 
+def test_h3b_r5_pose_plans_and_sees_only_the_cone():           # R-H3k (1): H3b's real R5, pinned as R-H3g
+    """H3b's R5 pose lies in the widened box. From it, both cone formulas plan, from the pose and from its 4 jitters
+    (H3b's table), and the pose view and its 4 shifts show the cone alone (R-H3c); table_1 stays 84.8° outside."""
+    (x0, x1), (y0, y1), (h0, h1) = MEASURED_RANGES["R5"]
+    x, y, heading = H3B_R5
+    assert x0 <= x <= x1 and y0 <= y <= y1 and h0 <= heading <= h1
+    start = (x, y, math.radians(heading))
+    pins = {"F near_traffic_cone_1": ((72, 1, 7, 1584), [(63, 8), (56, 1), (63, 4), (56, 1)]),
+            "F around_traffic_cone_1": ((100, 28, None, 8256), [(110, 31), (110, 31), (110, 30), (121, 35)])}
+    for formula, (plan, jittered) in pins.items():
+        prop = target(formula)
+        gw = build(formula, start, scene())
+        keys = len(gw.near[prop]) if formula.startswith("F near_") else None
+        assert (area(gw), moves(gw, prop), keys, len(gw.world.states)) == plan, formula
+        got = []
+        for dx, dy, dyaw in JITTERS:
+            g = build(formula, (x + dx, y + dy, math.radians(heading + dyaw)), scene())
+            got.append((area(g), moves(g, prop)))
+        assert got == jittered, formula
+    views = [start] + [shifted(start, s) for s in VIEW_SHIFTS]
+    assert [{o.id for o in scene() if rendered(v, o)} for v in views] == [{"traffic_cone_1"}] * 5
+    cone, table = (next(o for o in scene() if o.id == i) for i in ("traffic_cone_1", "table_1"))
+    (cam_b, cam_d), (base_b, base_d) = sight(start, cone.x, cone.y), sight(start, cone.x, cone.y, camera=False)
+    assert (cam_b, base_b) == pytest.approx((12.2, 9.9), abs=0.05)         # H3b: well inside ±35° (R-H3b)
+    assert (cam_d, base_d) == pytest.approx((1.421, 1.742), abs=0.0005)    # 1.5-2.5 m from the base
+    assert min(min(abs(b) for b, _ in bearings(v, table)) for v in views) - HALF_FOV == pytest.approx(84.8, abs=0.05)
+
+
 def test_each_test_pose_sees_its_targets():                     # §12.3: so the turn puts them in the Scene
     targets = {**DETECTOR_TARGETS, "L": {"table_1"}}
     for poses in (TEST_POSES, MEASURED_POSES):
@@ -327,7 +357,7 @@ def test_each_test_pose_sees_its_targets():                     # §12.3: so the
 def test_no_undetectable_model_in_a_detector_test_view():
     """R-H3c: at a detector test pose and its 4 view shifts the rendered camera (120°, 10 m, no occlusion) shows no
     model but the pose's targets, so every matched pair of §13.3 is a target. Checked at the measured poses (H3's and
-    the corners of every screening run's). At the nominal Bf, exactly 180°, table_1 enters the pose view (its corner
+    the corners of the box of every screening run's and H3b's, R-H3k (1)). At the nominal Bf, exactly 180°, table_1 enters the pose view (its corner
     (-3.148, 4.0) at 59.88° against the 59.99° edge) and the s2 and s3 views (both -5°). At the measured headings it
     stays at least 2.3° outside every view (the corner (-0.506, -0.054, -172.4°) with s3). R-H3e: the turns
     overshoot, so the room was placed with the measured yaws; re-run this view check if the turn controller changes.

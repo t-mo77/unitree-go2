@@ -773,3 +773,33 @@ def test_preview_rule(tmp_path):
     replayed = detector_check.replay(missing, scripted_by_view(directory, markers, base), LAYOUT, targets)
     lamp = detector_check.preview(replayed, targets)["targets"]["lamp_1"]
     assert lamp["passed"] is False and lamp["pose_hit"] is None        # no frame R
+
+
+def test_a_set_without_a_scored_frame_does_not_pass(tmp_path):   # pre-final review F16
+    # only spawn and spawn_lying frames (no detectable truth in range): nothing scored, nothing failed, no pass
+    frames = [f for f in detector_check.load_frames(fixture_set(tmp_path)) if f.view in ("spawn", "spawn_lying")]
+    out = detector_check.replay(frames, oracle(), LAYOUT, FIXTURE_TARGETS)
+    line = detector_check.set_line(out, "household", "oracle", LAYOUT, FIXTURE_TARGETS)
+    assert line["scored"] == [] and line["failed"] == [] and line["errors"] == []
+    assert line["passed"] is False                       # exit 0 only when one frame at least is scored
+
+
+def test_preview_lines_are_pinned():                       # pre-final review F10 (R-H3b, R-H3h (4))
+    assert detector_check.PREVIEW_IOU == 0.5 and detector_check.PREVIEW_SHIFT_HITS == 2
+    assert detector_check.PREVIEW_MIN_KINDS == 3 and detector_check.CONFUSION_IOU == 0.3
+
+
+def test_preview_hit_needs_iou_0_5(tmp_path):              # pre-final review F10: the line R-H3h (4) gates on
+    views = [("spawn", SPAWN, None)] + pose_views("B", POSE_B)
+    directory, markers = built_set(tmp_path, views)
+    frames = detector_check.load_frames(directory)
+    targets = {"sofa_1": "B"}
+
+    def run(scale):
+        hits = {v: [("sofa", 0.6, "sofa_1", scale)] for v in ("B", "B_s1", "B_s2")}
+        replayed = detector_check.replay(frames, scripted_by_view(directory, markers, hits), LAYOUT, targets)
+        return detector_check.preview(replayed, targets, confirm=YOLOE_THRESHOLDS.confirm)["targets"]["sofa_1"]
+
+    assert run((0.72, 0.72))["passed"] is True              # IoU 0.518: a hit
+    below = run((0.7, 0.7))                                 # IoU 0.49: not a hit (IoU >= 0.5), though >= 0.3
+    assert below["passed"] is False and below["pose_hit"] is False and below["shift_hits"] == 0

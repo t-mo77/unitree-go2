@@ -117,6 +117,11 @@ class Vocabulary:
         """The vocabulary words in text, in order (spec §9.5): longest at one position, not_words masked."""
         return self._matcher.kinds_in(text) if isinstance(text, str) else ()
 
+    def named_in(self, text: str) -> tuple[Kind, ...]:
+        """kinds_in, and also a word that ends in kanji when one of GOING_STEMS follows it, the particle dropped
+        (ゴミ箱行って, 机前まで). Only the kind guard's refusal set uses it (translator.named_kinds)."""
+        return self._matcher.kinds_in(text, loose=True) if isinstance(text, str) else ()
+
 
 def normalise_alias(name: str) -> str:
     """NFKC, lower case, strip; runs of white space and "-" become "_"; "_" at either end go."""
@@ -209,18 +214,26 @@ def word_start(word: str) -> str:
             "hira": f"(?:(?<![{_HIRAGANA}])|(?<=[{_PARTICLES_BEFORE}]))"}.get(_script(word[0]), "")
 
 
-def word_end(word: str, after: str = _PARTICLES_AFTER) -> str:
+# 助詞を落として漢字の動詞が続くときの、行き先の語の後ろの漢字（ゴミ箱行って・机前まで。pre-final review の
+# 2 回目、指摘 1）。物の種類の見張り（translator の named_kinds）の断る側だけが named_in で使う。kinds_in と
+# word_end の既定は変えない（箱根 は 箱 ではない）。
+GOING_STEMS = ("目指", "行", "向", "寄", "移", "進", "歩", "近", "回", "来", "前", "横", "周")
+
+
+def word_end(word: str, after: str = _PARTICLES_AFTER, kanji_after: str | None = None) -> str:
     """word の後ろに置く正規表現：word がそこで語として終わるときだけ当たる。カタカナで終わる語は
     カタカナと続かない（チェアー は可）。ひらがなで終わる語は、ひらがなでない字か after（正規表現、
-    既定は助詞）と続く（いすまで は可、いすわる は不可）。漢字で終わる語は漢字と続かない（箱根 は不可）。"""
+    既定は助詞）と続く（いすまで は可、いすわる は不可）。漢字で終わる語は漢字と続かない（箱根 は不可）。
+    ただし kanji_after（正規表現）があれば、漢字で終わる語はそれとも続く（named_in の GOING_STEMS）。"""
+    kanji = f"(?![{_KANJI}])" if kanji_after is None else f"(?:(?![{_KANJI}])|(?={kanji_after}))"
     return {"kata": f"ー?(?![{_KATAKANA}])",
             "hira": f"(?:(?={after})|(?![{_HIRAGANA}]))",
-            "kanji": f"(?![{_KANJI}])"}.get(_script(word[-1]), "")
+            "kanji": kanji}.get(_script(word[-1]), "")
 
 
-def _word_pattern(word: str) -> str:
+def _word_pattern(word: str, kanji_after: str | None = None) -> str:
     """word が長い語の一部でないときだけ当たる正規表現。"""
-    return word_start(word) + re.escape(word) + word_end(word)
+    return word_start(word) + re.escape(word) + word_end(word, kanji_after=kanji_after)
 
 
 # ---- 内部 ----
@@ -236,13 +249,16 @@ class _Matcher:
                                 reverse=True)
         words = sorted(self.word_label, key=len, reverse=True)
         self.pattern = re.compile("|".join(_word_pattern(w) for w in words) if words else r"(?!)")
+        stems = "|".join(GOING_STEMS)
+        self.loose = re.compile("|".join(_word_pattern(w, stems) for w in words) if words else r"(?!)")
 
-    def kinds_in(self, text: str) -> tuple[Kind, ...]:
+    def kinds_in(self, text: str, loose: bool = False) -> tuple[Kind, ...]:
+        """loose: the named_in pattern (a kanji word may end before one of GOING_STEMS)."""
         masked = unicodedata.normalize("NFKC", text)
         for w in self.not_words:
             masked = masked.replace(w, "・" * len(w))
         out = []
-        for m in self.pattern.finditer(masked):
+        for m in (self.loose if loose else self.pattern).finditer(masked):
             word = m.group()
             if word not in self.word_label and word.endswith("ー"):
                 word = word[:-1]                     # チェアー -> チェア (word_end lets a ー follow)
@@ -484,6 +500,7 @@ DETECT_IGNORE = frozenset(VOCABULARY.detect_ignore)
 name_of = VOCABULARY.name_of
 lookup = VOCABULARY.lookup
 kinds_in = VOCABULARY.kinds_in
+named_in = VOCABULARY.named_in
 
 
 def size_of(label: str) -> tuple[float, float] | None:

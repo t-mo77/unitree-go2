@@ -34,8 +34,8 @@ class FP(NamedTuple):
     filled: bool
 
 
-def aabb_fuse(points, cam_xy, prior):
-    """The stub fuse: the axis-aligned box of the points (at least 0.1 m a side)."""
+def aabb_fuse(points, cam_xy, prior, views=None):
+    """The stub fuse: the axis-aligned box of the points (at least 0.1 m a side); the single views are unused."""
     if points is None or len(points) == 0:
         return None
     lo, hi = points.min(axis=0), points.max(axis=0)
@@ -244,6 +244,101 @@ def test_in_view_misses_push_hits_out_of_the_window():
     run.frame(obs())                                     # the window is [miss, miss, hit]
     assert run.ids() == []
 
+
+def test_a_tentative_track_whose_window_empties_is_dropped():    # pre-final review F15 (spec §11.7)
+    run = Run()
+    run.frame(obs())
+    assert run.stats()["tracks_tentative"] == 1
+    run.frame()
+    run.frame()
+    run.frame()                                          # three in-view frames without a hit: the window is empty
+    assert run.stats()["tracks_tentative"] == 0 and run.ids() == []
+
+
+def test_a_box_seen_from_two_sides_gets_its_observed_depth():   # pre-final review F3 (spec §11.6)
+    """The tracker passes each hit's points with its camera as footprint's views, so a box seen from the front
+    and then from the side is published with the depth those views saw (filled False), as geometry's
+    test_a_depth_seen_to_its_far_end_is_kept_below_the_prior assumes of the tracker."""
+    from detector import geometry as g
+    from test_detector_geometry import BASE as STAND, Q0, Q_SIDE, SIDE_BASE, cam_xy, covers, scan, solid
+
+    box = solid(2.175, 0.0, 0.35, 0.35, height=0.45)          # smaller than its prior (0.5, 0.5)
+    prior = (0.5, 0.5)
+    tracker = Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, g.footprint)
+    t, wall = 100.0, 5000.0
+    for base, q, seed in ((STAND, Q0, 1), ((box[0], SIDE_BASE[1], SIDE_BASE[2]), Q_SIDE, 2)):
+        points = g.cut(scan([box], base=base, q=q, seed=seed))[:, :2]
+        cam = cam_xy(base, q)
+        fp = g.footprint(points, cam, prior)
+        assert fp.filled                                       # one face alone shows no depth
+        for _ in range(3):
+            t, wall = t + 1.0, wall + 1.0
+            tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False, cam)],
+                           t, wall, always)
+    rows = tracker.rows(wall, 3.0)
+    assert [r.id for r in rows] == ["box_1"] and tracker.stats()["filled"] == []
+    row = rows[0]
+    assert covers(row, box) and max(row.size) <= 0.35 + 0.16 < 0.5 + 2 * g.EDGE_PAD   # observed, not the prior
+    assert (row.x, row.y) == pytest.approx((box[0], box[1]), abs=0.05)
+
+
+
+# The two cases where F3's thinned views missed and the old call (no views) covered (pre-final review round 2)
+VIEWS_MISSED = (((0.9, 0.45, 1.2, 0, 1.0, 30), 45), ((0.4, 0.3, 0.7, 15, 2.0, 0), -45))
+# The one left: there the thinned union is 3.9 cm short of the raw union on a lateral side, and only the prior's
+# depth (filled, without views) hid it. It is the union's 0.05 m thinning (spec §11.6), which also leaves 3 of the
+# 630 single-stop cases short (up to 0.023 m) with or without views: for the controller, with the two-stop misses
+# of a far end judged from the newest camera.
+UNION_THINNING = frozenset({VIEWS_MISSED[1]})
+
+
+def _around(s, deg):
+    """A base as far from the solid's centre as BASE, turned deg around it, facing it (and its quaternion)."""
+    from test_detector_geometry import BASE as STAND, yaw_q
+
+    c = np.array(s[:2])
+    d0 = np.array(STAND[:2]) - c
+    t = math.radians(deg)
+    d1 = np.array([math.cos(t) * d0[0] - math.sin(t) * d0[1], math.sin(t) * d0[0] + math.cos(t) * d0[1]])
+    return (float(c[0] + d1[0]), float(c[1] + d1[1]), STAND[2]), yaw_q(math.degrees(math.atan2(-d1[1], -d1[0])))
+
+
+@pytest.mark.parametrize("deg", (45, -45, 90, -90))
+def test_views_add_no_cover_miss_from_two_stops(deg):   # pre-final review round 2 (F3; spec §11.6, O12)
+    """O12 at the tracker level: the 630 cover cases, 3 hits from BASE and then 3 from a stop turned ±45° or ±90°
+    around the object. Some cases miss with or without views (a union is judged from the newest camera), so this
+    pins that the views, each hit raw and not thinned, add no miss to the same hits fused without views, except
+    UNION_THINNING; and that the first case of VIEWS_MISSED now covers (it missed by 6 mm with thinned views)."""
+    from detector import geometry as g
+    from test_detector_geometry import BASE as STAND, Q0, _cover_cases, _cover_solid, cam_xy, covers, scan
+
+    def without_views(points, cam, prior, views=None):
+        return g.footprint(points, cam, prior)
+
+    added = set()
+    for case in _cover_cases():
+        prior = case[:2]
+        s = _cover_solid(*case)
+        trackers = [Tracker(YOLOE_THRESHOLDS, {**PRIORS, "box": prior}, fuse) for fuse in (g.footprint, without_views)]
+        t, wall, seed = 100.0, 5000.0, 0
+        for base, q in ((STAND, Q0), _around(s, deg)):
+            cam = cam_xy(base, q)
+            for _ in range(3):
+                seed += 1
+                points = g.cut(scan([s], base=base, q=q, seed=seed))[:, :2]
+                if len(points) < g.MIN_CLUSTER_POINTS:
+                    continue
+                fp = g.footprint(points, cam, prior)
+                t, wall = t + 1.0, wall + 1.0
+                for tracker in trackers:
+                    tracker.update([Observation("box", 0.6, BOX, fp.x, fp.y, fp.size, fp.filled, points, True, False,
+                                                cam)], t, wall, always)
+        rows = [tracker.rows(wall, 3.0) for tracker in trackers]
+        if rows[0] and rows[1] and not covers(rows[0][0], s) and covers(rows[1][0], s):
+            added.add((case, deg))
+        if (case, deg) == VIEWS_MISSED[0]:
+            assert rows[0] and covers(rows[0][0], s)
+    assert added == {c for c in UNION_THINNING if c[1] == deg}
 
 def test_frames_beyond_6_m_do_not_count_toward_n():
     run = Run()
@@ -682,8 +777,8 @@ def test_fused_size_recovers_after_one_bad_frame():
 def test_fuse_gets_the_newest_view_and_the_prior():
     calls = []
 
-    def recording_fuse(points, cam_xy, prior):
-        calls.append((len(points), cam_xy, prior))
+    def recording_fuse(points, cam_xy, prior, views=None):
+        calls.append((len(points), cam_xy, prior, views))
         return aabb_fuse(points, cam_xy, prior)
 
     run = Run(fuse=recording_fuse)
@@ -691,12 +786,16 @@ def test_fuse_gets_the_newest_view_and_the_prior():
     run.frame(obs("sofa", x=3.0, size=(1.8, 0.9), cam=(0.5, 0.2)))
     assert calls[-1][1] == (0.5, 0.2)
     assert calls[-1][2] == PRIORS["sofa"]
+    # the single views, oldest first, each with its own camera (pre-final review F3)
+    views = calls[-1][3]
+    assert [cam for _, cam in views] == [(0.0, 0.0), (0.5, 0.2)]
+    assert sum(len(p) for p, _ in views) >= calls[-1][0]
 
 
 def test_fused_points_are_thinned_and_capped():
     seen = []
 
-    def counting_fuse(points, cam_xy, prior):
+    def counting_fuse(points, cam_xy, prior, views=None):
         seen.append(len(points))
         return aabb_fuse(points, cam_xy, prior)
 
@@ -746,7 +845,7 @@ def test_confidence_is_the_median_of_the_last_10_hits_of_the_label():
 
 
 def test_filled_ids_are_reported():
-    def filling_fuse(points, cam_xy, prior):
+    def filling_fuse(points, cam_xy, prior, views=None):
         fp = aabb_fuse(points, cam_xy, prior)
         return fp._replace(filled=fp.size[0] < prior[0] - 0.2)   # the sofa is seen face-on: depth filled
 

@@ -1,4 +1,6 @@
-# Image for the `gazebo` service: go2-voice-ltl-gazebo:patch-0005 (compose.yaml; patches 0001-0005).
+# Base image go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005). The `gazebo` service runs the thin image
+# patch-0005-fuel2 built on top of it (docker/Dockerfile.gazebo-fuel, compose.yaml). Build this one first:
+#   docker build -t go2-voice-ltl-gazebo:patch-0005 -f docker/Dockerfile.gazebo docker
 # Older images are kept on this Mac for rollback (GO2_GAZEBO_IMAGE, compose.yaml): go2-voice-ltl-gazebo:patch-0004
 # (0001-0004) and go2-voice-ltl-gazebo:patch-0002 (0001-0002, = the old :dev). This Dockerfile cannot
 # rebuild them, so never build with GO2_GAZEBO_IMAGE set to one of them.

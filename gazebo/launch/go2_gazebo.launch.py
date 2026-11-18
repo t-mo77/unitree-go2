@@ -4,7 +4,7 @@ docs/reference/gazebo_feasibility_jazzy.md の「構成 B」：Gazebo の画面�
 logical camera（画像は出さず、見えている model の名前と位置だけ。画像を出すカメラは無い）、rviz2 なし、
 位置は OdometryPublisher。upstream の gz_quadruped_playground の gazebo.launch.py は、カメラ 2 台と
 rviz2 で CPU が足りず RTF が 0.13 になる（NO-GO）ので使わない。
-物（box_1・chair_1）は橋渡しが起動時に置く。
+物は橋渡しが起動時に置く（GO2_LAYOUT の配置 gazebo/layouts/<名前>.json。既定 household は 6 個、default は box_1・chair_1）。
 
 OBJECTS_SOURCE（spec §11.3）は起動のときに 1 回読む（bridge_core.objects_source。ほかの値なら起動しない）。
 detector のときだけ、xacro に camera:=true を渡して描くカメラ front_camera（640×480、2 Hz）を付け、その絵と
