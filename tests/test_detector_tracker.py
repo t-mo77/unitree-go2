@@ -761,6 +761,91 @@ def test_an_unseen_lateral_side_reaches_no_farther_than_the_prior_allows():   # 
         assert covers(FP(*pinned[:2], pinned[2:], False), solids[0]), scene
 
 
+# A prior larger than the object (cover125: the cover cases with the prior 1.25 x the true size), two stops: what stays
+# against 3cc9d29 and 97da92a, a documented limit (R-PF3d), pinned with every row, the best row's miss now and on
+# 3cc9d29 (m; 97da92a's is the same). MAX_SIZE_CLIP_ROWS: every such miss larger than on 3cc9d29, 39 in the 23
+# two-stop cover125 sweeps, all of the 2 m square, whose prior is 2.5 x 2.5 m (square, so the views' reach counts,
+# R-PF3c). Its filled rectangle's axis-aligned box is already about MAX_SIZE; R-PF3b's lateral rule grows an unseen
+# side by up to 0.62 m, and geometry's box, clipped to MAX_SIZE about its new centre, loses the opposite side, which
+# the union saw: up to 0.268 m short (0.102 m on 3cc9d29). No vocabulary kind is that large (the bed's L x L box at
+# 45° is 2.97 m), and no vocabulary sweep shows it. R-PF3d's narrowing (an unseen side grows only as far as keeps the
+# box within MAX_SIZE) gives 3cc9d29's rows here, but it makes 22 other cover125 misses larger than now (by 2-10.5
+# mm, one new: the 2 m square (75°, 2.0 m, 30°) after a 20° turn, 0.0034 m), so it is not taken.
+MAX_SIZE_CLIP_ROWS = {   # (cover case, move, faces): (every row in id order, the best row's miss, 3cc9d29's)
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("ahead", 0.5), "lean"): ([(2.868, 0.116, 3.000, 3.000)], 0.088, 0.082),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("ahead", 0.5), "noise"): ([(2.862, 0.119, 3.000, 3.000)], 0.082, 0.077),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("ahead", 0.5), "plain"): ([(2.865, 0.121, 3.000, 3.000)], 0.085, 0.081),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("step", 0.15), "plain"): ([(2.865, 0.121, 3.000, 3.000)], 0.085, 0.083),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("step", 0.3), "plain"): ([(2.865, 0.121, 3.000, 3.000)], 0.085, 0.082),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("step", 0.5), "lean"): ([(2.868, 0.116, 3.000, 3.000)], 0.088, 0.082),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("step", 0.5), "noise"): ([(2.862, 0.119, 3.000, 3.000)], 0.082, 0.077),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("step", 0.5), "plain"): ([(2.865, 0.121, 3.000, 3.000)], 0.085, 0.081),
+    ((2.0, 2.0, 0.8, 30, 1.0, 0), ("turn", 20), "plain"): ([(2.868, 0.116, 3.000, 3.000)], 0.088, 0.086),
+    ((2.0, 2.0, 0.8, 30, 1.0, 30), ("around", 45), "lean"): ([(2.236, 1.113, 3.000, 3.000)], 0.09, 0.0181),
+    ((2.0, 2.0, 0.8, 30, 1.0, 30), ("around", 45), "noise"): ([(2.231, 1.110, 3.000, 3.000)], 0.085, 0.0406),
+    ((2.0, 2.0, 0.8, 30, 1.0, 30), ("around", 45), "plain"): ([(2.236, 1.111, 3.000, 3.000)], 0.09, 0.0396),
+    ((2.0, 2.0, 0.8, 30, 2.0, 30), ("around", -45), "lean"): ([(3.114, 1.593, 3.000, 3.000)], 0.1019, 0.0),
+    ((2.0, 2.0, 0.8, 30, 2.0, 30), ("around", -45), "noise"): ([(3.109, 1.592, 3.000, 3.000)], 0.0969, 0.0),
+    ((2.0, 2.0, 0.8, 30, 2.0, 30), ("around", -45), "plain"): ([(3.112, 1.594, 3.000, 3.000)], 0.0999, 0.0),
+    ((2.0, 2.0, 0.8, 30, 3.0, 30), ("around", -45), "lean"): ([(3.983, 2.088, 3.000, 3.000)], 0.1049, 0.0),
+    ((2.0, 2.0, 0.8, 30, 3.0, 30), ("around", -45), "noise"): ([(3.978, 2.087, 3.000, 3.000)], 0.0999, 0.0),
+    ((2.0, 2.0, 0.8, 30, 3.0, 30), ("around", -45), "plain"): ([(3.982, 2.088, 3.000, 3.000)], 0.1039, 0.0),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("ahead", 0.5), "lean"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.1002),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("ahead", 0.5), "plain"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.1022),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("step", 0.15), "plain"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.0982),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("step", 0.3), "plain"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.0992),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("step", 0.5), "lean"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.1002),
+    ((2.0, 2.0, 0.8, 45, 1.0, 0), ("step", 0.5), "plain"): ([(3.048, 0.000, 3.000, 3.000)], 0.268, 0.1022),
+    ((2.0, 2.0, 0.8, 45, 2.0, 0), ("ahead", 0.5), "lean"): ([(3.878, 0.171, 3.000, 3.000)], 0.098, 0.0952),
+    ((2.0, 2.0, 0.8, 45, 2.0, 0), ("step", 0.15), "plain"): ([(3.875, 0.173, 3.000, 3.000)], 0.095, 0.0912),
+    ((2.0, 2.0, 0.8, 45, 2.0, 0), ("step", 0.5), "lean"): ([(3.878, 0.171, 3.000, 3.000)], 0.098, 0.0952),
+    ((2.0, 2.0, 0.8, 45, 3.0, 0), ("ahead", 0.5), "noise"): ([(5.044, -0.001, 3.000, 3.000)], 0.264, 0.0992),
+    ((2.0, 2.0, 0.8, 45, 3.0, 0), ("step", 0.5), "noise"): ([(5.044, -0.001, 3.000, 3.000)], 0.264, 0.0992),
+    ((2.0, 2.0, 0.8, 45, 3.0, 0), ("turn", 20), "plain"): ([(4.904, -0.143, 3.000, 3.000)], 0.124, 0.115),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("ahead", 0.5), "lean"): ([(2.868, -0.116, 3.000, 3.000)], 0.088, 0.082),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("ahead", 0.5), "noise"): ([(2.862, -0.120, 3.000, 3.000)], 0.082, 0.079),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("ahead", 0.5), "plain"): ([(2.865, -0.121, 3.000, 3.000)], 0.085, 0.081),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("step", 0.15), "plain"): ([(2.865, -0.121, 3.000, 3.000)], 0.085, 0.083),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("step", 0.3), "plain"): ([(2.865, -0.121, 3.000, 3.000)], 0.085, 0.082),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("step", 0.5), "lean"): ([(2.868, -0.116, 3.000, 3.000)], 0.088, 0.082),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("step", 0.5), "noise"): ([(2.862, -0.120, 3.000, 3.000)], 0.082, 0.079),
+    ((2.0, 2.0, 0.8, 60, 1.0, 0), ("step", 0.5), "plain"): ([(2.865, -0.121, 3.000, 3.000)], 0.085, 0.081),
+    ((2.0, 2.0, 0.8, 60, 1.0, 30), ("step", 0.15), "plain"): ([(2.671, 1.275, 3.000, 3.000)], 0.208, 0.058),
+}
+# PRIOR_FILL_GROWN_ROWS: the sides grown by more than 0.05 m over 3cc9d29 where the returns reach within 5 mm of the
+# object's edge, 7 in the cover125 sweeps (the third value: the growth, m). The rule judges them unseen (grazed beyond
+# 60°) and fills them to the prior's other side, S - w_obs + EDGE_PAD past the union's last return, which here is
+# 1.25 x the object's: up to 0.25 S past its edge. Each row covers.
+PRIOR_FILL_GROWN_ROWS = {   # (cover case, move, faces): (every row in id order, the best row's miss, the growth)
+    ((0.9, 0.45, 1.2, 90, 1.0, 0), ("around", -45), "lean"): ([(1.562, 0.000, 0.662, 1.000)], 0.0, 0.118),
+    ((1.2, 0.4, 0.45, 75, 1.0, 30), ("around", -90), "lean"): ([(1.685, 0.770, 0.916, 1.410)], 0.0, 0.104),
+    ((1.2, 0.4, 0.45, 90, 1.0, 30), ("ahead", 0.5), "lean"): ([(1.606, 0.736, 0.600, 1.299)], 0.0, 0.101),
+    ((1.2, 0.4, 0.45, 90, 1.0, 30), ("ahead", 0.5), "noise"): ([(1.598, 0.735, 0.603, 1.301)], 0.0, 0.099),
+    ((1.2, 0.4, 0.45, 90, 1.0, 30), ("ahead", 0.5), "plain"): ([(1.606, 0.735, 0.600, 1.297)], 0.0, 0.104),
+    ((1.8, 0.9, 0.85, 45, 2.0, 0), ("step", 0.15), "plain"): ([(3.473, 0.080, 2.528, 2.528)], 0.0, 0.123),
+    ((1.8, 0.9, 0.85, 75, 1.0, 30), ("around", -90), "lean"): ([(2.082, 0.948, 1.675, 2.151)], 0.0, 0.228),
+}
+
+
+def test_a_prior_larger_than_the_object_keeps_its_pinned_rows():   # R-PF3d (cover125, a documented limit)
+    """The prior 1.25 x the true size, two stops: MAX_SIZE_CLIP_ROWS (each row clipped to MAX_SIZE, each miss larger
+    than 3cc9d29's) and PRIOR_FILL_GROWN_ROWS (each covers), every row and the best row's miss pinned."""
+    from detector import geometry as g
+    from test_detector_geometry import _cover_solid
+
+    assert (len(MAX_SIZE_CLIP_ROWS), len(PRIOR_FILL_GROWN_ROWS)) == (39, 7)
+    for table in (MAX_SIZE_CLIP_ROWS, PRIOR_FILL_GROWN_ROWS):
+        for (case, move, faces), (pinned, miss, base) in table.items():
+            s = _cover_solid(*case)
+            rows, _ = _two_stop_rows([s], (1.25 * case[0], 1.25 * case[1]), _stops(s, move),
+                                     0.5 if faces == "lean" else 0.0, 0.002 if faces == "noise" else 0.0)
+            assert _rows_match(rows, pinned), (case, move, faces, rows)
+            best = min(_outside(FP(*p[:2], p[2:], False), s) for p in pinned)
+            assert best == pytest.approx(miss, abs=5e-4), (case, move, faces, best)
+            if table is MAX_SIZE_CLIP_ROWS:
+                assert miss > base and all(max(p[2:]) == g.MAX_SIZE for p in pinned), (case, move, faces)
+
+
 def test_frames_beyond_6_m_do_not_count_toward_n():
     run = Run()
     for _ in range(4):
