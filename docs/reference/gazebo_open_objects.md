@@ -1246,3 +1246,84 @@ H3 と同じやり方：使い捨てのスクリプト（作業用の場所。�
 
 - この記録だけ。配置・単語帳・`detector/yoloe.py` の `BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
   app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
+
+## H3b replay：merge の後のコードで H3b の絵を判定し直した（2026-11-18）
+
+- 枝：`objects2/h3b-replay`（`feat/open-objects` の `80f181d`。pre-final の直し `09e8863`、tracker `9b6550a`、H5 の固定 `80f181d` の
+  merge の後）。worktree `~/work/physicalAI/.go2-worktrees/oo-h3b-replay`。ROS の domain は 63。**Gazebo は動かしていない。**
+- 絵：H3b の 12 枚（`~/work/physicalAI/.go2-worktrees/oo-h3b/out/h3-preview/` の 36 ファイル）を、この worktree の `out/h3-preview/` に
+  写した（sha256 は 36 とも同じ）。git に入れていない（設計書 §11.11）。
+- 検出器のイメージ：`go2-voice-ltl-detector:yoloe-11s`（H2、`016348e47306`）。作り直していない（H3b の後に変わった `docker/` は
+  `Dockerfile.gazebo` だけ）。
+
+```bash
+docker run --rm --network none --name oo-h3b-replay-detect -e ROS_DOMAIN_ID=63 -v "$WT":/work -w /work \
+    go2-voice-ltl-detector:yoloe-11s python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe
+```
+
+### 結論
+
+**`preview` の線はそのまま満たす。** `detectable` は `["sofa_1", "suitcase_1", "traffic_cone_1"]`、`enough` は true（線は 3 以上）。
+12 枚、`errors` なし、exit 1（`failed` は `Bf_s2` だけ、H3b と同じ）。どの当たりの名前・確からしさ・IoU も、`confusion` も H3b と同じ。
+変わった数は 1 つの組だけ：`R5_s2` のコーンの位置の誤差（0.133 → 0.130 m）と大きさの誤差（0.132 → 0.133 m）。
+
+| 目標 | 姿勢 | H3b（姿勢、s1〜s4。確からしさ・IoU） | この回 | ずらしの当たり | いちばん低い余裕 | 合否 |
+|---|---|---|---|---|---|---|
+| sofa_1 | Bf | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 3 / 3 | +0.388 / +0.388 | 合格 / 合格 |
+| suitcase_1 | Bf | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 3 / 3 | +0.034 / +0.034 | 合格 / 合格 |
+| traffic_cone_1 | R5 | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 4 / 4 | +0.079 / +0.079 | 合格 / 合格 |
+| spawn（始めの位置） | — | box と chair のほかの名前なし | 同じ | — | — | 合格 / 合格 |
+
+（「/」の左が H3b、右がこの回。）
+
+### 変わった数
+
+| 見え方 | 組 | H3b（`265f17c`） | この回（`80f181d`） | §13.3 の線 |
+|---|---|---|---|---|
+| R5_s2 | traffic_cone_1 の `pos_err`（`max_pos_err`・`median_pos_err` も） | 0.133 | 0.130 | `max_pos_err_target` 0.15 |
+| R5_s2 | traffic_cone_1 の `size_err`（`max_size_err` も） | 0.132 | 0.133 | `max_size_err` 0.4 |
+
+- `R5_s2` の `covers` false・`filled` false・`fill_short_m` 0 は同じで、この絵の線はどちらでも通る。ほかの 11 枚の `pos_err`・
+  `size_err`・`covers`・`filled`・`fill_short_m` はすべて同じ。
+- 推論 1 回の時間は中央値 327.3 ms、最大 336.9 ms（H3b は 333.1 ms・353.5 ms。判定の線ではない）。
+
+### どの merge で変わったか
+
+同じイメージ・同じ絵で、merge ごとのコードを `git archive <commit>` で `out/code-<commit>/`（git に入れていない）に出し、
+`-v out/code-<commit>:/work -v out/h3-preview:/frames:ro` で同じ `detector_check.py … --detector yoloe` にかけた（推論の時間のほか、
+`set` の名前は絵の場所 `frames` になる）。
+
+| コード | R5_s2 のコーン（`pos_err` / `size_err`） | ほかの数 |
+|---|---|---|
+| `265f17c`（H3b） | 0.133 / 0.132 | H3b の記録とすべて同じ |
+| `09e8863`（pre-final の直しの merge） | 0.133 / 0.132 | `265f17c` と同じ |
+| `9b6550a`（tracker の merge、R-PF3〜R-PF3d） | 0.130 / 0.133 | `80f181d` と同じ |
+| `80f181d`（いまの先） | 0.130 / 0.133 | — |
+
+- H3b のコードが今日も H3b の数をそのまま出すので、判定は決まった答えを出す。違いはコードから来ていて、ゆらぎではない。
+- 数を変えたのは tracker の merge（`detector/geometry.py`・`detector/tracker.py` の遠い端と横の決まり）。pre-final の直しと H5 の固定
+  （`gazebo/bridge_core.py` の論理の足跡の下限）は、どの数も変えない。
+
+### D11 の門と、ほかの container・電源
+
+どの検出の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。電源はどの時も
+AC、100%、charged。`lowpowermode` は 0。load は host の `sysctl -n vm.loadavg`（1・5・15 分）。`pmset -g log` の最後の眠りは
+10:36 の DarkWake で、10:36:28 から FullWake のまま（この回の間に眠りはない）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | load |
+|---|---|---|---|
+| 14:43:33 | 始め（門） | なし | 2.28 3.96 4.43 |
+| 14:43:59〜14:44:13 | 検出（`80f181d`、`real` 13.9 秒） | — | 前 2.28、後 2.57 3.80 4.35 |
+| 14:45:31〜14:45:57 | 比べ（`265f17c`、`09e8863`） | — | 前 3.96 3.88 4.32、後 4.08 3.89 4.31 |
+| 14:46:15〜14:46:28 | 比べ（`9b6550a`） | — | 前 3.33 3.73 4.25、後 3.31 3.71 4.23 |
+| 14:46:28 | 終わり | なし | 3.31 3.71 4.23 |
+
+- 14:45:04 と 14:45:20 の比べの 2 回は、出したコードに `nl_control/` と `sim/` がなく、読み込み（`ModuleNotFoundError`）で止まった。
+  推論の前なので、木全体を出して 14:45:31 から撮り直した。
+- 動かしたのは名前を付けた使い捨ての `docker run --rm --network none --name oo-h3b-replay-…`（検出器のイメージ）だけ。残った
+  container はない。比べの線はどれも H3b と同じなので、load の決まり（R-PAR）で撮り直すものはない。
+
+### 変えたもの
+
+- この記録だけ。コード・配置・単語帳・`BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
