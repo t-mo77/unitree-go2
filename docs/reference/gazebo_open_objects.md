@@ -1328,6 +1328,100 @@ AC、100%、charged。`lowpowermode` は 0。load は host の `sysctl -n vm.loa
 - この記録だけ。コード・配置・単語帳・`BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
   app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
 
+## H3b replay 2：finish6 の merge の後のコードで H3b の絵をもう一度判定した（2026-11-18）
+
+- 枝：`objects2/h3b-replay2`（`feat/open-objects` の `ddbfdbe`。finish6 の merge の後：tracker の線 `91656de`（R-PF3e の cover125 の
+  狭めは見直しの後で戻した。cover125 は書いた限りのまま）、ソファの奥 `e4ae4fc`（R-H6a）、H6 の直し `ddbfdbe`（R-H6e の段ボールの
+  模様、R-H6c の待ち、R-H6d の `MEASURED_RANGES` の広げ））。worktree `~/work/physicalAI/.go2-worktrees/oo-h3b-replay2`。
+  ROS の domain は 63。**Gazebo は動かしていない。**
+- 絵：H3b の 12 枚（`~/work/physicalAI/.go2-worktrees/oo-h3b/out/h3-preview/` の 36 ファイル）を、この worktree の `out/h3-preview/` に
+  写した（sha256 は 36 とも同じ）。git に入れていない（設計書 §11.11）。
+- 検出器のイメージ：`go2-voice-ltl-detector:yoloe-11s`（H2、`016348e47306`）。作り直していない（`80f181d` の後に `docker/` は
+  変わっていない）。
+
+```bash
+docker run --rm --network none --name oo-h3b-replay2-detect -e ROS_DOMAIN_ID=63 -v "$WT":/work -w /work \
+    go2-voice-ltl-detector:yoloe-11s python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe
+```
+
+### 結論
+
+**`preview` の線はそのまま満たす。** `detectable` は `["sofa_1", "suitcase_1", "traffic_cone_1"]`、`enough` は true（線は 3 以上）。
+12 枚、`errors` なし、exit 1（`failed` は `Bf_s2` だけ、H3b と同じ）。どの当たりの名前・確からしさ・IoU も、`confusion` も H3b・1 回目の
+replay と同じ。変わった数は 2 つの組：`Bf_s3` のソファと `R5_s2` のコーン。どちらも oracle の `covers` と `filled` が false から true に
+なり、位置の誤差は小さく、大きさの誤差は少し大きくなった（どちらの絵も §13.3 の線を前もいまも通る）。変えたのはソファの奥の merge
+`e4ae4fc`（R-H6a、`detector/geometry.py`）。
+
+| 目標 | 姿勢 | H3b（姿勢、s1〜s4。確からしさ・IoU） | 1 回目の replay（`80f181d`） | この回（`ddbfdbe`） | ずらしの当たり | いちばん低い余裕 | 合否 |
+|---|---|---|---|---|---|---|---|
+| sofa_1 | Bf | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 3 / 3 / 3 | +0.388 / +0.388 / +0.388 | 合格 / 合格 / 合格 |
+| suitcase_1 | Bf | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 3 / 3 / 3 | +0.034 / +0.034 / +0.034 | 合格 / 合格 / 合格 |
+| traffic_cone_1 | R5 | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 4 / 4 / 4 | +0.079 / +0.079 / +0.079 | 合格 / 合格 / 合格 |
+| spawn（始めの位置） | — | box と chair のほかの名前なし | 同じ | 同じ | — | — | 合格 / 合格 / 合格 |
+
+（「/」は左から H3b、1 回目の replay、この回。）
+
+### 変わった数
+
+| 見え方 | 組 | 数 | H3b（`265f17c`） | 1 回目（`80f181d`） | この回（`ddbfdbe`） | §13.3 の線 |
+|---|---|---|---|---|---|---|
+| Bf_s3 | sofa_1 | `pos_err`（`max_pos_err` も） | 0.137 | 0.137 | 0.078 | `max_pos_err_target` 0.15 |
+| Bf_s3 | sofa_1 | `size_err`（`max_size_err` も） | 0.169 | 0.169 | 0.179 | `max_size_err` 0.4 |
+| Bf_s3 | sofa_1 | `covers`・`filled`・`fill_short_m` | false・false・0 | false・false・0 | true・true・0.017 | （C2 の判定。線ではない） |
+| Bf_s3 | 絵 | `median_pos_err`・`covers_all` | 0.086・false | 0.086・false | 0.056・true | `median_pos_err` 0.25 |
+| R5_s2 | traffic_cone_1 | `pos_err`（`max_pos_err`・`median_pos_err` も） | 0.133 | 0.130 | 0.090 | `max_pos_err_target` 0.15 |
+| R5_s2 | traffic_cone_1 | `size_err`（`max_size_err` も） | 0.132 | 0.133 | 0.147 | `max_size_err` 0.4 |
+| R5_s2 | traffic_cone_1 | `covers`・`filled`・`fill_short_m`・`covers_all` | false・false・0・false | false・false・0・false | true・true・0.069・true | （C2 の判定。線ではない） |
+
+- `Bf_s3` のスーツケース（0.035・0.124、`covers` true・`filled` false）と、ほかの 10 枚の `pos_err`・`size_err`・`covers`・`filled`・
+  `fill_short_m` はすべて 1 回目と同じ。`R5`（姿勢の見え方）のコーンの `covers` false（`filled` true、`fill_short_m` 0）も 3 回とも同じ。
+- いまの先で `covers_all` が false の絵は `R5` だけになった（H3b と 1 回目は `Bf_s3`・`R5`・`R5_s2` の 3 枚）。
+- 推論 1 回の時間は中央値 320.0 ms、最大 344.6 ms（H3b は 333.1・353.5 ms、1 回目は 327.3・336.9 ms。判定の線ではない）。
+
+### どの merge で変わったか
+
+1 回目と同じやり方：同じイメージ・同じ絵で、merge ごとのコードを `git archive <commit>` で `out/code-<commit>/`（git に入れていない）に
+出し、`-v out/code-<commit>:/work -v out/h3-preview:/frames:ro` で同じ `detector_check.py … --detector yoloe` にかけた（推論の時間のほか、
+`set` の名前は絵の場所 `frames` になる）。
+
+| コード | Bf_s3 のソファ（`pos_err` / `size_err` / `covers`） | R5_s2 のコーン（`pos_err` / `size_err` / `covers`） | ほかの数 |
+|---|---|---|---|
+| `80f181d`（1 回目の replay のコード） | 0.137 / 0.169 / false | 0.130 / 0.133 / false | 1 回目の記録とすべて同じ |
+| `d407854`（H6 の記録の merge） | 0.137 / 0.169 / false | 0.130 / 0.133 / false | `80f181d` と同じ |
+| `91656de`（tracker の線、R-PF3e を戻した merge） | 0.137 / 0.169 / false | 0.130 / 0.133 / false | `80f181d` と同じ |
+| `e4ae4fc`（ソファの奥の merge、R-H6a） | 0.078 / 0.179 / true | 0.090 / 0.147 / true | `ddbfdbe` と同じ |
+| `ddbfdbe`（いまの先） | 0.078 / 0.179 / true | 0.090 / 0.147 / true | — |
+
+- `80f181d` が今日も 1 回目の数をそのまま出すので、違いはコードから来ていて、ゆらぎではない。
+- 数を変えたのはソファの奥の merge だけ（`detector/geometry.py` の `_side`：遠い側に並ぶ面を、カメラが手前の側から 60° 以内で見ている
+  なら、物はその後ろに続くので端としない）。`Bf_s3` のソファでは、背もたれの前の面（ソファの前から 0.72〜0.83 m）が遠い端と読まれなく
+  なり、奥は単語帳の奥で埋まる（`tests/test_detector_geometry.py::test_the_recorded_sofa_at_bf_takes_the_priors_depth` が同じ絵を
+  固定している：`fill_short_m` 0.017）。`R5_s2` のコーンでは、見える弧の両端の列が遠い側に並んで手前から見えるので、同じく奥が埋まる
+  （`detector/geometry.py` の頭の説明が挙げる「the H3b cone: R5_s2」）。
+- tracker の線の merge は 1 回入れて戻したので、どの数も変えない。H6 の直しの merge（`gazebo/bridge_core.py` の段ボールの模様、
+  `gazebo/tools/objects_check.py` の待ちの時間、`tests/test_household.py` の固定）も、どの数も変えない。
+
+### D11 の門と、ほかの container・電源
+
+どの検出の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。電源はどの時も
+AC、100%、charged。`lowpowermode` は 0。load は host の `sysctl -n vm.loadavg`（1・5・15 分）。`pmset -g log` の最後の眠りは
+10:36 の DarkWake で、10:36:28 から FullWake のまま（この回の間に眠りはない）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | load |
+|---|---|---|---|
+| 22:25:22 | 始め（門） | なし | 1.71 3.33 5.18 |
+| 22:25:41〜22:25:54 | 検出（`ddbfdbe`、13.5 秒） | — | 前 1.82 3.24 5.10、後 1.94 3.20 5.05 |
+| 22:26:17〜22:27:06 | 比べ（`80f181d`、`d407854`、`91656de`、`e4ae4fc`、1 つ 12 秒ほど） | — | 前 1.87 3.10 4.98、後 1.89 2.92 4.80 |
+| 22:27:48 | 終わり | なし | 2.17 2.87 4.70 |
+
+- 動かしたのは名前を付けた使い捨ての `docker run --rm --network none --name oo-h3b-replay2-…`（検出器のイメージ）だけ。残った
+  container はない。1 分の load はどの時も 4 より低く、load の決まり（R-PAR）で撮り直すものはない。
+
+### 変えたもの
+
+- この記録だけ。コード・配置・単語帳・`BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
+
 ## H5：logical の Gazebo の測り（S7、2026-11-13〜14）
 
 - 枝：`objects2/h5-logical`（`objects2/prefinal-fix` の `97da92a` から。R-PAR：logical の式は `objects_check` を通るだけで、
