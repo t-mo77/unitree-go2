@@ -827,6 +827,32 @@ PRIOR_FILL_GROWN_ROWS = {   # (cover case, move, faces): (every row in id order,
 }
 
 
+# Four thresholds of the lateral rule whose mutants survived both test files (the review of e17aa89) but change rows
+# in the sweeps (R-PF3d), each pinned by one scene behind the cabinet with every row and its best miss. With `known`
+# at S + 2 EDGE_PAD the first misses by 0.6159 m (3cc9d29: 0.6219); with the seen check at out + pad >= -0.03 m the
+# second misses by 0.1276 m (as on 3cc9d29); with ONE_STOP at 0.14 m the third, after a 20° turn in place (the
+# camera moves 0.114 m), is one stop and misses by 0.4507 m (as on 3cc9d29). With the seen check at
+# out + EDGE_PAD >= 0 the fourth covers, which misses by 0.2048 m here as on 3cc9d29: that check takes more sides as
+# unseen, a widening that R-PF3c rules out (in the sweeps it shrinks 28 misses and makes 2 larger by 2 mm).
+THRESHOLD_ROWS = {   # (cabinet scene, move): (every row in id order as (x, y, sx, sy), the best row's miss in m)
+    (("bed", 35, 3.5, 0.9, 0.6), ("turn", 96)): ([(3.512, -0.017, 2.375, 2.140)], 0.0),
+    (("sofa", 45, 3.5, 1.2, -1.0), ("step", 0.3)): ([(3.523, 0.023, 2.096, 2.096)], 0.0),
+    (("bed", 35, 2.5, 0.9, 0.8), ("turn", 20)): ([(2.787, -0.410, 2.925, 2.925)], 0.0),
+    (("bed", 40, 3.0, 0.9, -1.0), ("step", 0.3)): ([(2.868, 0.124, 2.052, 1.890)], 0.2048),
+}
+
+
+def test_the_lateral_rules_thresholds_are_pinned_where_they_change_rows():   # R-PF3d (the review of e17aa89)
+    """THRESHOLD_ROWS: one cabinet scene for each threshold whose exact value changes rows in the sweeps (`known`'s
+    S + EDGE_PAD, the seen check's out + pad >= 0, ONE_STOP's 0.1 m); every row and the best row's miss."""
+    for (scene, move), (pinned, miss) in THRESHOLD_ROWS.items():
+        solids, prior = _cabinet_scene(*scene)
+        rows, _ = _two_stop_rows(solids, prior, _stops(solids[0], move))
+        assert _rows_match(rows, pinned), (scene, move, rows)
+        best = min(_outside(FP(*p[:2], p[2:], False), solids[0]) for p in pinned)
+        assert best == pytest.approx(miss, abs=5e-4), (scene, move, best)
+
+
 def test_a_prior_larger_than_the_object_keeps_its_pinned_rows():   # R-PF3d (cover125, a documented limit)
     """The prior 1.25 x the true size, two stops: MAX_SIZE_CLIP_ROWS (each row clipped to MAX_SIZE, each miss larger
     than 3cc9d29's) and PRIOR_FILL_GROWN_ROWS (each covers), every row and the best row's miss pinned."""
