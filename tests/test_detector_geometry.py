@@ -589,6 +589,193 @@ def test_published_footprint_covers_leaning_or_noisy_faces(lean, noise):
     assert failed == []
 
 
+def around(s, deg):
+    """A base as far from the solid's centre as BASE, turned deg around it, facing it (and its quaternion): the
+    second stop of the two-stop sweeps."""
+    c = np.array(s[:2])
+    d0 = np.array(BASE[:2]) - c
+    t = math.radians(deg)
+    d1 = np.array([math.cos(t) * d0[0] - math.sin(t) * d0[1], math.sin(t) * d0[0] + math.cos(t) * d0[1]])
+    return (float(c[0] + d1[0]), float(c[1] + d1[1]), BASE[2]), yaw_q(math.degrees(math.atan2(-d1[1], -d1[0])))
+
+
+# Two stops 45° apart: a far end along the newest camera's depth axis that only the first stop saw, grazed, short
+# of its end. Judged from the newest camera, whose rays reach those returns too, it was taken as seen (filled
+# False) and the union missed by 0.177, 0.176, 0.112, 0.058 and 0.058 m (pre-final review round 2, finding 8)
+FAR_END_ONLY_GRAZED = ((1.8, 0.9, 0.85, 90, 4.0, 30), (2.0, 1.0, 0.5, 90, 5.0, 30), (1.8, 0.9, 0.85, 90, 2.0, 30),
+                       (1.2, 0.4, 0.45, 15, 5.0, 30), (0.4, 0.3, 0.7, 0, 3.0, 30))
+
+
+def test_a_union_takes_a_far_end_as_seen_only_from_a_view_that_saw_it():
+    """R-PF3 (spec §11.6, O12): in a union of views from different stops, the newest camera's rays also reach the
+    returns that only another stop saw, so how they meet the far end says nothing about whether it was seen. The
+    union's far end counts as seen only when one single view's own returns reach it at <= 60° incidence (a face
+    on that side, or its end seen at <= 60°); otherwise it is unseen and gets O12's far pad: the prior's depth +
+    EDGE_PAD, filled. One scan from BASE and one from a stop turned -45° around the object, fused raw (no
+    thinning), the newest last."""
+    for case in FAR_END_ONLY_GRAZED:
+        s = _cover_solid(*case)
+        views = [(g.cut(scan([s], base=b, q=q))[:, :2], cam_xy(b, q)) for b, q in ((BASE, Q0), around(s, -45))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], case[:2], views=views)
+        assert fp.filled and covers(fp, s), (case, fp)
+        # either stop alone: one view, judged from its own camera, covers too
+        for pts, cam in views:
+            assert covers(g.footprint(pts, cam, case[:2]), s), case
+
+
+# Two stops: a lateral side of the union that no single view saw. A face end that one stop grazed, short of the
+# end, lies across the union's depth axis (that axis comes from the newest camera), or two stops' grazed face ends
+# lie at one lateral coordinate, which the union's own points take as a face along that side. Judged from the
+# newest camera, the union missed by 0.121, 0.066, 0.271, 0.271 and 0.451 m (as on 97da92a; R-PF3b): (case,
+# degrees around the object, the faces' lean)
+LATERAL_ONLY_GRAZED = (((2.0, 1.0, 0.5, 15, 1.0, 0), 45, 0.0), ((2.0, 2.0, 0.8, 75, 3.0, 30), 90, 0.0),
+                       ((2.0, 1.0, 0.5, 90, 1.0, 0), 45, 0.5), ((2.0, 1.0, 0.5, 90, 1.0, 0), -45, 0.5),
+                       ((2.0, 2.0, 0.8, 15, 1.0, 30), -45, 0.5))
+
+
+def test_a_union_takes_a_lateral_side_as_seen_only_from_a_view_that_saw_it():
+    """R-PF3b (spec §11.6, O12), the lateral counterpart of the far-end rule: a lateral side of a union counts as
+    seen only when one single view's own returns reach it (a face along that side, or a face ending there seen at
+    <= 60° incidence, from that view's camera). Otherwise it takes O12's unseen lateral pad from the views: at
+    least each view's own pad past its last return there, and as far as the tightest of the views' own
+    footprints reaches on that side. One scan from BASE and one from the stop turned around the object, fused
+    raw, the newest last. The union covers, as the first stop's view does alone (a view of the O12 grid)."""
+    for case, deg, lean in LATERAL_ONLY_GRAZED:
+        s = _cover_solid(*case)
+        views = [(g.cut(scan([s], base=b, q=q, lean_deg=lean))[:, :2], cam_xy(b, q))
+                 for b, q in ((BASE, Q0), around(s, deg))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], case[:2], views=views)
+        assert covers(fp, s), (case, deg, lean, fp)
+        assert covers(g.footprint(*views[0], case[:2]), s), case
+
+
+def test_an_unseen_lateral_side_keeps_at_least_the_unions_own_margin():
+    """R-PF3b: an unseen lateral side takes the larger of the union's own margin (from the newest camera) and the
+    views' unseen margin, so a union is never narrower there than the newest camera alone makes it. A 2 x 2 m box
+    (yaw 75°, 3 m off, at 30°) seen from a stop 6 m off, turned 30° around it, and then from BASE (the newest):
+    neither view sees the side at the largest lateral coordinate, and the union's own margin there (one point
+    spacing for the newest camera's ray to the union's last return) is 0.10 m wider than the margin the views give
+    it. Fused raw: the box with the views is the box the union alone gives."""
+    case = (2.0, 2.0, 0.8, 75, 3.0, 30)
+    s = _cover_solid(*case)
+    away = np.array(BASE[:2]) - np.array(s[:2])
+    older = facing(s[:2], 6.0, math.degrees(math.atan2(away[1], away[0])) + 30.0)
+    views = [(g.cut(scan([s], base=b, q=q))[:, :2], cam_xy(b, q)) for b, q in (older, (BASE, Q0))]
+    union = np.vstack([p for p, _ in views])
+    fp = g.footprint(union, views[1][1], case[:2], views=views)
+    assert fp == g.footprint(union, views[1][1], case[:2])
+    assert covers(fp, s)
+
+
+def facing(centre, dist, deg):
+    """A base dist m from centre (XY), in the direction deg as seen from it, facing it (and its quaternion)."""
+    t = math.radians(deg)
+    return (centre[0] + dist * math.cos(t), centre[1] + dist * math.sin(t), BASE[2]), yaw_q(deg + 180.0)
+
+
+def test_a_far_end_seen_by_two_views_takes_the_tighter_bound():
+    """R-PF3 (round-3 review, finding 1; spec §11.6, O12): each single view that saw the union's far end bounds
+    the true end by its last return plus its own pad, so the tightest of those bounds holds (and at least every
+    raw return of a view beyond the union's far end, which the union's thinning can leave out). The largest
+    bound padded a far face that one view had sampled on its plane by the other view's grazing spacing.
+    A 2 x 1 m sofa, its far end along +x: one stop 2.5 m off sees the +x face on its plane; the newest stop 5 m
+    off at 222° or 228° sees the -x and -y faces and the -y face's end at the far side at 59° or 54° incidence,
+    where its own bound (one point spacing past its last return) reaches 0.108 or 0.147 m past the far face.
+    Fused raw: the far side gets EDGE_PAD."""
+    L, S = 2.0, 1.0
+    sofa = solid(0.0, 0.0, L, S, height=0.5)
+    for deg, grazed in ((222, 1.1077), (228, 1.1474)):
+        views = [(g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q))
+                 for b, q in (facing((0.0, 0.0), 2.5, 0.0), facing((0.0, 0.0), 5.0, deg))]
+        union = np.vstack([p for p, _ in views])
+        fp = g.footprint(union, views[1][1], (L, S), views=views)
+        assert not fp.filled and covers(fp, sofa), deg
+        assert fp.x + fp.size[0] / 2 == pytest.approx(L / 2 + g.EDGE_PAD, abs=1e-9), deg    # the far pad: EDGE_PAD
+        assert fp.x - fp.size[0] / 2 == pytest.approx(-L / 2 - g.EDGE_PAD, abs=1e-9), deg
+        # each of the two alone bounds the far end by its own margin: the face-on view by EDGE_PAD, the grazing
+        # view by one point spacing beyond its last return
+        for seen, far in ((views[:1], L / 2 + g.EDGE_PAD), (views[1:], grazed)):
+            alone = g.footprint(union, views[1][1], (L, S), views=seen)
+            assert not alone.filled and alone.x + alone.size[0] / 2 == pytest.approx(far, abs=1e-4), deg
+
+
+def test_a_far_end_bound_never_stops_short_of_a_views_return():
+    """The tightest bound has a floor: a view's return beyond the union's far end stays inside, also one that the
+    union's thinning left out (one point per 5 cm cell, the first kept; along a diagonal depth axis a cell spans
+    up to 0.07 m, more than EDGE_PAD). The scene of the test above turned 45° (the far face along (1, 1)), with
+    two returns of a part that reaches past the far face by the grazing face's end, in the grazing view only and
+    in one thinning cell, so the union keeps the first (0.008 m past the face). The face-on view's bound (EDGE_PAD
+    past the face) and EDGE_PAD past the union's far end stop 0.017 and 0.009 m short of the second return, which
+    then bounds the far side. Not a box: with boxes each view's bound already covers every return of the others."""
+    L, S = 2.0, 1.0
+    e, lat = np.array([1.0, 1.0]) / math.sqrt(2), np.array([-1.0, 1.0]) / math.sqrt(2)
+    corner = np.array([1.0, 1.0]) + 0.002 * e                 # the grazed face's far corner, by a cell corner
+    c = corner - L / 2 * e + S / 2 * lat
+    sofa = solid(c[0], c[1], L, S, yaw_deg=45.0, height=0.5)
+    views = [(g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q))
+             for b, q in (facing(c, 2.5, 45.0), facing(c, 5.0, 267.0))]
+    kept, left_out = corner + 0.008 * e - 0.01 * lat, np.array([1.049, 1.049])
+    assert np.array_equal(np.floor(kept / 0.05), np.floor(left_out / 0.05))       # one thinning cell
+    union = np.vstack([views[0][0], views[1][0], kept])
+    fps = [g.footprint(union, views[1][1], (L, S), views=[views[0], (np.vstack([views[1][0], part]), views[1][1])])
+           for part in ([kept], [kept, left_out])]
+    assert not fps[0].filled and not fps[1].filled
+    # the far edge moves from EDGE_PAD past the union's far end to the left-out return: the box grows by that
+    # along +x and +y (a far corner of the turned rectangle), and nowhere else
+    grow = float(left_out @ e - (kept @ e + g.EDGE_PAD)) / math.sqrt(2)
+    assert grow > 0.006
+    hi = [np.array([fp.x, fp.y]) + np.array(fp.size) / 2 for fp in fps]
+    lo = [np.array([fp.x, fp.y]) - np.array(fp.size) / 2 for fp in fps]
+    assert hi[1] - hi[0] == pytest.approx([grow, grow], abs=1e-9)
+    assert lo[1] == pytest.approx(lo[0], abs=1e-9)
+
+
+def test_returns_the_union_drops_add_nothing_to_its_far_end():
+    """R-PF3 (round-3 review, finding 3), R-PF3b: a union's far end and its lateral sides are judged only from its
+    single views' own returns, trimmed as the union is and within VIEW_MARGIN of the union's rectangle
+    (_view_returns). A view that holds returns the union's own trim drops leaves the union's footprint as it is
+    without those returns.
+    - A neighbour: a 0.3 m box 0.6 m beyond the far face of a 2 x 1 m sofa, seen only by the older stop, 5 m off.
+      It is a third of that view's returns, inside its trim's core, so that view keeps it; in the union, from the
+      newest stop 2.5 m off, it is outside the core and 0.63 m from the sofa (the link step there is 0.51 m), so
+      the union's trim drops it. Only VIEW_MARGIN keeps it out of the far end.
+    - A neighbour beside the far end: the same box at (0.85, 1.15), within the union's far end along its depth
+      axis but more than VIEW_MARGIN outside its lateral range, seen only by the older stop (4 m off, at 120°),
+      whose trim keeps it; the union's drops it. Only the lateral side of the window keeps it out (without it the
+      far edge moves out by 0.032 m; round-4 review, minor finding).
+    - A lone stray return 0.08 m beyond the union's far end (0.035 m beyond the sofa), at the hidden far corner,
+      more than 0.9 m from every other return: within VIEW_MARGIN, so only the view's trim keeps it out. One stop:
+      the tracker after its first hit (the union and its one view)."""
+    L, S = 2.0, 1.0
+    sofa = solid(0.0, 0.0, L, S, height=0.5)
+    for box, older_at, far_edge in ((solid(L / 2 + 0.6 + 0.15, 0.0, 0.3, 0.3, height=0.5), (5.0, 30.0),
+                                     L / 2 + g.EDGE_PAD),
+                                    (solid(0.85, 1.15, 0.3, 0.3, height=0.5), (4.0, 120.0), 1.0743)):
+        seen = []
+        for b, q in (facing((0.0, 0.0), *older_at), facing((0.0, 0.0), 2.5, 215.0)):
+            pts, k = scan([sofa, box], base=b, q=q, which=True)
+            keep = (pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP)
+            seen.append((pts[keep][:, :2], k[keep], cam_xy(b, q)))
+        (p_old, k_old, c_old), (p_new, k_new, c_new) = seen
+        assert (k_old == 1).sum() >= 10 and not (k_new == 1).any()     # only the older stop sees the neighbour
+        sofa_old = p_old[k_old == 0]
+        fp = g.footprint(np.vstack([p_old, p_new]), c_new, (L, S), views=[(p_old, c_old), (p_new, c_new)])
+        assert fp == g.footprint(np.vstack([sofa_old, p_new]), c_new, (L, S),
+                                 views=[(sofa_old, c_old), (p_new, c_new)]), box
+        assert not fp.filled and covers(fp, sofa)
+        assert fp.x + fp.size[0] / 2 == pytest.approx(far_edge, abs=1e-4), box
+    # the stray return at the hidden far corner
+    b, q = facing((0.0, 0.0), 3.5, 218.0)
+    p, cam = g.cut(scan([sofa], base=b, q=q))[:, :2], cam_xy(b, q)
+    alone = g.footprint(p, cam, (L, S), views=[(p, cam)])
+    stray = np.vstack([p, [[float(p[:, 0].max()) + 0.08, S / 2 - 0.05]]])
+    assert float(np.hypot(*(p - stray[-1]).T).min()) > 0.9
+    assert g.footprint(stray, cam, (L, S), views=[(stray, cam)]) == alone
+    assert not alone.filled and covers(alone, sofa)
+
+
 NEAR_SQUARE = (0.4, 0.3, 0.7)                     # the air purifier: S = 0.3 > 0.7 L = 0.28
 
 
