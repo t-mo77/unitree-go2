@@ -61,8 +61,17 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     household room: for the sofa prior it fires at d_obs >= 0.85 m; the household sofa's backrest front face lies
     0.72-0.83 m behind its front (the LiDAR's rings at Bf) and the observed depth at Bf was 0.78-0.80 m, so about
     0.02 m from the rule (a probe sofa whose seat reaches 0.86 m, with armrests 0.62 m or taller, kept that face
-    at all 23 H6 Bf poses, its far side 0.13 m short). Otherwise the prior's depth is used and filled
-    is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
+    at all 23 H6 Bf poses, its far side 0.13 m short). Seen off its front, a concave sofa can keep an inner
+    face as its far end by two more routes, each published filled False (the final review, perception-3: the
+    tests' backrest_sofa observed with the oracle's box from the origin, its front 2.5-4.5 m ahead, up to 0.9 m to
+    the side, turned up to ±40°, plain, 0.5° lean and 2 mm noise; 172 of 2380 views, the same before R-H6a, on
+    9e9ea67): where the far extreme is no face, the far pad is one point spacing (0.10-0.18 m at 2.5-4.5 m), so
+    this rule fires from d_obs >= 0.9 m less that pad (154 views, d_obs 0.81-1.04 m, the back up to 0.10 m
+    short); and a corner view keeps its observed depth when its far end passes the incidence test (18 views turned
+    ±35-40°, up to 0.27 m short). The household room reaches neither: the 300 room-like views (turned <= 10°,
+    <= 0.3 m to the side) are all filled, Bf sees the sofa within about 2° of its normal, and the 0.5 m front stop
+    still guards. A documented v1 limit for other rooms and the real robot. Otherwise the prior's depth is used
+    and filled is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
     sofa's side), so its last return says little about its end, however close the returns there lie (the
     rings of one column spread in XY on a leaning or curved face and with range noise). An object smaller than
     its prior, seen to its far end, keeps its own depth (spec §11.6: a box seen from two sides gets its
