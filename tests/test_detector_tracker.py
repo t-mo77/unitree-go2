@@ -923,6 +923,10 @@ def test_the_h6_sofa_at_bf_takes_the_priors_depth():
 # 1 m away, after a second stop -90° around it (the cover125 a-90 lean sweep). Without the 60° bound (the camera's
 # side of the face alone) its row was (2.008, -0.196, 2.043, 2.536): the -x side 0.227 m and the -y side 0.392 m
 # farther out, the one row of the 127,575 sweep scenes that the side test alone changed. The row is e17aa89's.
+# Its outward median is slightly negative, so this pin rules out that camera-side variant only (any bound >= 0
+# passes it): the 60° value itself is pinned from both sides in test_detector_geometry
+# (test_the_far_face_test_turns_at_60_degrees, test_a_side_panel_seen_past_60_degrees_still_ends_the_object,
+# test_a_narrow_concave_union_can_fill_past_a_seen_side).
 FAR_FACE_EDGE_ON = ((1.8, 0.9, 0.85, 60, 1.0, 0), ("around", -90), 0.5, [(2.121, -0.001, 1.818, 2.146)])
 
 

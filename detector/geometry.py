@@ -37,9 +37,31 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     from the near side at <= 60° incidence faces the camera, so the object goes on behind it and that face is
     not its far end (R-H6a: a sofa's backrest above its seat, whose front face the LiDAR's band reaches while
     the backrest hides its back); a convex object's far face is seen from beyond it, or grazed (a leaning face
-    seen edge-on), and still counts. Or, in any view, when d_obs >= 0.6 S also reaches
-    the prior's depth for that view (within the far side's pad; this rule still keeps such an inner face when it
-    lies that deep, a documented limit). Otherwise the prior's depth is used and filled
+    seen edge-on), and still counts. The rule reaches more than the backrest (the review of c9777ae; in its probes
+    every change moved toward covering, with no new miss):
+      - round and tapered objects: the visible arc's two tangent columns lie at its far extreme, FLAT_SPREAD or
+        more apart, seen from the near side (outward median about 0.99), so the prior fills the depth (the H3b
+        cone: R5_s2 in detector_check, R5_s1 in an observe() replay with the oracle's box, now filled and covering);
+      - seen-through, legged furniture: far legs, or a chair's backrest front face, no longer end the object, so
+        the prior fills the depth and a side that already covered can grow by up to about 0.07 m (the primitive
+        chair 0.064 m, a four-legged table 0.067 m, each in 2-4 of 144 probe views);
+      - a concave object seen from the front now takes the prior's depth even when it is shallower than the prior,
+        so its far side can reach d_prior + EDGE_PAD from the near face, past the truth, as a convex box seen
+        face-on does (a 1.0 x 0.5 m desk +0.18-0.24 m; a 1.2 m loveseat, below 0.7 L wide, +1.0 m: the L fill);
+        single views change only the far side. In the household room nothing grows past the truth: the sofa and
+        the cone are deeper than their priors;
+      - two different faces' end columns at one far coordinate, on a side the camera saw, read as one face seen
+        from the near side when their outward median is >= 1 / PAD_GAIN_MAX: a two-stop union of an object
+        narrower than its prior's L can then be filled up to L - W past that side (a 1.4 x 0.85 m loveseat with
+        the sofa prior, outward median 0.557: +0.40 m, in 4 of 280 concave two-stop probe scenes). A documented v1
+        limit: the household sofa is the prior's 1.8 m wide, and every room case had an outward median of
+        0.984-0.998.
+    Or, in any view, when d_obs >= 0.6 S also reaches the prior's depth for that view (within the far side's pad).
+    This rule still keeps such an inner face when it lies that deep, a documented limit with a thin margin in the
+    household room: for the sofa prior it fires at d_obs >= 0.85 m; the household sofa's backrest front face lies
+    0.72-0.83 m behind its front (the LiDAR's rings at Bf) and the observed depth at Bf was 0.78-0.80 m, so about
+    0.02 m from the rule (a probe sofa whose seat reaches 0.86 m, with armrests 0.62 m or taller, kept that face
+    at all 23 H6 Bf poses, its far side 0.13 m short). Otherwise the prior's depth is used and filled
     is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
     sofa's side), so its last return says little about its end, however close the returns there lie (the
     rings of one column spread in XY on a leaning or curved face and with range noise). An object smaller than
@@ -65,7 +87,12 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     along its own depth axis, can lie along the union's lateral axis and widen it by up to the prior's depth
     (the review of 67f9d75, finding 1). Where two stops' face ends lie at one lateral coordinate while one view
     saw a face ending there at <= 60°, the side keeps the union's EDGE_PAD and can stop short of the object
-    (R-PF3b (a): 0.055 m in the tracker's two-stop sweeps, pinned there).
+    (R-PF3b (a): 0.055 m in the tracker's two-stop sweeps, pinned there). In any view, two faces that end at one
+    lateral coordinate (a sofa's armrest front face and its backrest front face, up to 0.78 m apart along the
+    depth axis) read as a face lying along that side, so the side gets EDGE_PAD and ends a few mm short where its
+    last return lies more than EDGE_PAD inside the edge: a documented limit (R-H6a's far-side test is not applied
+    to the lateral sides; at H6's Bf poses 1.5-7 mm in the model with armrests 0.62 m or taller, 3 mm in a
+    recorded row, and 0.015 m for the sofa seen 30° off its front in the tests).
 The depth rule is otherwise the design's, along the face axis that is thinner (one face seen) or nearer the ray
 (a corner): L if the observed width is < 0.7 L, else S; and L also when the observed width is <= S + EDGE_PAD
 (R-G3), since then it cannot exclude the short face: a near-square kind (S > 0.7 L - EDGE_PAD, like the
