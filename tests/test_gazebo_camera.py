@@ -15,7 +15,7 @@ import subprocess
 import sys
 import types
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -23,7 +23,7 @@ from detector.camera import CAMERA_CLIP, CAMERA_H, CAMERA_HFOV, CAMERA_RATE_HZ, 
 from gazebo import bridge_core
 from gazebo import launch_config
 from gazebo.launch_config import (CAMERA_BRIDGE_ARGS, CAMERA_BRIDGE_NAME, GZ_BRIDGE_ARGS, camera_bridge_args,
-                                  xacro_mappings)
+                                  gz_resource_paths, xacro_mappings)
 
 ROOT = Path(__file__).resolve().parent.parent
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
@@ -152,7 +152,8 @@ def _load_launch(monkeypatch, source):
         "ament_index_python.packages": {"get_package_share_directory": lambda pkg: f"/share/{pkg}"},
         "launch": {"LaunchDescription": type("LaunchDescription", (_Made,), {})},
         "launch.actions": {n: type(n, (_Made,), {}) for n in
-                           ("DeclareLaunchArgument", "ExecuteProcess", "IncludeLaunchDescription")},
+                           ("AppendEnvironmentVariable", "DeclareLaunchArgument", "ExecuteProcess",
+                            "IncludeLaunchDescription")},
         "launch.launch_description_sources": {"PythonLaunchDescriptionSource":
                                               type("PythonLaunchDescriptionSource", (_Made,), {})},
         "launch.conditions": {"IfCondition": type("IfCondition", (_Made,), {})},
@@ -307,7 +308,7 @@ def test_camera_bridge_only_in_detector_mode(monkeypatch):
         entities, bridges = by_source[source]
         assert len(bridges) == 1 and len(entities) == 9, source                    # as in 0f6e06a
     entities, bridges = by_source["detector"]
-    assert len(bridges) == 2 and len(entities) == 10
+    assert len(bridges) == 2 and len(entities) == 11        # + the camera bridge and the cardboard texture folder
     camera = bridges[1]
     assert camera.kwargs == {"package": "ros_gz_bridge", "executable": "parameter_bridge",
                              "name": "front_camera_bridge", "output": "screen",
@@ -320,6 +321,37 @@ def test_invalid_objects_source_stops_the_launch(monkeypatch):
         with pytest.raises(ValueError, match=f"OBJECTS_SOURCE.*{bad!r}"):
             module.generate_launch_description()
         assert rec.xacro_calls == [] and rec.nodes == [], bad          # before the robot description and any node
+
+
+def test_cardboard_texture_folder_on_the_resource_path_only_in_detector_mode(monkeypatch):
+    """R-H6e. The box mesh of detector mode (bridge_core.CARDBOARD_MESH) names its texture by the bare file name
+    cardboard_box.png. gz-common finds it beside the mesh (../materials/textures), but Gazebo also looks the bare
+    name up on GZ_SIM_RESOURCE_PATH, and there it logged "Could not resolve file [cardboard_box.png]" (H6, M5). In
+    detector mode the launch appends the mesh's texture folder to GZ_SIM_RESOURCE_PATH before Gazebo starts
+    (ros_gz_sim's gz_sim.launch.py reads that variable when it starts gz sim); in logical mode Gazebo's environment
+    stays as in 0f6e06a."""
+    mesh = PurePosixPath(bridge_core.CARDBOARD_MESH.removeprefix("file://"))
+    assert bridge_core.CARDBOARD_TEXTURES == str(mesh.parent.parent / "materials" / "textures")
+    assert gz_resource_paths("logical") == ()
+    assert gz_resource_paths("detector") == (bridge_core.CARDBOARD_TEXTURES,)
+    for bad in ("", "Logical", "fake", "detector "):
+        with pytest.raises(ValueError, match="OBJECTS_SOURCE"):
+            gz_resource_paths(bad)
+    if Path(mesh).is_file():                      # the gazebo image only (ros_gz_sim_demos)
+        assert "<init_from>cardboard_box.png</init_from>" in Path(mesh).read_text(encoding="utf-8")
+        assert (Path(bridge_core.CARDBOARD_TEXTURES) / "cardboard_box.png").is_file()
+    for source in (None, "logical", "detector"):
+        description, _ = _run_launch(monkeypatch, source)
+        entities = description.args[0]
+        appends = [e for e in entities if type(e).__name__ == "AppendEnvironmentVariable"]
+        if source != "detector":
+            assert appends == [], source
+            continue
+        assert [(a.args, a.kwargs) for a in appends] == [(("GZ_SIM_RESOURCE_PATH", bridge_core.CARDBOARD_TEXTURES),
+                                                          {})]
+        (gazebo,) = [e for e in entities if type(e).__name__ == "IncludeLaunchDescription"
+                     and e.args[0].args[0].endswith("/ros_gz_sim/launch/gz_sim.launch.py")]
+        assert entities.index(appends[0]) < entities.index(gazebo)                 # before Gazebo starts
 
 
 def test_launch_config_imports_no_ros():

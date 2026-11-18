@@ -7,12 +7,14 @@
   別の parameter_bridge のノード front_camera_bridge（CAMERA_BRIDGE_NAME）で、その絵と CameraInfo を ROS に渡す
   （CAMERA_BRIDGE_ARGS）。別のノードにするのは、主の bridge の引数を変えずに、M1（spec §11.4）でカメラの bridge
   だけを変えられるようにするため。
+- detector のときだけ、画面のボタンで置く箱の段ボールの絵のフォルダ（bridge_core.CARDBOARD_TEXTURES）を Gazebo の
+  GZ_SIM_RESOURCE_PATH に足す（gz_resource_paths。R-H6e）。logical のときの Gazebo の環境は 0f6e06a と同じ。
 - OBJECTS_SOURCE のほかの値は ValueError（launch は起動しない。値を確かめるのは bridge_core.objects_topics）。
 """
 
 from __future__ import annotations
 
-from gazebo.bridge_core import objects_topics
+from gazebo.bridge_core import CARDBOARD_TEXTURES, objects_topics
 
 WORLD = "empty"        # worlds/default.sdf の world の名前
 MODEL = "robot"        # gazebo_bridge.py と同じ
@@ -45,3 +47,11 @@ def camera_bridge_args(source: str) -> tuple[str, ...] | None:
     """front_camera_bridge の引数（detector のときだけ。logical なら None でノードを作らない）。ほかの値なら ValueError。"""
     objects_topics(source)
     return CAMERA_BRIDGE_ARGS if source == "detector" else None
+
+
+def gz_resource_paths(source: str) -> tuple[str, ...]:
+    """launch が Gazebo を起動する前に GZ_SIM_RESOURCE_PATH に足すフォルダ：detector → 段ボールの絵のフォルダ
+    （bridge_core.CARDBOARD_TEXTURES。.dae が名前だけで引く cardboard_box.png が見つかり、「Could not resolve file」が
+    出ない。R-H6e）、logical → ()。ほかの値なら ValueError。"""
+    objects_topics(source)
+    return (CARDBOARD_TEXTURES,) if source == "detector" else ()

@@ -9,6 +9,8 @@ rviz2 で CPU が足りず RTF が 0.13 になる（NO-GO）ので使わない�
 OBJECTS_SOURCE（spec §11.3）は起動のときに 1 回読む（bridge_core.objects_source。ほかの値なら起動しない）。
 detector のときだけ、xacro に camera:=true を渡して描くカメラ front_camera（640×480、2 Hz）を付け、その絵と
 CameraInfo を別の parameter_bridge のノード front_camera_bridge で ROS に渡す（gazebo/launch_config.py）。
+detector のときだけ、Gazebo を起動する前に、画面のボタンで置く箱の段ボールの絵のフォルダを GZ_SIM_RESOURCE_PATH に
+足す（launch_config.gz_resource_paths。R-H6e）。
 logical（既定）のときのロボットの記述と主の ros_gz_bridge の引数は 0f6e06a と同じ（spec §2 の 7）。
 
 使い方（gazebo コンテナの中）: ros2 launch /work/gazebo/launch/go2_gazebo.launch.py
@@ -22,7 +24,7 @@ from pathlib import Path
 import xacro
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -36,7 +38,7 @@ for _path in (ROOT / "nl_control", ROOT):
 
 from gazebo import bridge_core  # noqa: E402
 from gazebo.launch_config import (CAMERA_BRIDGE_NAME, GZ_BRIDGE_ARGS, MODEL,  # noqa: E402
-                                  camera_bridge_args, xacro_mappings)
+                                  camera_bridge_args, gz_resource_paths, xacro_mappings)
 
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
 # 画面のカメラ：Go2 の右前 (1.3, -1.1, 0.7) から、Go2 が出る場所の少し前 (0.3, 0.1, 0.15) を見る
@@ -56,6 +58,10 @@ def generate_launch_description() -> LaunchDescription:
     # logical なら mappings は {} で、出力は 0f6e06a と同じ。detector なら camera:=true で front_camera が付く
     robot_description = xacro.process_file(str(XACRO), mappings=xacro_mappings(source)).toxml()
     sim_time = {"use_sim_time": True}
+
+    # detector のときだけ：段ボールの絵のフォルダを GZ_SIM_RESOURCE_PATH に足す（R-H6e）。Gazebo より前に置く
+    # （ros_gz_sim の gz_sim.launch.py は gz sim を起動するときの GZ_SIM_RESOURCE_PATH を渡す）。logical なら何もしない
+    resource_paths = [AppendEnvironmentVariable("GZ_SIM_RESOURCE_PATH", path) for path in gz_resource_paths(source)]
 
     # Gazebo（サーバーと画面）。-r：すぐ動かし始める。gui:=false なら -s（サーバーだけ）
     gui = LaunchConfiguration("gui")
@@ -103,5 +109,6 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument("height", default_value="0.5", description="Go2 を出す高さ [m]"),
         DeclareLaunchArgument("gui", default_value="true", description="Gazebo の画面を出すか"),
-        gazebo, robot_state_publisher, spawn, controllers, gz_bridge, *front_camera_bridge, bridge, camera,
+        *resource_paths, gazebo, robot_state_publisher, spawn, controllers, gz_bridge, *front_camera_bridge, bridge,
+        camera,
     ])
