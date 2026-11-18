@@ -546,8 +546,8 @@ def _cabinet_scene(label, yaw, dist, width, cabinet_y):
 
 def _stops(s, move):
     """The two stops of a scene around the solid s: ("around", deg) BASE, then a stop turned deg around the object
-    (geometry's around); ("step", m) BASE, then BASE moved m toward the object's centre, facing it; ("turn", deg)
-    BASE turned -deg/2, then +deg/2 in place."""
+    (geometry's around); ("step", m) BASE, then BASE moved m toward the object's centre, facing it; ("ahead", m)
+    BASE, then BASE moved m straight ahead (B to Bf); ("turn", deg) BASE turned -deg/2, then +deg/2 in place."""
     from test_detector_geometry import BASE as STAND, Q0, around, yaw_q
 
     kind, x = move
@@ -555,6 +555,8 @@ def _stops(s, move):
         return [(STAND, Q0), around(s, x)]
     if kind == "turn":
         return [(STAND, yaw_q(-x / 2.0)), (STAND, yaw_q(x / 2.0))]
+    if kind == "ahead":
+        return [(STAND, Q0), ((STAND[0] + x, STAND[1], STAND[2]), Q0)]
     u = (np.array(s[:2]) - np.array(STAND[:2])) / math.hypot(s[0] - STAND[0], s[1] - STAND[1])
     return [(STAND, Q0), ((STAND[0] + x * u[0], STAND[1] + x * u[1], STAND[2]),
                           yaw_q(math.degrees(math.atan2(u[1], u[0]))))]
@@ -568,10 +570,10 @@ def _two_stop_row(solids, prior, stops, lean=0.0):
     return rows[0], apart
 
 
-def _two_stop_rows(solids, prior, stops, lean=0.0):
+def _two_stop_rows(solids, prior, stops, lean=0.0, noise=0.0):
     """Every row the tracker publishes for solids[0] (its own returns only), in id order, as (x, y, sx, sy): 3 hits
-    from each stop, each hit a raw view fused by geometry.footprint, as in the two-stop sweeps; and how far the
-    cameras lie from the newest."""
+    from each stop, each hit a raw view fused by geometry.footprint, as in the two-stop sweeps (range noise seeded
+    per hit); and how far the cameras lie from the newest."""
     from detector import geometry as g
     from test_detector_geometry import cam_xy, scan
 
@@ -581,7 +583,7 @@ def _two_stop_rows(solids, prior, stops, lean=0.0):
         cam = cam_xy(base, q)
         for _ in range(3):
             seed += 1
-            pts, k = scan(solids, base=base, q=q, which=True, lean_deg=lean, seed=seed)
+            pts, k = scan(solids, base=base, q=q, which=True, lean_deg=lean, noise=noise, seed=seed)
             p = pts[(pts[:, 2] >= g.GROUND_Z) & (pts[:, 2] <= g.HEIGHT_CAP) & (k == 0)][:, :2]
             assert len(p) >= g.MIN_CLUSTER_POINTS
             fp = g.footprint(p, cam, prior)
@@ -682,30 +684,50 @@ def test_a_union_that_cannot_tell_its_long_side_takes_only_the_views_pads():   #
 
 
 # What stays against 3cc9d29 in R-G4's cabinet scenes after R-PF3c (UNION_LATERAL's counterpart there, R-PF3b (a)),
-# all from R-PF3b's lateral rule before this round and the same on 1a09cba. Rows lost: a row grows over a second
-# row's hits, which then join it. In the sweeps 18 scenes publish one row fewer than on 3cc9d29 (every one also on
-# 1a09cba). In none is a side of the object left that a row of 3cc9d29 covered: in 8 the miss closes or shrinks
-# (the first here: two partial rows that missed by 0.5268 m at best become one that covers), and in the other 10
-# the lost row was a stray piece that missed the object by more than 1.3 m, while the best row's miss changes by at
-# most 0.5 mm (the second: 0.0552 m, 0.0547 m on 3cc9d29). A seen side grown: an unseen side gets the views' pad
-# past the true edge, where 3cc9d29 had 0.016 m
-# (the third: +0.054 m on a side whose returns reach within 3.5 mm of the edge; the only side in the sweeps grown
-# by more than 0.05 m whose returns reach within 5 mm; 28 rows of the bed's +90 sweep with noise grow by up to
-# 0.051 m on sides their returns reach within 50 mm of).
-UNION_LATERAL_ROWS = {   # (cabinet scene, move, lean): every row in id order, as (x, y, sx, sy)
-    (("sofa", 35, 3.0, 1.2, 0.9), ("around", -45), 0.0): [(3.008, -0.011, 2.145, 1.931)],
-    (("sofa", 40, 3.0, 0.6, 0.1), ("step", 0.5), 0.0): [(3.046, -0.055, 1.980, 1.846)],
-    (("bed", 50, 3.0, 0.6, 0.1), ("around", 90), 0.5): [(3.001, 0.000, 2.191, 2.315)],
+# all from R-PF3b's lateral rule before R-PF3c and the same on 1a09cba, every one pinned with every row (R-PF3d).
+# Rows lost: a row grows over a second row's hits, which then join it. In the sweeps 18 scenes publish one row fewer
+# than on 3cc9d29 (every one also on 1a09cba; behind the cabinet a step toward the object and a step straight ahead
+# give the same scans, so 11 are distinct). In none is a side of the object left that a row of 3cc9d29 covered: in 8
+# the best row's miss closes or shrinks (the sofa around -45: two partial rows that missed by 0.4308-0.5268 m at
+# best become one that covers; the sofa ('sofa', 40, 2.5, 1.2, -0.4) after a step: 0.6607 -> 0.6467 m, with noise
+# 0.6612 -> 0.6447 m; the bed around -45, leaning: 0.5884 m -> 0), and in the other 10 the lost row was a stray
+# piece that missed the object by more than 1.3 m, while the best row's miss changes by at most 0.5 mm (0.0902 ->
+# 0.0897 m, 0.0547 -> 0.0552 m, the bed 0 -> 0). A seen side grown: an unseen side gets the views' pad past the true
+# edge, where 3cc9d29 had 0.016 m (the bed around +90, leaning: +0.054 m on a side whose returns reach within 3.5 mm
+# of the edge, the only side in the vocabulary sweeps grown by more than 0.05 m whose returns reach within 5 mm; and
+# one of the 28 rows of the bed's +90 sweep with noise that grow by 0.050-0.051 m on a side their returns stop
+# 49.5 mm short of: 3cc9d29's row is (3.474, -0.027, 2.216, 2.216)). The second value is the best row's miss on
+# 3cc9d29 (m).
+UNION_LATERAL_ROWS = {   # (cabinet scene, move, faces): (every row in id order as (x, y, sx, sy), 3cc9d29's best miss)
+    (("sofa", 35, 3.0, 1.2, 0.9), ("around", -45), "plain"): ([(3.008, -0.011, 2.145, 1.931)], 0.5268),
+    (("sofa", 35, 3.0, 1.2, 0.9), ("around", -45), "noise"): ([(3.007, -0.014, 2.147, 1.934)], 0.5263),
+    (("sofa", 35, 3.0, 1.2, 0.9), ("around", -45), "lean"): ([(3.009, -0.012, 2.147, 1.933)], 0.4308),
+    **{(scene, (kind, 0.5), "plain"): rows for kind in ("step", "ahead") for scene, rows in (
+        (("sofa", 40, 2.5, 0.6, 0.0), ([(2.550, -0.059, 1.928, 1.785)], 0.0902)),
+        (("sofa", 40, 2.5, 1.2, -0.4), ([(3.147, -0.045, 1.958, 2.073)], 0.6607)),
+        (("sofa", 40, 2.5, 1.2, 0.3), ([(2.550, -0.059, 1.928, 1.785)], 0.0902)),
+        (("sofa", 40, 3.0, 0.6, 0.1), ([(3.046, -0.055, 1.980, 1.846)], 0.0547)),
+        (("sofa", 40, 3.0, 1.2, 0.4), ([(3.046, -0.055, 1.980, 1.846)], 0.0547)),
+        (("bed", 45, 3.0, 0.9, 0.2), ([(3.030, -0.030, 2.245, 2.245)], 0.0)))},
+    **{(("sofa", 40, 2.5, 1.2, -0.4), (kind, 0.5), "noise"): ([(3.147, -0.043, 1.962, 2.077)], 0.6612)
+       for kind in ("step", "ahead")},
+    (("bed", 35, 3.0, 1.2, 0.9), ("around", -45), "lean"): ([(3.017, -0.024, 2.384, 2.153)], 0.5884),
+    (("bed", 50, 3.0, 0.6, 0.1), ("around", 90), "lean"): ([(3.001, 0.000, 2.191, 2.315)], 0.0),
+    (("bed", 45, 3.5, 0.6, -1.0), ("around", 90), "noise"): ([(3.499, -0.001, 2.267, 2.267)], 0.0),
 }
 
 
-def test_the_lateral_rules_residuals_behind_a_cabinet_are_pinned():   # R-PF3c (R-PF3b (a))
+def test_the_lateral_rules_residuals_behind_a_cabinet_are_pinned():   # R-PF3c, R-PF3d (R-PF3b (a))
     """UNION_LATERAL_ROWS: the rows that still differ from 3cc9d29's by a lost row or a seen side grown by more than
-    0.05 m, each pinned with every row."""
-    for (scene, move, lean), pinned in UNION_LATERAL_ROWS.items():
+    0.05 m, each pinned with every row; the best row misses by no more than 3cc9d29's best (row rounding aside)."""
+    assert len(UNION_LATERAL_ROWS) == 20
+    for (scene, move, faces), (pinned, base_miss) in UNION_LATERAL_ROWS.items():
         solids, prior = _cabinet_scene(*scene)
-        rows, _ = _two_stop_rows(solids, prior, _stops(solids[0], move), lean)
-        assert _rows_match(rows, pinned), (scene, move, rows)
+        rows, _ = _two_stop_rows(solids, prior, _stops(solids[0], move), 0.5 if faces == "lean" else 0.0,
+                                 0.002 if faces == "noise" else 0.0)
+        assert _rows_match(rows, pinned), (scene, move, faces, rows)
+        best = min(_outside(FP(*p[:2], p[2:], False), solids[0]) for p in pinned)
+        assert best <= base_miss + 1e-3, (scene, move, faces, best)
 
 
 # An unseen lateral side reaches no farther than the prior allows (R-PF3b; the review of 8891c46, finding 3). Behind
