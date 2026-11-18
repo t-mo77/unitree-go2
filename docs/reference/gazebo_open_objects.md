@@ -908,3 +908,710 @@ docker run --rm -v ~/work/physicalAI/.go2-worktrees/oo-h1b:/wt:ro -w /wt --entry
   Bf・R5・L からの目標の数の固定（R-H3g）はこの中にある。
 - 全部（`T tests nl_control/tests`）：2561 passed, 18 skipped, 29 deselected（317.1 秒）。`feat/open-objects` の `49a4158` の merge と同じ数。
 - 変えたファイルはこの記録だけ。PR #4 のファイル（D12）には触れていない。
+
+### 2 回目：同じ依頼がもう一度来た（2026-11-13 16:16〜16:20）
+
+- 依頼は「`objects2/room-fix` の今の先から `objects2/h1b-fuel` を切る。前の試みのものがあれば使う」。worktree `oo-h1b` と枝
+  `objects2/h1b-fuel` は 1 回目のもの（`d5c957a`、`feat/open-objects` に `051fdb5` で merge 済み）があったので、そのまま使った。
+- **作った元は `objects2/room-fix` の `68122c3`**（16:16 の時の枝の先）。部屋の直しの見直しは同時に動いているので、その後に枝に足される
+  commit は入っていない。1 回目の元の `49a4158` は `e8c40aa` に `68122c3` を merge したもので、`git diff 68122c3 49a4158` は空（木が同じ）。
+  だから 1 回目も 2 回目も、`68122c3` のファイルから作ったのと同じ。
+- 結論：**線はすべて、もう一度満たした。** 固定は 1 つも動かない。変えたのはこの記録だけ。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` |
+|---|---|---|---|---|
+| 16:16:30 | 始め（門） | なし | AC、100%、charged | 0 |
+| 16:18:17 | build とイメージの中の確かめの後 | `go2-app-run-d54c9d2d2af7` 100.10%、124.6 MiB（ほかの仕事の `T`。私のものではない） | AC、100%、charged | 0 |
+| 16:19:18 | テストの後 | `go2-app-run-adf75cbea411` 15.73%、53.5 MiB（同じく、私のものではない） | AC、100%、charged | 0 |
+
+- `go2-gazebo-1` はどの時も動いていなかった（待たなかった）。`pmset -g log` に、14:43 の後の眠りはない。
+- 動かしたのは、名前を付けた使い捨ての container（`oo-h1b2-check`、`oo-h1b2-extent`。`--rm`、`--network none`）と `T` だけ。
+  終わった後に、私の container は残っていない。compose project `go2oo` は使っていない。
+
+**build。** 同じ命令（`docker build --build-arg BASE=go2-voice-ltl-gazebo:patch-0005 -t go2-voice-ltl-gazebo:patch-0005-fuel2
+-f docker/Dockerfile.gazebo-fuel docker`）で 0.6 秒。`COPY` も `RUN` も CACHED だった。だから build に渡した
+`fuel_models.json` と `fetch_fuel_models.py` は 1 回目と 1 バイトも違わず、build は zip を取っていない。
+
+- config は `sha256:64551a7a3c5a…` のまま、作った時刻も 15:57:17 のまま。層は 24 で、はじめの 22 は `patch-0005` と同じ。
+- 一覧の ID だけが `a67719c022bc` から `14c50167b0b8` に変わった。新しい build が、中身の同じイメージに新しい attestation の manifest を
+  書いたため。中身（config と層）は 1 回目と同じ。
+- `patch-0005`（`39fd601dc2a3`）と `patch-0005-fuel1`（`5ee232801b4e`）には触れていない。
+- `docker history --no-trunc` で層を見たとき、Dockerfile の `ENV` の行（値は Dockerfile に書いた `/opt/go2_models`）が出た。
+  ほかの環境の値は出していない。
+
+**zip。** 固定した 4 つの zip だけを、作業用の新しい空のフォルダに 1 回ずつ取った（R-H3b が認めたもの。host では開いていない）。
+URL は `https://fuel.gazebosim.org/1.0/OpenRobotics/models/<Fuel の名前>/<版>/<Fuel の名前>.zip`（Construction Cone は `Construction%20Cone`）。
+
+| フォルダ | 大きさ | sha256 | 固定と |
+|---|---|---|---|
+| Sofa | 1 311 028 B | `6d19d1f109427626d88667de047ca80a2c175b3f8f12dc2d0e75ddb3b88a0db1` | 同じ |
+| Table | 899 222 B | `3a720ef2a8e2f416e0ed017b2e13936f08f6f7c97829c9ea4b0d15380e36163d` | 同じ |
+| Suitcase1 | 1 802 850 B | `8e0c23b7c34cd19f443253eecf7185ca1a949f955aba278f01029775972f8fe7` | 同じ |
+| construction_cone | 622 427 B | `a6962fb5f787ba0ee21d0a9f1e96d95dde5160146852abcc45df35b33a46a34e` | 同じ |
+
+**イメージの中の確かめ**（使い捨ての container、zip は読むだけで mount、作業用の小さいスクリプトを `python3 -I`。モデルの中の物は何も実行しない）：
+
+- 4 つの zip の sha256 と大きさを、イメージの中の `fetch_fuel_models.verify` でも固定と比べた：同じ。
+- **どのモデルも、フォルダのどのファイルも、zip の中の同じ名前のファイルと sha256 が同じで、余分なファイルはない**（Sofa 10、Table 11、
+  Suitcase1 15、`construction_cone` 11 のファイル。zip の上のフォルダは `fetch_fuel_models` と同じ決まりで外した）。1 回目は Sofa と Table を
+  `patch-0005-fuel1` のフォルダと比べただけだったので、2 回目は 4 つとも zip と比べた。
+- `/opt/go2_models` には 4 つのフォルダだけ（隠れたファイルも zip もない）。`/opt/go2_fuel` の 2 つのファイルは枝のファイルと sha256 が同じ。
+- 作者：`model.config` の `<author>` の名前（2 人なら `, ` でつなぐ）が、4 つとも固定と同じ。どの `.sdf` にも `<plugin` は 0 個。
+- ライセンス：1 回目と同じく、モデルのファイルにライセンスの字はない（「licen」は 0 個）。固定のライセンスは、設計書 §12.2（Sofa CC BY 4.0、
+  Table CC0 1.0、Suitcase1 CC0 1.0）と §12.9・H3 の下見（Construction Cone CC0 1.0）と同じ。
+- `GZ_SIM_RESOURCE_PATH`：値は表示せず、`--entrypoint python3` で 1 項目、最後が `/opt/go2_models`（はい）だけを確かめた。
+
+**測った（`model_extent.py`、上の「4 つのモデルを測った」と同じ命令）。** 出力は 1 回目と 1 文字も違わない。配置との違いのいちばん大きいところ：
+suitcase_1 0.09 mm、traffic_cone_1 0.11 mm、sofa_1 ずれ x 1.07 mm、table_1 ずれ x 2.00 mm。どれも許す違いの中なので、R-H1a のような
+固定の直しは要らない。配置にない Fuel のモデルはイメージにない。
+
+**テスト。** `T tests/test_layout.py tests/test_fuel_image.py tests/test_household.py`：122 passed（44.7 秒。受け入れの PLANT と、Bf・R5・L
+からの目標の数の固定はこの中）。全部のテストは流していない（依頼が求めていない。木は 1 回目と同じで、1 回目は 0 failed）。
+
+### 3 回目：部屋の直しの見直しの後に作り直した（2026-11-13 17:47〜17:52）
+
+- わけ：見直しの直し（`bfdc636`、`feat/open-objects` の `206fe97`）が `docker/fetch_fuel_models.py` を変えた（`zip_url` が `""`・`.`・`..` を
+  断る。5 行足し、1 行直し）。`docker/fuel_models.json` と `docker/Dockerfile.gazebo-fuel` は同じ。イメージはこのファイルを `COPY` するので作り直した。
+- `feat/open-objects` の `206fe97` を `objects2/h1b-fuel` に `--no-ff` で merge した（`0a39c77`）。違いはこの記録だけ。
+- 結論：**線はすべて、もう一度満たした。** 固定は 1 つも動かない。変えたのはこの記録だけ。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | `lowpowermode` |
+|---|---|---|---|---|
+| 17:47:22 | 始め（門） | なし | — | — |
+| 17:47:47 | build の直前 | なし | 電池、90%、discharging | 0 |
+| 17:51:52 | テストの後 | なし | 電池、89%、discharging | 0 |
+
+- `go2-gazebo-1` はどの時も動いていなかった（待たなかった）。眠りは 16:41:33〜16:56:54（蓋を閉じた。この回の前）で、その後はない。
+- 動かしたのは、名前を付けた使い捨ての container（`oo-h1b3-check`、`oo-h1b3-extent`、`oo-h1b3-bridge`、`oo-h1b3-bridge1`。`--rm`、
+  `--network none`）と `T` だけ。終わった後に残った container はない。compose project `go2oo` は使っていない。
+
+**build**（同じ命令、17:48:25〜17:48:36）：`FROM` は CACHED、`COPY` と `RUN` は流れ直し、`RUN` が 4 つの zip を取り直した。4 つとも固定の
+sha256 と大きさに同じ（上の表と同じ値）。できたイメージは一覧の ID `c40a28c22024`（linux/arm64 の manifest `0e747c2aaaf1`）、17:48:36、
+7.28 GB。層は 24 で、はじめの 22 は `patch-0005` と同じ。足したのは `COPY`（32.8 kB）と `RUN`（5.05 MB）と `ENV` だけ。注意は同じ
+`UndefinedVar` の 1 つ。`patch-0005` と `patch-0005-fuel1` には触れていない。
+
+**確かめ**（2 回目と同じ。zip は作業用の新しい空のフォルダに 1 回ずつ取り直し、host では開いていない。大きさと sha256 は固定と同じ）：
+
+- `/opt/go2_models` は 4 つのフォルダだけ（隠れたファイルも zip もない）。`/opt/go2_fuel` の 2 つのファイルは枝のものと sha256 が同じ
+  （新しい `fetch_fuel_models.py` が入った）。
+- どのフォルダのどのファイルも zip の中の同じ名前のファイルと sha256 が同じで、余分も不足もない（Sofa 10、Table 11、Suitcase1 15、
+  `construction_cone` 11）。作者は 4 つとも固定と同じ。`<plugin` 0 個、「licen」0 個。
+- `GZ_SIM_RESOURCE_PATH`：値は表示せず、`--entrypoint python3` で 1 項目、最後が `/opt/go2_models`。いつもの入り口では 2 項目で、
+  `/opt/go2_models` はその 1 つ。
+- 橋渡しの止まる確かめ（`household`、`logical`）：`patch-0005-fuel2` では 6 つの物を置き、足りないフォルダはない。`patch-0005-fuel1` では
+  「`construction_cone` がない」の 1 行で止まる。
+- `model_extent.py` の出力は 1 回目・2 回目と 1 文字も違わない。
+
+**テスト。** build の前に `T tests/test_layout.py tests/test_fuel_image.py`：95 passed。後に `T tests/test_layout.py tests/test_fuel_image.py
+tests/test_household.py`：125 passed（39.1 秒）。2 回目より 1 つと 3 つ多いのは、見直しが足したテストの分。全部のテストは流していない
+（依頼が求めていない。見直しの直しの `bfdc636` で 2564 passed・18 skipped・29 deselected・0 failed）。
+
+## H3b：部屋の直しの後の検出の下見（`patch-0005-fuel2`、2026-11-13）
+
+- 枝：`objects2/h3b-preview`（`feat/open-objects` の `25d8bba`、H1b の 3 回目の merge から）。worktree `~/work/physicalAI/.go2-worktrees/oo-h3b`。
+  ROS の domain は 63。
+- 場所：この Mac の Docker Desktop。Gazebo は compose project `go2oo`（画面なし、`go2oo-gazebo`、`OBJECTS_SOURCE=detector`、検出の
+  service なし）、イメージは `go2-voice-ltl-gazebo:patch-0005-fuel2`（H1b の 3 回目、一覧の ID `c40a28c22024`、17:48:36）。検出は
+  `go2-voice-ltl-detector:yoloe-11s`（H2、`016348e47306`）。どちらも作り直していない。
+- 前の試みはなかった（worktree・枝・記録・`out/` のどれもなかった）。1 回で済んだ（18:01〜18:10）。
+- 部屋は R-H3h・R-H3i の後のもの（`gazebo/layouts/household.json`）：sofa_1 (−4.6, 0)、suitcase_1 (−1.62, −1.14) yaw 90、
+  traffic_cone_1 (−0.3, −4.45)、table_1（論理だけ）、box_1・chair_1。検出の目標は `detector_check.PREVIEW_TARGETS` の
+  sofa_1・suitcase_1（Bf）と traffic_cone_1（R5）。
+- 絵（`out/h3-preview/`、`out/h3b-L/`）は CC BY / CC0 のモデルを描いたものなので git に入れていない（設計書 §11.11）。worktree の中に残してある。
+
+### 結論
+
+**H3b の線を満たした。** `preview` を通った新しい種類は **3**（sofa_1、suitcase_1、traffic_cone_1。線は 3 以上、設計書 §12.8 の 5、§13.4）。
+始めの位置の見え方も通った（box と chair のほかに確かになる名前なし）。どの検出の試験の見え方にも、検出できないモデル（table_1・
+box_1・chair_1）の体は写っていない（R-H3c）。配置・単語帳・`BY_LABEL` は変えていない。変えたのはこの記録だけ。
+
+| 線（計画 H3、部屋の直しの後） | 結果 |
+|---|---|
+| `record_frames` が `patch-0005-fuel2` で起動する（Task 2.12 の Step 4、R-H3f の形） | exit 0、`gz` は `/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz` |
+| 見え方を撮る（`spawn_lying`、`spawn`、Bf・R5 × (そのまま＋ずらし 4)、測った向きの本当の手順） | 12 枚とも exit 0（止まりの門・位置の組・正解の確かめを通った）。撮り直しはなし |
+| 最初の絵で、どの Fuel のモデルも自分の見え方に写る（M15） | 写った。Sofa と Suitcase1（Bf）、Construction Cone（R5）。Table は足した L の 1 枚で写った |
+| `detector_check.py … --detector yoloe` | 12 枚、`errors` なし。`preview` の `detectable` は `[sofa_1, suitcase_1, traffic_cone_1]`、`enough` は true。exit 1（`Bf_s2` の絵ごとの線、下） |
+| 通った目標に `detectable: true` | 3 つとも、もう `true`（部屋の直しのまま）。変えていない |
+| `BY_LABEL`・外す検出の言葉 | なし（下の「決めたこと」） |
+| R-H3c：検出できないモデルは、どの試験の見え方にも入らない | 入らない（投影・論理カメラ・検出・絵の 4 つで確かめた。下の「R-H3c の確かめ」） |
+| 眠り | なし（`pmset -g log` の最後の眠りは 16:55:28〜16:56:54、この回の前） |
+| `T tests/test_household.py`、全部のテスト | 下の「テスト」 |
+
+### D11 の門と、ほかの container・電源
+
+どの Gazebo の回と検出の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。
+こちらのほかの重い段もなかった。`load` は host の `sysctl -n vm.loadavg`（1・5・15 分）。`lowpowermode` はどの時も 0。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | 電源（`pmset -g batt`） | load |
+|---|---|---|---|---|
+| 18:01:14 | 始め（門） | なし | 電池、87%、discharging | 2.04 2.60 3.43 |
+| 18:01:44 | 回 1（伏せ・立ち・Bf）の前 | なし | 電池、86% | 2.06 2.56 3.39 |
+| 18:03:07 | 回 1 の終わり（Gazebo あり） | `go2oo-gazebo` 217.10 %、985.2 MiB | 電池、85% | 3.66 2.96 3.46 |
+| 18:03:19 | 回 1 を止めた後・回 2（R5）の前 | なし | 電池、85% | 3.79 3.01 3.47 |
+| 18:04:26 | 回 2 の終わり | `go2oo-gazebo` 280.27 %、745.7 MiB。`go2-app-run-a266eb0789de` 140.23 %、80.07 MiB | 電池、85% | 5.05 3.54 3.63 |
+| 18:04:34 | 回 2 を止めた後 | `go2-app-run-a266eb0789de` 99.89 %、124.6 MiB | 電池、85% | 4.96 3.55 3.64 |
+| 18:06:35 | 検出（`detector_check`）の前 | なし | 電池、84% | 2.57 3.14 3.46 |
+| 18:06:50 | 検出の後 | `go2-app-run-5834b80b3397` 99.34 %、206.3 MiB | 電池、84% | 2.98 3.20 3.48 |
+| 18:07:49 | 種類ごとの確からしさの確かめの前 | `go2-app-run-5834b80b3397` 48.64 %、238.2 MiB | 電池、83% | 4.27 3.48 3.56 |
+| 18:08:03 | その後 | `go2-app-run-5834b80b3397` 100.10 %、219.7 MiB | 電池、83% | 4.23 3.50 3.57 |
+| 18:09:09 | 回 3（L、Table の M15）の前 | `go2-app-run-5834b80b3397` 99.91 %、236.6 MiB | 電池、83% | 3.60 3.49 3.55 |
+| 18:09:33 | 回 3 の終わり | `go2oo-gazebo` 236.58 %、742 MiB。`go2-app-run-5834b80b3397` 101.39 %、248.1 MiB | 電池、82% | 4.02 3.59 3.59 |
+
+- `go2-app-run-…` の 2 つは、本体の compose project の `app` の `run`（ほかの仕事の軽いテスト）で、私のものではない。`go2-gazebo-1` でも
+  こちらの重い段でもない。どちらも Gazebo の回 2・回 3 の終わりと、検出の後に重なった。絵は時間を測らないので影響しない。検出の推論は
+  中央値 333.1 ms で、H3（324.8 ms）・H3 の下見（322〜388 ms）と同じくらい。
+- 動かしたのは、`G` の Gazebo（`go2oo-gazebo`、`docker rm -f` と `G down` で止めた）と `G run --rm … app`（`run_formula`）、計画の
+  `TA`・`T`、名前を付けた使い捨ての `docker run --rm --name oo-h3b-…`（検出器のイメージと Fuel のイメージ）だけ。終わった後に残った
+  こちらの container とネットワークはない。
+
+### 軽い確かめ：`record_frames` を `patch-0005-fuel2` で
+
+```bash
+docker run --rm --network none -v "$WT":/wt -w /wt -e PYTHONPATH=/wt:/wt/nl_control --entrypoint bash \
+    go2-voice-ltl-gazebo:patch-0005-fuel2 -c 'source /opt/ros/jazzy/setup.bash && command -v gz && python3 -c \
+    "import numpy, rclpy, sensor_msgs.msg, nav_msgs.msg, std_msgs.msg, gazebo.tools.record_frames; …write_png(…)"'
+```
+
+- **exit 0**、`gz` は `/opt/ros/jazzy/opt/gz_tools_vendor/bin/gz`。R-H3f の形（`PYTHONPATH` を ROS を読み込む前に渡す）なので、H3 の
+  1 回目のような `rclpy` の不足は出ない。
+
+### 撮った見え方（12 枚、`out/h3-preview/`）
+
+```bash
+OBJECTS_SOURCE=detector G run -d --no-deps --service-ports --name go2oo-gazebo gazebo \
+    ros2 launch /work/gazebo/launch/go2_gazebo.launch.py gui:=false
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "<式>"
+docker exec -e PYTHONPATH=/work:/work/nl_control go2oo-gazebo bash -c \
+    'source /opt/ros/jazzy/setup.bash && python3 /work/gazebo/tools/record_frames.py /work/out/h3-preview --view <名前> [--shift=<s>]'
+```
+
+- 回 1（18:01:44〜18:03:07）：起動してすぐ `spawn_lying`（`--timeout 180`。撮れたのはシミュレーションの 1.0 秒）、`F standing`、`spawn`、
+  `F(turned_left & X F turned_left)`、`F moved_forward`、`Bf`、`Bf_s1`〜`Bf_s4`。
+- 回 2（18:03:19〜18:04:26）：起動し直し、`F standing`、`F turned_right`、
+  `F(moved_forward & X F(moved_forward & X F(moved_forward & X F(moved_forward & X F moved_forward))))`、`R5`、`R5_s1`〜`R5_s4`。
+- どの `run_formula` も「結果：done」。ずらしは計画の 4 つで、負の数で始まるものも含めてすべて `--shift=<s>` の形（R-H3f）。どの
+  `record_frames` も 1 回で exit 0（止まりの門、位置の組 0.02 m・1°、ずらしの後の正解の確かめを通った）。撮り直した見え方はない。
+- 回 2 は Gazebo の起動直後に `F standing` を始めたので、app の側に rmw の `invalid data size` が出た（H3 と同じ、立ち上がり中の
+  トピック）。動きは変わらず、done まで行った。
+- 1 枚あたり 5〜7 秒（ずらしは置き直しと 1 秒の落ち着きを含む）。B（Bf へ行く途中）は撮っていない（試験の姿勢でない）。
+
+| 見え方 | 本当の姿勢（odom、絵の時刻） | 絵・点群の時刻（sim 秒） | 点群の点 | 論理カメラが見た物 |
+|---|---|---|---|---|
+| spawn_lying | (0.004, 0.002)、高さ 0.068、−1.5° | 1.0・1.7 | 209 | box_1, chair_1 |
+| spawn | (0.001, −0.012)、−1.2° | 19.0・19.9 | 216 | box_1, chair_1 |
+| Bf | **(−0.540, −0.090)、−171.6°** | 42.0・42.8 | 349 | sofa_1, suitcase_1 |
+| Bf_s1〜s4 | 同じ（物を動かして見え方をずらす） | 46.0〜60.5 | 304〜411 | sofa_1, suitcase_1（4 枚とも） |
+| R5 | **(−0.359, −2.709)、−98.0°** | 31.0・31.5 | 245 | traffic_cone_1 |
+| R5_s1〜s4 | 同じ | 35.0〜50.0 | 242〜270 | traffic_cone_1（4 枚とも） |
+
+- **測った向きとの比べ：** Bf は H3 の下見の測った箱（x −0.506〜−0.560、y −0.054〜−0.141、向き −166.6〜−172.4°）の中。R5 は y が箱の中、
+  **x −0.359 と向き −98.0° が箱（x −0.342〜−0.225、向き −95.1〜−97.6°）の外**（x で 0.017 m、向きで 0.38°）。`tests/test_household.py`
+  の `MEASURED_RANGES` はこの箱を固定している（下の「controller に返すこと」）。
+- 目標の方位と距離（`tests/test_household.py` の `sight` で、この回の姿勢から）：Bf でソファはカメラから −10.5°・3.72 m（台から −9.7°・
+  4.04 m）、スーツケースはカメラから +44.5°・1.256 m（台から +35.8°・1.507 m）。R5 でコーンはカメラから +12.2°・1.421 m（台から +9.9°・1.742 m）。
+- **M15：** 最初の絵で、Sofa と Suitcase1 は Bf に、Construction Cone は R5 に、箱と椅子は spawn に写った。ソファの前にスーツケースは
+  かぶらない（Bf でスーツケースの枠は u 33〜203、ソファは u 304〜412）。Table の試験の姿勢 L は検出の試験の姿勢でなく、12 枚にないので、
+  回 3（18:09:09〜18:09:33、起動し直し、`F standing`、`F turned_left`）で `out/h3b-L/` に `L` を 1 枚だけ撮った：(0.019, 0.029)、96.5°、
+  論理カメラは table_1、Table は絵の左寄りに全体が写った。この 1 枚は `detector_check` にかけていない。
+
+### R-H3c の確かめ：検出できないモデルは試験の見え方に入らない
+
+検出の試験の見え方（Bf・R5 とそれぞれのずらし 4 つ、10 枚）で、4 つのやり方で確かめた。
+
+1. **投影**（作業用の小さいスクリプト、Fuel のイメージ、`--network none`）：絵の時刻の台の姿勢と、ずらした絵では記録の `moved`
+   （動かした後のモデルの姿勢）から、配置のどのモデルの体（足跡 × 高さ、モデルの yaw で回した 8 つの角）も
+   `detector.camera.world_to_camera` と記録の K で絵に写した。絵（u 0〜640）に入るのは、Bf の 5 枚ではソファとスーツケースだけ、R5 の 5 枚では
+   コーンだけ。table_1 の体のいちばん内側の u は Bf 813、s1 1067、s2 717、s3 693、s4 925（どれも 640 の外）。box_1・chair_1 は後ろ。
+2. **`tests/test_household.py` の関数**（`rendered`、`bearings`、`shifted`、app のイメージ）をこの回の 2 つの姿勢で：Bf と 4 つのずらしで
+   見えるのは {sofa_1, suitcase_1}、R5 と 4 つのずらしで {traffic_cone_1}。table_1 の視野の外への余裕は Bf 9.49°、s1 16.13°、s2 5.09°、
+   **s3 3.67°**、s4 13.03°（固定の最小 2.31° より広い）。R5 では table_1 は 84.8° 以上外。
+3. **論理カメラ**（記録の正解の `visible`）：上の表のとおり、Bf の 5 枚は sofa_1・suitcase_1、R5 の 5 枚は traffic_cone_1 だけ。
+4. **検出と絵**：Bf・R5 の 10 枚の当たりは、どれも目標の正解の枠の上（下の表）。絵を目で見ても、ほかのモデルはない。
+
+- 1 つだけ：**`Bf_s3` の右の端に table_1 の影の先が 4 画素**（行 264、u 635〜639、灰色 90〜174、床は 194）写った。世界の太陽
+  （方向 (−0.5, 0.1, −0.9)）で落ちる影を同じように投影すると、table_1 の影だけが u 631 から絵に入る。モデルの体ではなく、検出の当たりも
+  ない（`Bf_s3` の当たりはソファとスーツケースだけ）。
+
+### 検出（`detector_check.py`、YOLOE-11s 文字 @ 640、87 の言葉 + 捨てる 3 つ）
+
+```bash
+docker run --rm --name oo-h3b-detect -v "$WT":/work -v /dev/null:/work/env.txt:ro -w /work go2-voice-ltl-detector:yoloe-11s \
+    python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe
+```
+
+- 18:06:35〜18:06:50、`real` 14.7 秒、**exit 1**（`failed` は `Bf_s2` だけ）。12 枚、`errors` なし。推論 1 回の時間は中央値 333.1 ms、
+  最大 353.5 ms（1 スレッド）。
+
+| 見え方 | 当たり（`sighting` 0.25 以上。名前・確からしさ、正解の枠との IoU） | §13.3 の絵ごとの線 |
+|---|---|---|
+| spawn_lying | chair 0.707（chair_1）、chair 0.414、box 0.278（box_1） | 数えない（`preview` は見ない。`no_recall`） |
+| spawn | chair 0.545（chair_1、0.549）、chair 0.351（0.963） | `no_recall`（検出できる正解なし）、落ちた線なし |
+| Bf | **sofa 0.782**（0.805）、**suitcase 0.559**（0.861） | 通った |
+| Bf_s1 | sofa 0.816（0.792）、suitcase 0.766（0.868） | 通った |
+| Bf_s2 | **chair 0.732（sofa_1、0.79）**。スーツケースは当たりなし | **落ちた**：sofa_1・suitcase_1 の組なし、recall 0.000 |
+| Bf_s3 | sofa 0.738（0.804）、suitcase 0.627（0.851） | 通った |
+| Bf_s4 | sofa 0.754（0.806）、suitcase **0.384**（0.890） | 通った |
+| R5 | **traffic_cone 0.429**（0.543） | 通った |
+| R5_s1 | traffic_cone 0.472（0.573） | 通った |
+| R5_s2 | traffic_cone 0.958（0.514） | 通った |
+| R5_s3 | traffic_cone 0.807（0.521） | 通った |
+| R5_s4 | traffic_cone 0.870（0.552） | 通った |
+
+- `preview`（設計書 §12.8 の 3）：
+
+| 目標 | 姿勢 | 姿勢の見え方 | ずらしで当たった数（線は 2） | 他の目標の名前 | いちばん低い余裕（確からしさ − 0.35） | 合否 |
+|---|---|---|---|---|---|---|
+| sofa_1 | Bf | sofa 0.782 | 3（s1 0.816、s3 0.738、s4 0.754。s2 は chair） | なし | +0.388（s3） | **合格** |
+| suitcase_1 | Bf | suitcase 0.559 | 3（s1 0.766、s3 0.627、s4 0.384。s2 は当たりなし） | なし | +0.034（s4）。線に要る姿勢＋2 つでは +0.209 | **合格** |
+| traffic_cone_1 | R5 | traffic_cone 0.429 | 4（0.472、0.958、0.807、0.870） | なし | +0.079（姿勢の見え方） | **合格** |
+| spawn（始めの位置） | — | box と chair のほかの名前なし | — | — | — | 合格 |
+
+- `detectable` は `["sofa_1", "suitcase_1", "traffic_cone_1"]`、`enough` は true。
+- 取り違えの表（`confusion`）で目標に乗った違う名前は、`Bf_s2` のソファの chair 0.732 だけ。chair は目標の名前でないので、`preview` の
+  「他の目標の名前」には入らない。
+- H3 の下見（Part B の最後の部屋、x4b・v6r）と比べて：ソファは 5/5 から姿勢＋3/4（`Bf_s2` が chair に）、スーツケースは姿勢＋3/4 のまま
+  （下見は s4 が trash_can、この回は s2 が切れて当たりなし）、コーンは 5/5 のままだが姿勢の見え方が 0.634 から 0.429 に下がった。
+- 線の 3 は満たすが、`detector_check` の終わりのコードは 1。`Bf_s2` の絵ごとの §13.3 の線（ソファの名前の誤りと、端で切れた
+  スーツケース）のため。H3b の線（`preview`）ではない。H6 は §13.3 を本当の姿勢（ずらしなし）で数える。
+
+### わけを探した：種類ごと・言葉ごとの確からしさ（`Bf_s2` とうすい余裕）
+
+H3 と同じやり方：使い捨てのスクリプト（作業用の場所。リポジトリには入れていない）で、同じ YOLOE と同じ 90 の言葉で、名前ごとの NMS
+（`conf` 0.05）にかけ、各正解の枠（記録の正解と配置の高さ）と IoU 0.5 以上の箱のいちばん高い確からしさを言葉ごとに数えた
+（18:07:49〜18:08:03）。全部の一覧で勝った名前の値（sofa 0.782 = `couch` 0.782、chair 0.732 など）と一致する。
+
+| 見え方 | ソファ：`couch` | ソファ：`chair` | スーツケース：`suitcase` | スーツケースの次の言葉 | コーン：`traffic cone`（IoU） |
+|---|---|---|---|---|---|
+| Bf | **0.782** | 0.618 | **0.559** | television 0.292 | — |
+| Bf_s1 | **0.816** | 0.05 未満 | **0.766** | — | — |
+| Bf_s2 | 0.716 | **0.732** | 0.05 未満 | television 0.151 | — |
+| Bf_s3 | **0.738** | 0.650 | **0.627** | garbage bin 0.198 | — |
+| Bf_s4 | **0.754** | 0.621 | **0.384** | garbage bin 0.252 | — |
+| R5・R5_s1〜s4 | — | — | — | — | 0.429（0.54）、0.472（0.57）、0.958（0.51）、0.807（0.52）、0.870（0.55） |
+
+- **`Bf_s2` のソファ：** `couch` 0.716 と `chair` 0.732 の差は 0.016 で、五分五分。agnostic NMS で 1 つの物に 1 つの名前なので、chair が残る。
+  ほかの 4 枚では `couch` が勝つ（chair との差は 0.088 以上）。H3 が B（4.4 m）で見た、ソファと椅子が絵ごとに五分五分になる取り違えが、
+  この回は Bf の 1 枚（−5° 回した s2）だけに出た。ソファはカメラから 3.72 m。
+- **`Bf_s2` のスーツケース：** 正解の枠は u 0〜140（左の端で切れる。体の投影は u −158〜139）。`suitcase` は 0.05 にも届かない。
+  部屋の直しの見直しの予想（「`Bf_s2` は測ったどの向きでも左の端で切れる。外れは切れたためで、検出の誤りではない」）のとおり。
+- **コーン：** `traffic cone` のほかに 0.05 以上の言葉はない。IoU 0.51〜0.57 は下見と同じ（影が正解の枠に入る）。姿勢の見え方の 0.429 は
+  下見（0.634）より低い。この回の R5 の向き −98.0° は、下見の 4 回でいちばん回った −97.6° より 0.4° 多い（わけかどうかは確かめていない）。
+
+### 決めたこと
+
+- **数える種類（`detectable`）：** `preview` を通ったのは sofa_1・suitcase_1・traffic_cone_1 で、配置はもうこの 3 つが `true`、
+  box_1・chair_1・table_1 が `false`（部屋の直しのまま）。だから配置は変えない。
+- **lamp_1（R-H3d）：** ランプは部屋を出た（`household.json` に lamp_1 も trash_can_1 もない）。R-H3d の直しで
+  `test_detector_check_command_line_with_the_oracle` は凍った `SCENE_LAYOUT` を読むので、配置の旗との縛りもない。決めることはない。
+- **`BY_LABEL`：** なし（`{}` のまま）。目標に乗った違う名前は `Bf_s2` の chair 0.732 だけで、正しい名前（`couch` 0.716）より高い。
+  計画の決まり「違う名前が 0.35 と正しい名前の確からしさの間にあるとき」に当たらない。chair の閾を 0.732 より上げると、始めの位置の
+  椅子（0.545・0.707）も確かにならなくなり、しかもソファの名前は出ない（agnostic NMS でソファの箱は消えたまま）。
+- **外す検出の言葉：** なし（`vocabulary.json` は変えない）。`Bf_s2` を直す言葉は chair の `chair` を外すことだけで、椅子という基本の
+  種類の検出の言葉をなくす。`preview` は言葉を変えずに通る。
+
+### controller に返すこと
+
+1. **R5 の姿勢が固定の箱の外：** この回の R5 は (−0.359, −2.709, −98.0°) で、`tests/test_household.py` の `MEASURED_RANGES["R5"]`
+   （x −0.342〜−0.225、向き −95.1〜−97.6°）から x で 0.017 m、向きで 0.38° 外。この姿勢で、R-H3c（上の 2）と、目標の式の計画（下の表）は
+   どれも成り立つ。箱を広げて数を固定し直すかは、H3b のファイルの外（テスト）なので controller に返す。
+2. **`Bf_s2` の絵ごとの §13.3 の線が落ちた：** ソファが chair（0.016 の差）、スーツケースは端で切れて当たりなし。`preview` には響かない。
+   H6 は本当の姿勢（ずらしなし）で数える。この回の Bf の見え方ではソファは `couch` 0.782 で、chair 0.618 より 0.164 高い。
+3. **うすい余裕：** スーツケースは `Bf_s4` で 0.384（+0.034）、コーンは R5 の姿勢の見え方で 0.429（+0.079）、コーンの IoU は 0.51〜0.57。
+   どれも線の中だが、R-H3h (4) が受け入れたうすさのとおり。
+4. **`Bf_s3` の右の端の table_1 の影（4 画素）：** モデルではなく、検出もない。メモだけ。
+
+- この回の姿勢からの計画（`tests/test_household.py` の `build`・`area`・`moves`、app のイメージ、PLANT だけ、合成なし。手前のキーは
+  `gw.near` の数）：
+
+| 式 | 始め | 面積 | 手 | 手前のキー | PLANT の状態 | 4 つのずれ（面積・手） |
+|---|---|---|---|---|---|---|
+| `F near_sofa_1` | Bf（この回） | 140 | 5 | 20 | 2 760 | (154,5)(140,5)(140,5)(154,5) |
+| `F around_sofa_1` | Bf（この回） | 208 | 49 | — | 14 256 | (208,52)(208,50)(224,55)(208,53) |
+| `F near_suitcase_1` | Bf（この回） | 56 | 2 | 7 | 1 224 | (56,5)(56,1)(49,2)(49,2) |
+| `F around_suitcase_1` | Bf（この回） | 100 | 26 | — | 7 776 | (100,28)(100,28)(100,29)(100,26) |
+| `F near_traffic_cone_1` | R5（この回） | 72 | 1 | 7 | 1 584 | (63,8)(56,1)(63,4)(56,1) |
+| `F around_traffic_cone_1` | R5（この回） | 100 | 28 | — | 8 256 | (110,31)(110,31)(110,30)(121,35) |
+
+- どの始めとずれからも計画がある。この表は H5・H6 のための参考で、固定はしていない（固定の数は `MEASURED_POSES` の H3 の Bf と
+  導いた R5 のもの）。
+
+### テスト
+
+- 配置・単語帳・上書き・コードは変えていないので、§12.4 の数はそのまま。`T tests/test_household.py`：30 passed（41.3 秒、18:09:56〜18:10:38）。
+- 全部（`T tests nl_control/tests`、18:10:38〜18:16:04）：**2564 passed, 18 skipped, 29 deselected**（324.7 秒）。`feat/open-objects` の
+  `206fe97` と同じ数。終わり（18:16:13）は、こちらの container なし、電池 80%、`lowpowermode` 0、load 6.85 5.08 4.26。`pmset -g log` に、
+  16:56:54 の後の眠りはない。
+
+### 変えたもの
+
+- この記録だけ。配置・単語帳・`detector/yoloe.py` の `BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
+
+## H3b replay：merge の後のコードで H3b の絵を判定し直した（2026-11-18）
+
+- 枝：`objects2/h3b-replay`（`feat/open-objects` の `80f181d`。pre-final の直し `09e8863`、tracker `9b6550a`、H5 の固定 `80f181d` の
+  merge の後）。worktree `~/work/physicalAI/.go2-worktrees/oo-h3b-replay`。ROS の domain は 63。**Gazebo は動かしていない。**
+- 絵：H3b の 12 枚（`~/work/physicalAI/.go2-worktrees/oo-h3b/out/h3-preview/` の 36 ファイル）を、この worktree の `out/h3-preview/` に
+  写した（sha256 は 36 とも同じ）。git に入れていない（設計書 §11.11）。
+- 検出器のイメージ：`go2-voice-ltl-detector:yoloe-11s`（H2、`016348e47306`）。作り直していない（H3b の後に変わった `docker/` は
+  `Dockerfile.gazebo` だけ）。
+
+```bash
+docker run --rm --network none --name oo-h3b-replay-detect -e ROS_DOMAIN_ID=63 -v "$WT":/work -w /work \
+    go2-voice-ltl-detector:yoloe-11s python3 gazebo/tools/detector_check.py /work/out/h3-preview --detector yoloe
+```
+
+### 結論
+
+**`preview` の線はそのまま満たす。** `detectable` は `["sofa_1", "suitcase_1", "traffic_cone_1"]`、`enough` は true（線は 3 以上）。
+12 枚、`errors` なし、exit 1（`failed` は `Bf_s2` だけ、H3b と同じ）。どの当たりの名前・確からしさ・IoU も、`confusion` も H3b と同じ。
+変わった数は 1 つの組だけ：`R5_s2` のコーンの位置の誤差（0.133 → 0.130 m）と大きさの誤差（0.132 → 0.133 m）。
+
+| 目標 | 姿勢 | H3b（姿勢、s1〜s4。確からしさ・IoU） | この回 | ずらしの当たり | いちばん低い余裕 | 合否 |
+|---|---|---|---|---|---|---|
+| sofa_1 | Bf | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 0.782 (0.805)、0.816 (0.792)、s2 は chair 0.732、0.738 (0.804)、0.754 (0.806) | 3 / 3 | +0.388 / +0.388 | 合格 / 合格 |
+| suitcase_1 | Bf | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 0.559 (0.861)、0.766 (0.868)、s2 は当たりなし、0.627 (0.851)、0.384 (0.890) | 3 / 3 | +0.034 / +0.034 | 合格 / 合格 |
+| traffic_cone_1 | R5 | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 0.429 (0.543)、0.472 (0.573)、0.958 (0.514)、0.807 (0.521)、0.870 (0.552) | 4 / 4 | +0.079 / +0.079 | 合格 / 合格 |
+| spawn（始めの位置） | — | box と chair のほかの名前なし | 同じ | — | — | 合格 / 合格 |
+
+（「/」の左が H3b、右がこの回。）
+
+### 変わった数
+
+| 見え方 | 組 | H3b（`265f17c`） | この回（`80f181d`） | §13.3 の線 |
+|---|---|---|---|---|
+| R5_s2 | traffic_cone_1 の `pos_err`（`max_pos_err`・`median_pos_err` も） | 0.133 | 0.130 | `max_pos_err_target` 0.15 |
+| R5_s2 | traffic_cone_1 の `size_err`（`max_size_err` も） | 0.132 | 0.133 | `max_size_err` 0.4 |
+
+- `R5_s2` の `covers` false・`filled` false・`fill_short_m` 0 は同じで、この絵の線はどちらでも通る。ほかの 11 枚の `pos_err`・
+  `size_err`・`covers`・`filled`・`fill_short_m` はすべて同じ。
+- 推論 1 回の時間は中央値 327.3 ms、最大 336.9 ms（H3b は 333.1 ms・353.5 ms。判定の線ではない）。
+
+### どの merge で変わったか
+
+同じイメージ・同じ絵で、merge ごとのコードを `git archive <commit>` で `out/code-<commit>/`（git に入れていない）に出し、
+`-v out/code-<commit>:/work -v out/h3-preview:/frames:ro` で同じ `detector_check.py … --detector yoloe` にかけた（推論の時間のほか、
+`set` の名前は絵の場所 `frames` になる）。
+
+| コード | R5_s2 のコーン（`pos_err` / `size_err`） | ほかの数 |
+|---|---|---|
+| `265f17c`（H3b） | 0.133 / 0.132 | H3b の記録とすべて同じ |
+| `09e8863`（pre-final の直しの merge） | 0.133 / 0.132 | `265f17c` と同じ |
+| `9b6550a`（tracker の merge、R-PF3〜R-PF3d） | 0.130 / 0.133 | `80f181d` と同じ |
+| `80f181d`（いまの先） | 0.130 / 0.133 | — |
+
+- H3b のコードが今日も H3b の数をそのまま出すので、判定は決まった答えを出す。違いはコードから来ていて、ゆらぎではない。
+- 数を変えたのは tracker の merge（`detector/geometry.py`・`detector/tracker.py` の遠い端と横の決まり）。pre-final の直しと H5 の固定
+  （`gazebo/bridge_core.py` の論理の足跡の下限）は、どの数も変えない。
+
+### D11 の門と、ほかの container・電源
+
+どの検出の前にも `docker ps --format '{{.Names}}'` を見た。`go2-gazebo-1` はどの時も動いていなかった（待たなかった）。電源はどの時も
+AC、100%、charged。`lowpowermode` は 0。load は host の `sysctl -n vm.loadavg`（1・5・15 分）。`pmset -g log` の最後の眠りは
+10:36 の DarkWake で、10:36:28 から FullWake のまま（この回の間に眠りはない）。
+
+| 時刻（日本時間） | いつ | 動いていた container（`docker stats`） | load |
+|---|---|---|---|
+| 14:43:33 | 始め（門） | なし | 2.28 3.96 4.43 |
+| 14:43:59〜14:44:13 | 検出（`80f181d`、`real` 13.9 秒） | — | 前 2.28、後 2.57 3.80 4.35 |
+| 14:45:31〜14:45:57 | 比べ（`265f17c`、`09e8863`） | — | 前 3.96 3.88 4.32、後 4.08 3.89 4.31 |
+| 14:46:15〜14:46:28 | 比べ（`9b6550a`） | — | 前 3.33 3.73 4.25、後 3.31 3.71 4.23 |
+| 14:46:28 | 終わり | なし | 3.31 3.71 4.23 |
+
+- 14:45:04 と 14:45:20 の比べの 2 回は、出したコードに `nl_control/` と `sim/` がなく、読み込み（`ModuleNotFoundError`）で止まった。
+  推論の前なので、木全体を出して 14:45:31 から撮り直した。
+- 動かしたのは名前を付けた使い捨ての `docker run --rm --network none --name oo-h3b-replay-…`（検出器のイメージ）だけ。残った
+  container はない。比べの線はどれも H3b と同じなので、load の決まり（R-PAR）で撮り直すものはない。
+
+### 変えたもの
+
+- この記録だけ。コード・配置・単語帳・`BY_LABEL`・テスト・イメージは変えていない。PR #4 のファイル（D12）には触れていない。
+  app のイメージにも本来の Linux の準備にも、新しい依存は入っていない。環境の値は表示していない。
+
+## H5：logical の Gazebo の測り（S7、2026-11-13〜14）
+
+- 枝：`objects2/h5-logical`（`objects2/prefinal-fix` の `97da92a` から。R-PAR：logical の式は `objects_check` を通るだけで、
+  並べて直している種類の見張り（guard3）と追跡（tracker3）は触れない）。worktree `~/work/physicalAI/.go2-worktrees/oo-h5`。ROS の domain は 65
+  （`G` の回は compose project `go2oo` の自分の network で、domain は使わない）。
+- Gazebo：イメージ `go2-voice-ltl-gazebo:patch-0005-fuel2`（一覧の ID `c40a28c22024`、作り直していない）、`GO2_LAYOUT=household`、
+  `OBJECTS_SOURCE=logical`。§2 の組と新しい種類は画面あり（`G --profile gazebo up -d --no-build gazebo`、画面は port 6081）。
+  **回ごとに `G down` で止めて起動し直した。** 橋渡しはどの回も「物 6 個」（box_1・chair_1・suitcase_1・traffic_cone_1・sofa_1・table_1。
+  部屋の直しの後の部屋）を置いた。
+- app：`G run --rm --no-deps -T -e SIM_KIND=gazebo app …`（`go2-voice-ltl:dev`）。
+- コード・テスト・固定は変えていない。変えたのはこの記録だけ。
+- 順は R-PAR のとおり：§2 の組 1 → 新しい種類 → M0（RTF）を最後に。13 日 20:29:55 に Mac が蓋を閉じて眠り（下の「眠り」）、
+  14 日 06:27 に蓋が開き、06:35 の門の確かめから、R-H5b のとおり眠りで切れた 1 回を流し直して続けた（1 回目の記録は `affdbd7`）。
+
+### 結論
+
+**H5 の線はすべて満たした。** §2 の組 1 は 10/10。新しい種類は 4 つとも手前 2/2・周回 2/2（16/16）。どの回も転ばない。
+ただし次の 4 つを controller に返す（下の「controller に返すこと」）：テーブルは L から 4 回のうち 3 回 `measured: true` にならなかった
+（手順の「測られるのを待つ」を満たさないまま式を流した。わけは LiDAR の点の数）、重い負荷の下で手順の「立つ」が 4 回 error で終わった
+（Go2 は立っていて、次の式から続いた）、着いた Bf と R5 の姿勢が固定の範囲の外にある（R-H5a）、コーンの測った足跡が y でモデルより小さい。
+
+| 線（計画 H5、設計書 §13.6・§13.4・§10.8） | しきい値 | 結果 |
+|---|---|---|
+| 一周 `F around_box_1` ×5 | 5 回で 4 回以上、うち 3 回続けて。巻き数 0.9 以上 1.5 未満、箱の縁まで 0.6 m 以上 | **5/5**（巻き数 1.042〜1.069、箱の縁まで 0.797〜0.872 m）。合格 |
+| 椅子 `F near_chair_1` ×3 | 3/3。中心から 1.5 m・45° 以内、縁まで 0.45 m 以上 | **3/3**（1.084〜1.135 m・25.2〜29.6°、縁まで 0.782〜0.838 m）。合格 |
+| 椅子と挨拶 `F(near_chair_1 & X F hello)` ×1 | 1/1、同じ線 | **1/1**（1.101 m・35.8°、縁まで 0.789 m）。合格 |
+| 「箱の前まで」`F near_box_1`（`--target box_1`）×1 | 1/1。縁まで 1.5 m 以内・足跡に 45° 以内・どの足跡にも 0.30 m 以上、箱の中心から 1.5 m・45° 以内（O16、logical） | **1/1**（縁まで 0.845 m・8.5°、どの足跡にも 0.841 m、中心まで 1.167 m・22.8°）。合格 |
+| §2 の組：転ばない | 傾き 1.0 rad 未満 | 10 回とも（最大 0.220）。合格 |
+| ソファ（Bf）`F near_sofa_1` ×2 | 2/2。縁まで 1.5 m 以内、足跡に 45° 以内、どの足跡にも 0.30 m 以上 | **2/2**（縁まで 1.102〜1.180 m・0.0〜2.3°、どの足跡にも 0.544〜0.780 m）。合格 |
+| ソファ（Bf）`F around_sofa_1` ×2 | 2/2。巻き数 0.9 以上 1.5 未満、縁まで 0.6 m 以上 | **2/2**（巻き数 0.923・0.917、縁まで 0.883・0.749 m）。合格。眠りで切れた 1 回は数えず、流し直した |
+| **スーツケース（Bf）**`F near_suitcase_1` ×2 | 手前の線 | **2/2**（縁まで 0.972・1.137 m、29.6°・2.7°、どの足跡にも 0.963・1.128 m）。合格 |
+| **スーツケース（Bf）**`F around_suitcase_1` ×2 | 周回の線 | **2/2**（巻き数 1.033・1.035、縁まで 0.892・0.896 m）。合格 |
+| **コーン（R5）**`F near_traffic_cone_1` ×2 | 手前の線 | **2/2**（縁まで 0.953・0.984 m、0.0°・0.0°、どの足跡にも 0.952・0.984 m）。合格 |
+| **コーン（R5）**`F around_traffic_cone_1` ×2 | 周回の線 | **2/2**（巻き数 1.103・1.104、縁まで 0.880・0.881 m）。合格 |
+| テーブル（L、logical だけ）`F near_table_1` ×2 | 手前の線 | **2/2**（縁まで 1.233・1.160 m、3.2°・14.4°、どの足跡にも 0.931・1.069 m）。合格。2 回とも `measured: false` のまま（下） |
+| テーブル（L）`F around_table_1` ×2 | 周回の線 | **2/2**（巻き数 1.087・1.081、縁まで 0.775・0.955 m）。合格。1 回目は測られた後、2 回目は `measured: false` のまま |
+| 新しい種類：転ばない | 傾き 1.0 rad 未満 | 16 回とも（最大 0.208）。合格 |
+| ソファの手前で前の物のビット（O14） | 記録だけ | 2 回とも立たなかった（「前方に物が出た」の行 0） |
+| M0：RTF、画面あり 3 回・なし 3 回 | 記録だけ（線なし。D7 の判断） | 画面あり 0.79・0.85・0.82、画面なし 0.87・0.93・0.82（記録） |
+
+- 負荷：どの回も、ほかの組の container が動いていて、1 分の load は回の前後の記録で 2.8〜103.9（下の表。07:11 には 118.9 も見た）。**外れた線はないので、R-PAR の決まりでやり直す回はない。**
+
+### 命令
+
+計画の「Commands」の `G`（`WT` はこの worktree）。1 回ごとに：
+
+```bash
+docker ps --format '{{.Names}}'                       # D11：go2-gazebo-1 がないこと
+uptime; docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}'; pmset -g batt; pmset -g custom | grep -i lowpower
+G --profile gazebo down --remove-orphans; G --profile gazebo up -d --no-build gazebo
+# ログに「Configured and activated unitree_guide_controller」と「Gazebo の Go2 の橋渡しを起動しました」が出るまで待つ（8〜11 秒）
+# §2 の組 1：
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect lap "F around_box_1"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near "F near_chair_1"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near "F(near_chair_1 & X F hello)"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near --target box_1 "F near_box_1"
+# 新しい種類（Bf の例）：試験の姿勢の手順（計画「The room after the room fix」）を 1 つずつ
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F standing"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F(turned_left & X F turned_left)"
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py resolve --target sofa_1 --timeout 300 &   # 姿勢に着く式の直前（F11）
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 -m voice_ltl.run_formula "F moved_forward"
+wait                                                  # resolve の終わり
+G run --rm --no-deps -T app python3 -c '<odometry を 1 通読んで x, y, 向きを出す>'   # 着いた姿勢（R-H3i）
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py objects
+G run --rm --no-deps -T -e SIM_KIND=gazebo app python3 gazebo/tools/objects_check.py run --expect near --target sofa_1 "F near_sofa_1"
+G --profile gazebo down --remove-orphans
+```
+
+- 前の物のビット（O14）は、`run` の標準エラーに流れる Session のログの「前方に物が出た」（`front_blocked`）の行を数えた。センサーが途切れた（「センサー（LiDAR か /sportmodestate）が途切れています」）ときも、前と後ろの「物が出た」が一緒に出るので、別に数えた。
+- 回の前後の `docker stats`・`pmset`・`uptime`、`resolve` の出力、`objects` の 1 通、Gazebo のログは worktree の外の作業用のフォルダに残した（git に入れていない）。
+
+### D11 の門、ほかの container、電源、load
+
+- `go2-gazebo-1` はどの回の前にも動いていなかった（待たなかった）。こちらのほかの重い段もなかった。
+- **この Mac はほかの組（R-PAR の並べた道）と分けていた。** 回の間、ほかの組の container（compose project `go2` の `go2-app-run-…`、
+  名前を付けた `t3cmp-…`・`t3-after`）が計 100〜944 % の CPU で動いていて、1 分の load は 13 日の夜 2.8〜15.6、14 日の朝 6.6〜103.9（回の前後の記録）、
+  ほとんどの時に 4 を超えた。`pgrep -f pytest` は 0 か 2（ほかの組の `T`）。**R-PAR の決まりで、load が 4 を超えた間に外れた線は数える前に
+  やり直す。外れた線はなかった。**
+- 電源：13 日は電池（61 → 43 %）。14 日は 06:35 に電池 33 % から始め、06:57 に AC がつながった（17 %。その後は充電して、M0 の終わりに 99 %）。
+  `lowpowermode` はどの時も 0。
+- 14 日の回は、どの回の前にも「起きている」の門（R-H5b：`ioreg` の `AppleClamshellState` が No か、`pmset -g batt` が AC）を見て、
+  回の間は 5 秒ごとに門と `pmset -g log` の眠りを見た（眠れば止めて門へ戻る）。14 日の回の間に眠りはなかった。
+
+| 回 | 前（日本時間） | 前の load（1・5・15 分） | 前のほかの container（CPU） | 後の load | 後の `go2oo-gazebo-1`（CPU、メモリ） | 電池（前 → 後） | `pytest`（前 / 後） |
+|---|---|---|---|---|---|---|---|
+| lap1 | 20:03:11 | 2.81 2.00 2.11 | なし | 11.57 6.06 3.72 | 292 %、1.747 GiB | 61 → 59 % | 0 / 0 |
+| lap2 | 20:05:56 | 10.85 6.18 3.81 | なし | 6.33 6.26 4.22 | 372 %、1.246 GiB | 59 → 57 % | 0 / 0 |
+| lap3 | 20:08:26 | 6.06 6.21 4.21 | なし | 10.85 7.99 5.32 | 257 %、1.254 GiB | 57 → 55 % | 0 / 2 |
+| lap4 | 20:11:39 | 10.86 8.04 5.36 | `go2-app-run-2e2252b8de67` 751 % | 8.07 8.51 6.08 | 399 %、1.27 GiB | 55 → 53 % | 0 / 0 |
+| lap5 | 20:14:28 | 8.07 8.51 6.08 | なし | 9.66 8.35 6.38 | 292 %、1.254 GiB | 53 → 51 % | 0 / 0 |
+| chair1 | 20:17:09 | 9.66 8.35 6.38 | `go2-app-run-892888f07a08` 816 % | 9.79 8.60 6.58 | 254 %、1.258 GiB | 51 → 50 % | 0 / 2 |
+| chair2 | 20:18:00 | 9.79 8.60 6.58 | `go2-app-run-…` 4 つ、計 809 % | 13.43 9.95 7.23 | 229 %、1.262 GiB | 50 → 50 % | 2 / 2 |
+| chair3 | 20:19:01 | 13.43 9.95 7.23 | 同じ 4 つ、計 805 % | 12.93 10.44 7.60 | 231 %、1.262 GiB | 50 → 50 % | 2 / 2 |
+| hello1 | 20:20:00 | 12.93 10.44 7.60 | 同じ 4 つ、計 817 % | 11.44 10.47 7.80 | 184 %、1.244 GiB | 50 → 49 % | 2 / 2 |
+| box1 | 20:21:03 | 13.01 10.81 7.93 | 同じ 4 つ、計 807 % | 15.61 12.16 8.63 | 334 %、1.259 GiB | 49 → 48 % | 2 / 2 |
+| sofa_near1 | 20:23:17 | 6.46 10.10 8.14 | `t3cmp-AL` 100 %、`go2-app-run-06abdcfe63d7` 100 % | 5.66 9.15 7.93 | 391 %、1.261 GiB | 48 → 46 % | 2 / 2 |
+| sofa_near2 | 20:24:40 | 4.60 8.68 7.79 | `go2-app-run-06abdcfe63d7` 100 % | 6.93 8.57 7.80 | 382 %、1.252 GiB | 46 → 45 % | 2 / 2 |
+| sofa_lap1 | 20:25:44 | 7.02 8.56 7.80 | `go2-app-run-06abdcfe63d7` 100 % | 14.35 11.38 9.14 | 404 %、1.261 GiB | 45 → 43 % | 2 / 0 |
+| sofa_lap2（眠りで切れた。数えない） | 20:29:45 | 14.00 11.36 9.14 | `t3-after` 100 % | — | — | 43 % → | 0 / — |
+| sofa_lap2（流し直し） | 06:35:52 | 7.68 26.44 27.99 | なし | 7.40 16.63 23.33 | 420 %、1.243 GiB | 33 → 29 % | 0 / 0 |
+| suitcase_near1 | 06:39:52 | 6.55 16.14 23.08 | なし | 7.77 14.84 22.16 | 441 %、1.249 GiB | 29 → 29 % | 0 / 0 |
+| suitcase_near2 | 06:40:57 | 7.85 14.63 22.00 | なし | 7.34 13.03 20.78 | 434 %、1.252 GiB | 29 → 28 % | 0 / 0 |
+| suitcase_lap1 | 06:42:19 | 6.99 12.87 20.67 | 計 99 % | 7.07 10.80 18.69 | 407 %、1.245 GiB | 28 → 26 % | 2 / 0 |
+| suitcase_lap2 | 06:44:39 | 6.58 10.64 18.59 | なし | 14.05 11.34 17.52 | 338 %、1.257 GiB | 26 → 24 % | 0 / 0 |
+| cone_near1 | 06:47:14 | 14.05 11.39 17.50 | 計 905 % | 18.76 13.60 17.77 | 335 %、1.258 GiB | 24 → 23 % | 0 / 0 |
+| cone_near2 | 06:48:49 | 21.73 14.38 17.99 | 計 917 % | 22.10 16.61 18.52 | 320 %、1.239 GiB | 23 → 22 % | 0 / 2 |
+| cone_lap1 | 06:50:23 | 22.15 16.81 18.57 | 計 898 % | 21.41 19.40 19.33 | 247 %、1.256 GiB | 21 → 19 % | 2 / 0 |
+| cone_lap2 | 06:54:03 | 22.34 19.63 19.41 | 計 891 % | 39.12 25.26 21.60 | 276 %、1.258 GiB | 19 → 17 %（AC） | 0 / 0 |
+| table_near1 | 06:57:49 | 37.93 25.46 21.71 | 計 933 % | 31.65 36.20 28.49 | 217 %、1.249 GiB | 17 → 23 %（AC） | 0 / 2 |
+| table_near2 | 07:04:13 | 29.72 35.64 28.39 | 計 864 % | 95.41 61.27 41.84 | 266 %、1.25 GiB | 23 → 30 %（AC） | 2 / 2 |
+| table_lap1 | 07:10:52 | 103.90 64.21 43.11 | 計 887 % | 68.36 89.03 65.59 | 264 %、1.243 GiB | 30 → 36 %（AC） | 2 / 2 |
+| table_lap2 | 07:17:00 | 64.58 87.16 65.33 | 計 944 % | 75.29 71.38 64.86 | 376 %、1.263 GiB | 37 → 47 %（AC） | 2 / 0 |
+
+### §2 の組 1（設計書 §13.6、logical、`household`）
+
+どの回も起動し直した Gazebo で、伏せから始まり、最初の動作は「立つ」。`run_formula` の終了コードはどれも 0。
+
+| 回 | 起動（日本時間） | 式 | 判定 | 巻き数 / 箱の縁まで | 椅子の中心まで・角度 / 椅子の縁まで | 最大の傾き | RTF（歩く間の中央値） | load（前 → 後） |
+|---|---|---|---|---|---|---|---|---|
+| lap1 | 20:03:11 | `F around_box_1` | 合格 | 1.069 / 0.797 m | — | 0.065 | 0.738 | 2.81 → 11.57 |
+| lap2 | 20:05:56 | `F around_box_1` | 合格 | 1.043 / 0.872 m | — | 0.136 | 0.894 | 10.85 → 6.33 |
+| lap3 | 20:08:26 | `F around_box_1` | 合格 | 1.044 / 0.857 m | — | 0.220 | 0.695 | 6.06 → 10.85 |
+| lap4 | 20:11:39 | `F around_box_1` | 合格 | 1.042 / 0.869 m | — | 0.087 | 0.760（止まり 0.628） | 10.86 → 8.07 |
+| lap5 | 20:14:28 | `F around_box_1` | 合格 | 1.042 / 0.868 m | — | 0.058 | 0.878 | 8.07 → 9.66 |
+| chair1 | 20:17:09 | `F near_chair_1` | 合格 | — | 1.093 m・29.6° / 0.788 m | 0.128 | 0.771 | 9.66 → 9.79 |
+| chair2 | 20:18:00 | `F near_chair_1` | 合格 | — | 1.135 m・25.2° / 0.838 m | 0.064 | 0.624 | 9.79 → 13.43 |
+| chair3 | 20:19:01 | `F near_chair_1` | 合格 | — | 1.084 m・29.4° / 0.782 m | 0.058 | 0.664（止まり 0.642） | 13.43 → 12.93 |
+| hello1 | 20:20:00 | `F(near_chair_1 & X F hello)` | 合格 | — | 1.101 m・35.8° / 0.789 m | 0.141 | 0.639 | 12.93 → 11.44 |
+| box1 | 20:21:03 | `F near_box_1`（`--target box_1`） | 合格 | — | 箱：縁まで 0.845 m・足跡に 8.5°・中心まで 1.167 m・22.8°・どの足跡にも 0.841 m | 0.130 | 0.646 | 13.01 → 15.61 |
+
+- 一周は 5 回とも通り、3 回続けての線も満たす（5 回続けて）。巻き数の幅は 1.042〜1.069、箱の縁までの最小は 0.797 m（線は 0.6）。
+- 椅子は 3 回とも、中心まで 1.084〜1.135 m（線は 1.5）、角度 25.2〜29.6°（線は 45）、縁まで 0.782〜0.838 m（線は 0.45）。挨拶つきは 35.8°。
+- 「箱の前まで」は §10.8 の縁の線と、O16 の中心の線（logical のときだけ）を両方満たす。`source` は `logical`。
+- 回の RTF（`objects_check.py run` の `rtf_stats`、10 秒の窓の中央値、画面あり、上のほかの組の負荷の中）：歩いている間 0.624〜0.894。
+- 橋渡しの測った大きさ（設計書 §10.9「箱と椅子では測る値は変わらない（§13.6 で確かめる）」）：`household` の箱 0.524 × 0.540、椅子 0.462 × 0.477
+  （どちらも `measured: true`。ソファの回 1 の `/go2/objects`、始めの位置で見たもの）。設計書 §12.4 の「Gazebo で測ったような大きさ（箱 0.53 × 0.52、
+  椅子 0.5 × 0.5）」と同じくらいで、まわりのほかの物の点は入っていない。
+
+### 新しい種類（設計書 §13.4 の logical、計画 H5）
+
+目標は部屋の直しの後の部屋の 4 つ：`sofa_1`・`suitcase_1`（Bf から）、`traffic_cone_1`（R5 から）、`table_1`（L から。logical だけ）。
+回ごとに起動し直した Gazebo で、試験の姿勢の手順（計画「The room after the room fix」）を 1 つずつ流し、`resolve --target <id> --timeout 300` を
+姿勢に着く式（Bf は `F moved_forward`、R5 は 5 歩の式、L は `F turned_left`）の直前に裏で始め（pre-final review F11）、`resolve` が終わってから
+目標の式を流した。どの回も `run_formula` の目標の式の終了コードは 0。
+
+列：着いた姿勢は `resolve` の後に odometry を 1 通読んだもの。「手順」は手順の式の終了コード（立つ・回る・前に出る）と `resolve` の終了コード。
+「目標の行」は目標の式の直前の `/go2/objects`。「前」は「前方に物が出た」の行の数（かっこはセンサーが途切れた回数）。
+
+| 回 | 起動 | 着いた姿勢（x, y, 向き） | 手順 / `resolve` | 目標の行の大きさ、測った | 計画の手 | 判定 | 線の値 | 最大の傾き | 前 | RTF（歩く間） | load（前 → 後） |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| sofa_near1 | 13 日 20:23:17 | (−0.453, −0.112, −166.9°) | 0・0・0 / 0 | 1.052 × 1.797、済 | 5 | 合格 | 縁 1.180 m・2.3°・どの足跡にも 0.544（suitcase_1） | 0.022 | 0（0） | 0.877 | 6.46 → 5.66 |
+| sofa_near2 | 13 日 20:24:40 | (−0.484, −0.060, −173.8°) | 0・0・0 / 0 | 1.054 × 1.830、済 | 5 | 合格 | 縁 1.102 m・0.0°・どの足跡にも 0.780（suitcase_1） | 0.093 | 0（0） | 0.857 | 4.60 → 6.93 |
+| sofa_lap1 | 13 日 20:25:44 | (−0.494, −0.046, −171.6°) | 0・0・0 / 0 | 1.053 × 1.808、済 | 49 | 合格 | 巻き数 0.923・縁 0.883 m | 0.052 | 1（0） | 0.670 | 7.02 → 14.35 |
+| sofa_lap2 | 14 日 06:35:52 | (−0.501, −0.125, −170.7°) | 0・0・0 / 0 | 1.053 × 1.782、済 | 55 | 合格 | 巻き数 0.917・縁 0.749 m | 0.055 | 1（0） | 0.868 | 7.68 → 7.40 |
+| suitcase_near1 | 06:39:52 | (−0.453, −0.057, −170.6°) | 0・0・0 / 0 | 0.495 × 0.307、済 | 2 | 合格 | 縁 0.972 m・29.6°・どの足跡にも 0.963（suitcase_1） | 0.021 | 0（0） | 0.858 | 6.55 → 7.77 |
+| suitcase_near2 | 06:40:57 | (−0.485, −0.141, −167.6°) | 0・0・0 / 0 | 0.506 × 0.312、済 | 6 | 合格 | 縁 1.137 m・2.7°・どの足跡にも 1.128（suitcase_1） | 0.047 | 0（0） | 0.868 | 7.85 → 7.34 |
+| suitcase_lap1 | 06:42:19 | (−0.466, −0.062, −174.0°) | 0・0・0 / 0 | 0.498 × 0.309、済 | 26 | 合格 | 巻き数 1.033・縁 0.892 m | 0.037 | 0（0） | 0.846 | 6.99 → 7.07 |
+| suitcase_lap2 | 06:44:39 | (−0.471, −0.032, −169.1°) | 0・0・0 / 0 | 0.501 × 0.305、済 | 26 | 合格 | 巻き数 1.035・縁 0.896 m | 0.037 | 0（0） | 0.766 | 6.58 → 14.05 |
+| cone_near1 | 06:47:14 | (−0.345, −2.757, −97.5°) | 0・0・0 / 0 | 0.489 × 0.349、済 | 1 | 合格 | 縁 0.953 m・0.0°・どの足跡にも 0.952（traffic_cone_1） | 0.040 | 0（0） | 0.606 | 14.05 → 18.76 |
+| cone_near2 | 06:48:49 | (−0.310, −2.723, −96.8°) | 0・0・0 / 0 | 0.482 × 0.345、済 | 1 | 合格 | 縁 0.984 m・0.0°・どの足跡にも 0.984（traffic_cone_1） | 0.208 | 0（0） | 0.547 | 21.73 → 22.10 |
+| cone_lap1 | 06:50:23 | (−0.413, −2.718, −97.6°) | **1**・0・0 / 0 | 0.479 × 0.349、済 | 28 | 合格 | 巻き数 1.103・縁 0.880 m | 0.072 | 0（0） | 0.562 | 22.15 → 21.41 |
+| cone_lap2 | 06:54:03 | (−0.374, −2.755, −96.9°) | **1**・0・0 / 0 | 0.506 × 0.352、済 | 28 | 合格 | 巻き数 1.104・縁 0.881 m | 0.056 | 4（4） | 0.554 | 22.34 → 39.12 |
+| table_near1 | 06:57:49 | (0.037, −0.045, 96.6°) | **1**・0 / **1** | 1.500 × 1.200、**未** | 10 | 合格 | 縁 1.233 m・3.2°・どの足跡にも 0.931（suitcase_1） | 0.035 | 1（1） | 0.679 | 37.93 → 31.65 |
+| table_near2 | 07:04:13 | (0.036, 0.035, 92.5°) | 0・0 / **1** | 1.500 × 1.200、**未** | 10 | 合格 | 縁 1.160 m・14.4°・どの足跡にも 1.069（suitcase_1） | 0.063 | 0（0） | 0.563 | 29.72 → 95.41 |
+| table_lap1 | 07:10:52 | (0.012, 0.024, 94.6°) | **1**・0 / 0 | 1.412 × 0.807、済 | 56 | 合格 | 巻き数 1.087・縁 0.775 m | 0.057 | 1（1） | 0.581 | 103.90 → 68.36 |
+| table_lap2 | 07:17:00 | (0.034, 0.019, 96.0°) | 0・0 / **1** | 1.500 × 1.200、**未** | 54 | 合格 | 巻き数 1.081・縁 0.955 m | 0.098 | 9（9） | 0.599 | 64.58 → 75.29 |
+
+- **スーツケース（R-H3j）と、コーン（R-H3k）の結果を分けて書く：** スーツケースは Bf から手前 2/2（縁まで 0.972・1.137 m）、周回 2/2
+  （巻き数 1.033・1.035、縁まで 0.892・0.896 m）。コーンは R5 から手前 2/2（縁まで 0.953・0.984 m、どちらも足跡に 0.0°）、周回 2/2
+  （巻き数 1.103・1.104、縁まで 0.880・0.881 m）。どちらも logical（正解の位置）なので、detector のときの見え方の余りの薄さ（R-H3j の方位、
+  R-H3k の確からしさ）はここでは試されていない。それは H6。
+- **前の物のビット（O14）：** ソファの手前 2 回は「前方に物が出た」の行 0（立たなかった）。手前の最後の縁までは 1.10〜1.18 m で、
+  `final_edge` 0.50 m 未満の notes はどの手前の回にもない。周回では立った：ソファの周回 2 回とも、最初の左に回る間に 1 回ずつ（すぐ消えた。
+  センサーの途切れはない。周回の道はスーツケースの 0.465〜0.477 m を通る）。lap2・lap5・cone_lap2・table_near1・table_lap1・table_lap2 の
+  「前方に物が出た」は、どれもセンサーの途切れ（load の高い間の「センサー（LiDAR か /sportmodestate）が途切れています」の一時停止）と一緒に出たもの。
+- **`resolve` の待ち（`listed_after_still_s`）：** ソファ・スーツケース・コーンの 12 回は `null`（標準エラー「the row was measured in the first
+  /go2/objects message this tool got」）。logical では目標は B か R（姿勢に着く式の前）で論理カメラに入り、その止まりで測られるので、
+  `resolve` を始めたときにはもう `measured: true`。テーブルの table_lap1 は L に着いて **0.97 秒**。ほかのテーブルの 3 回は下の「テーブルが測られない」。
+  待ちの線は detector のとき（H6 M4）だけで、logical の H5 には線がない。
+
+### テーブルが L から測られない（手順の「測られるのを待つ」）
+
+- 4 回のうち 3 回（table_near1・table_near2・table_lap2）、`resolve` は 300 秒待って終了コード 1（`"measured": false`）。行はずっと
+  1.5 × 1.2（F2 の裁定の、測る前の [L, L] と配置の大きさの軸ごとの大きいほう）。`nk` の手順は `resolve` の後に目標の式へ進むので、
+  この 3 回は**計画の「measured: true を待ってから式」を満たさないまま**流した。式はその足跡で計画され、線（正解の配置の足跡で測る）は通った。
+- **わけ（証拠）：** table_near2 で `resolve` が待っている間（07:06、L で止まっている）に、読むだけの使い捨てのスクリプトで
+  `/utlidar/cloud` と odometry を 15 秒受け、橋渡しと同じ変換（`lidar_points_world`）・同じ止まりの門（`StillGate`）・同じ半径
+  （`measure_radius`）・`GROUND_Z` で、物ごとの点を数えた。止まった 90 枚のどれでも、**テーブルの半径 1.008 m の中の点は 2 個**
+  （高さ 0.95〜0.96 m、天板の縁）で、`footprint_size` の `SIZE_MIN_POINTS`（10）に届かない。同じ枚で、ほかの物は box_1 28・chair_1 20・
+  suitcase_1 63・traffic_cone_1 9・sofa_1 58。L からテーブルの中心までは約 5.0〜5.1 m で、LiDAR（16 本、4° ごと、±30°）の点はこの枚では天板の縁にだけ
+  当たり、脚の点はなかった。
+- 測られた table_lap1（L の (0.012, 0.024, 94.6°)）では、L に着いて 0.97 秒で 1.412 × 0.807 になった。姿勢がわずかに違うと点の数が
+  10 を越えたり越えなかったりする、ぎりぎりの所。Bf の回（B を通る手順）では、目標の式の前の `/go2/objects` で、テーブルは
+  8 回のうち 7 回 `measured: true`（1.423〜1.519 × 0.777〜0.836。B か Bf の止まりで測ったもの。テーブルまで約 4.8 m で、
+  L からとは見る向きが違う）。R5 の回ではテーブルは一覧に入らない（見ていない）。
+- コードは変えていない。どうするかは controller に返す（下）。
+
+### 着いた姿勢（R-H5a。固定は変えていない）
+
+| 姿勢 | 回 | x | y | 向き | `tests/test_household.py` の範囲（`MEASURED_RANGES`） | 外れ |
+|---|---|---|---|---|---|---|
+| Bf | ソファ 4、スーツケース 4 | −0.501〜−0.453 | −0.141〜−0.032 | −174.0〜−166.9° | x −0.560〜−0.506、y −0.141〜−0.054、向き −172.4〜−166.6° | x は 8 回とも前（0.005〜0.053 m）、y は 2 回 先（−0.046・−0.032、最大 0.022 m）、向きは 2 回 回りすぎ（−173.8・−174.0、最大 1.6°） |
+| R5 | コーン 4 | −0.413〜−0.310 | −2.757〜−2.718 | −97.6〜−96.8° | x −0.359〜−0.225、y −2.804〜−2.654、向き −98.0〜−95.1° | x は 2 回 先（−0.374・−0.413、最大 0.054 m） |
+| L | テーブル 4 | 0.012〜0.037 | −0.045〜0.035 | 92.5〜96.6° | 範囲なし（`MEASURED_POSES["L"]` は (0.011, 0.037, 96.1°)） | — |
+
+どの姿勢からも、目標の手前と周回は計画があり、線は通った。R-H5a は Bf の範囲を H5 の姿勢まで広げる。R5 も外れたので、同じ扱いが要るかもしれない
+（controller へ）。
+
+### 手順の「立つ」が error で終わった回（重い負荷の下）
+
+- cone_lap1・cone_lap2・table_near1・table_lap1 の 4 回、手順の最初の `run_formula "F standing"` が「完了：立つ（伏せ → 立ち）」の後に
+  「姿勢が計画と違います（計画: 立ち / 実際: 伏せ）」の error（終了コード 1）で終わった。どれも 1 分の load が 22〜104 の間。
+- 橋渡しのログでは、どの回も passive → fixed down の 3.3〜4.0 秒後に fixed down → fixed stand に切り替わっていて（Go2 は立った）、
+  次の式（回る）はふつうに始まり、着いた姿勢の胴の高さは 0.333〜0.335 m。目標の式はどれも立った所から始まり、線は通った。
+- 線ではない手順の段の外れなので、やり直しの決まり（R-PAR は線の外れ）には当たらないと判断して、数えた。進み具合の帳面の
+  bridge-stand-sync の記録（負荷の下で BalanceStand が fixed down のうちに届き、橋渡しは切り替えの知らせまで 4 を保つ）と同じ負荷の下の形で、
+  Session の姿勢の確かめが切り替えより先に来たもの。コードは変えていない（controller へ）。
+
+### 測った足跡の大きさ（logical、`/go2/objects`）
+
+- ソファ 1.052〜1.054 × 1.782〜1.830（配置 1.044 × 1.8）。スーツケース 0.495〜0.506 × 0.305〜0.312（配置の世界の軸で 0.468 × 0.291）。
+  テーブル（測れた回）1.412 × 0.807、1.465 × 0.826（配置 1.5 × 0.8）。
+- **コーン 0.479〜0.506 × 0.345〜0.352（配置 0.503 × 0.503）：y の幅がモデルの底より 0.15 m 小さい。** R5 からは −y を向いて見るので、
+  LiDAR の点はコーンの +y の面の、底より上（円すいで細くなる所）に当たる。`footprint_size` は分かっている中心から 2·max|dy| で測るので、
+  見えた高さの幅になる。設計書 O12 の前提（足跡は本当の物より小さくならない）は、細くなる形では logical の測った値で崩れる。
+  線は正解の配置の足跡で測っていて、コーンのどの回もどの足跡にも 0.880 m 以上。controller へ。
+
+### 眠り
+
+- **13 日 20:29:55 に Mac が蓋を閉じて眠った**（`pmset -g log`：`Entering Sleep state due to 'Clamshell Sleep'`、電池 43%）。ソファの周回の 2 回目を
+  20:29:45 に起動した 10 秒後で、その後は短く起きる間（`DarkWake`、数秒から十数秒、約 15 分ごと）だけが続いた。
+- 眠りをまたいだ sofa_lap2 は数えない（R-H5b）：「立つ」は終わったが Session が「姿勢が計画と違います（計画: 立ち / 実際: 伏せ）」で error にし
+  （橋渡しが fixed down → fixed stand を見たのは起動からシミュレーションの時間で約 228 秒後）、回る間に「センサーが途切れています」で 2 回止まり、
+  `resolve` は 21:27、`F moved_forward` は 21:29〜21:47、目標の式は 21:51 に始まって終わらなかった。
+- 22:25 の短い起きる間に、続きの回を止め、こちらの container（`go2oo-gazebo-1`、`go2oo-app-run-e367c87c07c1`）を消して `G down` した。
+  ふつうに起きるのを 3 時間（01:33 まで）待っても起きなかったので、そこまでの記録を `affdbd7` に入れた。
+- その後（controller の指示、R-H5b）、`ioreg` の `AppleClamshellState` が No か `pmset -g batt` が AC になるのを、1 回 `sleep 590` ずつ待った。
+  **14 日 06:27:43 に蓋が開いて起きた**（`pmset -g log`：`Wake from Deep Idle … due to … lid`）。門は次の確かめの 06:35:15 に開いた（No、電池 33%）。06:35:52 から、眠りで切れた sofa_lap2 を同じ手順で流し直し、続きを流した。
+  14 日の回の間に眠りはなかった（どの回の間も 5 秒ごとに門と眠りの記録を見た）。
+- 眠りの前の 13 回は、どれも眠りの前に終わっている（最後の sofa_lap1 は 20:29:42 に Gazebo を止める所まで）。
+
+### M0：logical の `household` の RTF（最後に。R-PAR、C4）
+
+起動し直した Gazebo（logical、Go2 は伏せたまま、式なし）で、立ち上がって 20 秒の後に
+`G run --rm --no-deps -T app python3 gazebo/tools/objects_check.py rtf --seconds 75`。画面ありは `G --profile gazebo up -d --no-build gazebo`、
+画面なしは計画の Wave 3 の形（`OBJECTS_SOURCE=logical G run -d --no-deps --service-ports --name go2oo-gazebo gazebo ros2 launch
+/work/gazebo/launch/go2_gazebo.launch.py gui:=false`、止めるのは `docker rm -f go2oo-gazebo` と `G down`）。
+どの回も、始める前に、ほかの組の `pytest` がなく 1 分の load が 4 未満になるのを 60 秒ごとに待った（R-PAR。M0 は線がないので、60 分で
+load が下がらなければ `pytest` がないことだけで始める決まりにしたが、そうなった回はない）。古い記録は使っていない（C4）。
+
+| 回 | 窓の始め（日本時間） | 画面 | RTF（75 秒） | 始めの load（1・5・15 分） | 終わりの load | 窓の間のほかの container（`docker stats`、始め / 終わり） | `go2oo-gazebo`（CPU、メモリ） | 電源 |
+|---|---|---|---|---|---|---|---|---|
+| m0_on1 | 07:51:59 | あり | **0.79** | 3.70 14.49 32.06 | 7.42 12.70 29.32 | `go2-app-run-…` 2 つ、各 100 % / なし | 426 %、1.253 GiB | AC、69 → 71 % |
+| m0_on2 | 08:00:47 | あり | **0.85** | 3.81 6.41 19.60 | 6.42 6.52 18.11 | なし / なし | 431 %、1.26 GiB | AC、78 → 79 % |
+| m0_on3 | 08:14:37 | あり | **0.82** | 3.84 5.37 10.86 | 9.30 6.61 10.69 | `go2-app-run-…` 100 % / 別の `go2-app-run-…` 102 % | 411 %、1.261 GiB | AC、88 → 89 % |
+| m0_off1 | 08:22:26 | なし | **0.87** | 2.00 3.76 7.91 | 8.95 5.97 8.30 | なし / `go2-app-run-…` 211 % | 237 %、651 MiB | AC、93 → 94 % |
+| m0_off2 | 08:28:14 | なし | **0.93** | 3.40 4.54 7.08 | 11.67 7.41 7.91 | なし / `go2-app-run-…` 104 % | 257 %、639 MiB | AC、96 → 97 % |
+| m0_off3 | 08:40:10 | なし | **0.82** | 3.45 11.37 12.64 | 11.18 11.28 12.42 | なし / `go2-app-run-…` 403 % | 251 %、638 MiB | AC、99 % |
+
+- 画面あり 0.79〜0.85（中央値 0.82）、画面なし 0.82〜0.93（中央値 0.87）。始めはどれも 1 分の load が 4 未満で `pytest` はなかったが、
+  ほかの組の container は 6 回のうち 5 回、始めか終わりに動いていて（`pytest` でないもの、100〜403 %）、終わりの load は 6.4〜11.7。いちばん低い画面なしの 0.82（m0_off3）は、終わりに 403 % の container があった回。
+- 参考（線ではない）：§2 の組と新しい種類の回の `rtf_stats`（画面あり、歩いている間、ほかの組の重い負荷の中）は 0.547〜0.894。
+  どの回も線を満たしたので、D7 の判断の「その RTF で一周と手前が通る」は logical では満たす。
+
+### controller に返すこと（decisions_needed）
+
+1. **テーブルが L から測られない（手順）。** 4 回のうち 3 回、L で `measured: true` にならず（LiDAR の点 2 個 < `SIZE_MIN_POINTS` 10、
+   天板の縁だけ）、`resolve` が 300 秒で切れたまま式を流した。線はどれも通った（測る前の 1.5 × 1.2 の足跡で計画）。決めること：この 3 回を
+   §13.4 の logical の 2/2 に数えてよいか（このまま数えると、テーブルは手前 2/2・周回 2/2）。数えないなら、テーブルの試験の姿勢を
+   近くする（例えば L に 1 歩か 2 歩足す。§12.1 と周回の計画の確かめが要る）か、テーブルの測り方（半径・点の数）を変える設計の話になる。
+   H5 ではコードも姿勢も変えていない。
+2. **R5 も着いた姿勢が固定の範囲の外。** R-H5a は Bf を広げる。R5 のコーンの 2 回は x −0.374・−0.413（範囲 −0.359 まで、最大 0.054 m 先）。
+   R-H3k (1) と同じく R5 の範囲も広げて固定し直すか。Bf の H5 の範囲は x −0.501〜−0.453、y −0.141〜−0.032、向き −174.0〜−166.9°
+   （R-H5a に書かれた値より、y は −0.032 まで、向きは −174.0 まで広い）。
+3. **重い負荷の下で、手順の「立つ」が error（4 回）。** Session の姿勢の確かめが、橋渡しの fixed down → fixed stand の知らせより先に来た形。
+   Go2 は立っていて線は通ったので数えた。H6 は待ちの時間の線を測るので、H6 の間は R-PAR のとおりほかの組を軽くするか、手順の「立つ」の
+   error を見たらその回をやり直すか。
+4. **コーンの測った足跡が y でモデルの底より 0.15 m 小さい（0.345〜0.352 / 0.503）。** 細くなる形では O12 の前提が logical の測った値で
+   崩れる。線は正解の足跡で通った。Task 4.1 に書く限りとしてよいか。
+
+### 動かした container
+
+- `G` の compose project `go2oo` の `go2oo-gazebo-1`（画面あり）と `go2oo-gazebo`（画面なし、名前を付けた `G run -d`）、`G run --rm … app`
+  の `go2oo-app-run-…`（`run_formula`・`objects_check`・odometry を 1 通読むもの・読むだけの LiDAR の数え）だけ。どれも回ごとに `G down`
+  （画面なしは `docker rm -f go2oo-gazebo` も）で止めた。終わった後に残った `go2oo` の container はない。
+- ほかの組の container（`go2-app-run-…`、`t3cmp-…`、`t3-after`）には触れていない。利用者の `go2` の project（`go2-gazebo-1`・`go2-app-1`）は
+  どの時も動いていなかった。

@@ -128,9 +128,11 @@ class GazeboBridge(Node):
         self.layout = lay              # GO2_LAYOUT の配置（置く物と正解の大きさ）
         topics = objects_topics(source)
         # 正解（配置の大きさ）。logical camera が見た配置の物
-        self.truth = ObjectMemory(sizes={e.id: e.world_size() for e in lay.entries})
-        # /go2/objects（logical のときだけ）：LiDAR で測った大きさ。detector のときは検出器が出すので持たない
-        self.memory = ObjectMemory() if OBJECTS_TOPIC in topics else None
+        sizes = {e.id: e.world_size() for e in lay.entries}
+        self.truth = ObjectMemory(sizes=sizes)
+        # /go2/objects（logical のときだけ）：LiDAR で測った大きさ。測るまでは [L, L] と配置の大きさの軸ごとの
+        # 大きい方（pre-final review F2）。detector のときは検出器が出すので持たない
+        self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None
         self.still = StillGate()       # 胴が止まっている間の点群だけで物の大きさを測る
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)

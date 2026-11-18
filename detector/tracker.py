@@ -24,7 +24,11 @@
 - 見える絵：`in_view` は呼ぶ側（core）が、カメラから 6 m 以内・絵の中・LiDAR に隠されていない、のすべてを
   確かめる。追跡はカメラの位置を見え方の `cam_xy` からしか知らないので、見え方のない絵では `in_view` だけで決まる。
 - 形：LiDAR に支えられた直近 6 回の当たりの点（0.05 m で間引き、2000 点まで）を `fuse` に渡す（向きは
-  いちばん新しい見え方）。予備の見え方は、LiDAR に支えられた追跡を動かさない。
+  いちばん新しい見え方）。1 回ずつの当たりも、その絵のカメラと間引かない点で渡す。奥の端は、そのどれかが
+  自分の点で 60° 以内に見たときだけ見えたとする（R-PF3）。予備の見え方は、LiDAR に支えられた追跡を動かさない。
+  - 横の辺も、2 つの止まりの和では当たりが自分の点で見たときだけ見えたとし、ほかは当たりの余白と足跡まで（R-PF3b）。
+  - どの当たりのカメラもいちばん新しいものから ONE_STOP（0.1 m）以内なら 1 つの止まりで、横の辺は和のまま。
+  - どちらの軸も S + EDGE_PAD より長く見えない和は長い辺が分からず、見えない横の辺は当たりの余白だけ（R-PF3c）。
 
 名前は見え方の label だけから取る（ほかのトピックやファイルは読まない）。出すときに単語帳の label か確かめ直し、
 仮の追跡は出さない。時刻：frame_t・scan_t はセンサーの時刻（シミュレーション）、wall_t・wall_now は `seen` の
@@ -95,7 +99,9 @@ class _Track:
         self.filled = False
         self.measured = False                   # the geometry comes from LiDAR-supported hits
         self.cam_xy = (0.0, 0.0)                # the newest view
-        self.point_frames: deque[np.ndarray] = deque(maxlen=TRACK_POINT_FRAMES)
+        # the last TRACK_POINT_FRAMES supported hits: (raw points N x 2, at most MAX_TRACK_POINTS, the camera XY
+        # of that view). Only their union is thinned: geometry's pads are sized for raw returns
+        self.point_frames: deque[tuple[np.ndarray, tuple[float, float]]] = deque(maxlen=TRACK_POINT_FRAMES)
         self.hits: deque[_Hit] = deque(maxlen=RELABEL_HITS)
         self.votes: dict[str, float] = {}       # label -> summed confidence, every hit (the tentative label)
         self.confidences: dict[str, deque[float]] = {}
@@ -117,9 +123,16 @@ class _Track:
 
 class Tracker:
     def __init__(self, thresholds: Thresholds, priors: Mapping[str, tuple[float, float]],
-                 fuse: Callable[[np.ndarray, tuple[float, float], tuple[float, float]], object | None]) -> None:
-        """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior) returns an object with
-        x, y, size and filled (geometry.footprint), or None."""
+                 fuse: Callable[..., object | None]) -> None:
+        """priors: label -> vocabulary size [long, short]; fuse(points_xy, cam_xy, prior, views=[(points, cam_xy),
+        ...]) returns an object with x, y, size and filled (geometry.footprint), or None. points_xy is the union
+        of the track's last hits (thinned), cam_xy the newest camera and views those hits one by one (raw, at most
+        MAX_TRACK_POINTS each), so a far end that an older view saw keeps its observed depth, and a far end that
+        none of them saw with its own returns is not taken as seen from the newest camera (spec §11.6; pre-final
+        review F3, round 2 and R-PF3). From two stops a lateral side too counts as seen only when one hit's own
+        returns reached it; an unseen one gets the hits' pads and footprints there, within the prior (R-PF3b).
+        Hits whose cameras all lie within geometry.ONE_STOP (0.1 m) of the newest are one stop: no lateral rule.
+        A union that observes neither face axis longer than S + EDGE_PAD takes only the hits' pads there (R-PF3c)."""
         check_thresholds(thresholds, vocabulary.LABELS)
         self._th = thresholds
         self._priors = dict(priors)
@@ -248,10 +261,12 @@ class Tracker:
             track.label = max(track.votes, key=track.votes.__getitem__)   # ties: the label seen first
         cam = _xy(o.cam_xy)
         if o.supported and points is not None and len(points):
-            track.point_frames.append(_thin(points))
+            track.point_frames.append((_cap(points), cam))
             track.cam_xy = cam
             track.measured = True
-            fused = self._fuse_fn(_thin(np.concatenate(list(track.point_frames))), cam, self._prior(track.label))
+            views = list(track.point_frames)
+            fused = self._fuse_fn(_thin(np.concatenate([pts for pts, _ in views])), cam, self._prior(track.label),
+                                  views=views)
             if fused is not None and _finite(fused.x) and _finite(fused.y) and _size(fused.size) is not None:
                 track.x, track.y, track.size, track.filled = (float(fused.x), float(fused.y), _size(fused.size),
                                                               bool(fused.filled))
@@ -466,10 +481,16 @@ def _thin(points: np.ndarray) -> np.ndarray:
         return points
     keys = np.floor(points / THIN_CELL).astype(np.int64)
     _unique, first = np.unique(keys, axis=0, return_index=True)
-    out = points[np.sort(first)]
-    if len(out) > MAX_TRACK_POINTS:
-        out = out[np.linspace(0, len(out) - 1, MAX_TRACK_POINTS).round().astype(np.int64)]
-    return out
+    return _cap(points[np.sort(first)])
+
+
+def _cap(points: np.ndarray) -> np.ndarray:
+    """At most MAX_TRACK_POINTS points, evenly spaced (a single view kept for footprint's views: not thinned,
+    since thinning moves the extreme point up to one cell inward and geometry's pads are sized for raw returns;
+    pre-final review round 2)."""
+    if len(points) > MAX_TRACK_POINTS:
+        return points[np.linspace(0, len(points) - 1, MAX_TRACK_POINTS).round().astype(np.int64)]
+    return points
 
 
 def _spaced(hits: list[_Hit]) -> int:

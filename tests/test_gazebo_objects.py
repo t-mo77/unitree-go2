@@ -1,9 +1,11 @@
 """Gazebo の物（logical camera・配置ファイルの物・/go2/objects と /gazebo/objects_truth）の、ROS を使わない部品
 （Task D、open-objects Task 2.3）。"""
 
+import io
 import json
 import math
 import re
+import tokenize
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -352,6 +354,8 @@ def test_the_gazebo_image_carries_the_controller_patches():
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
     assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
+    for tag in ("patch-0004", "patch-0002"):          # those images have no Fuel models (pre-final review F6)
+        assert f"GO2_LAYOUT=default GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:{tag} docker compose" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in gazebo
 
 
@@ -411,6 +415,40 @@ def test_publisher_note_names_the_missing_detector():    # Review Focus 3
         assert OBJECTS_TOPIC in note and "\n" not in note
     with pytest.raises(ValueError):
         objects_publisher_note("fake", 1)
+
+
+def code_text(path: Path) -> str:
+    """The file's text with every comment cut off (tokenize), so a line commented out passes no text check
+    (pre-final review round 2: 「# self.create_timer(…)」 and 「pass  # self.get_logger().error(note)」 passed)."""
+    text = path.read_text(encoding="utf-8")
+    cut = {tok.start[0]: tok.start[1] for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+           if tok.type == tokenize.COMMENT}
+    lines = io.StringIO(text).readlines()                       # numbered as tokenize numbers them
+    return "".join(line[:cut[n]].rstrip() + "\n" if n in cut else line for n, line in enumerate(lines, 1))
+
+
+def test_code_text_cuts_comments_only(tmp_path):
+    f = tmp_path / "m.py"
+    f.write_text('a = 1  # one\n# b = 2\nc = "# not a comment"\nif a:\n    pass  # d = 4\n', encoding="utf-8")
+    assert code_text(f) == 'a = 1\n\nc = "# not a comment"\nif a:\n    pass\n'
+
+
+def test_the_bridge_node_checks_the_publishers_every_10_s_and_stops_on_bad_settings():   # pre-final review F14
+    # the node needs rclpy and the Jazzy types, so its wiring is checked in its text without comments (as
+    # test_bridge_core does for parse_switch): the 10 s timer, the error line, and exit 1 before GazeboBridge on
+    # bad settings
+    assert bridge_core.PUBLISHER_NOTE_S == 10.0
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
+    assert "self.create_timer(PUBLISHER_NOTE_S, self._check_publishers, clock=wall)" in node
+    check = node[node.index("    def _check_publishers(self)"):]
+    check = check[:check.index("\n    def ", 1)]
+    assert "objects_publisher_note(self.source, self.count_publishers(OBJECTS_TOPIC))" in check
+    assert "self.get_logger().error(note)" in check
+    main = node[node.index("def main() -> None:"):]
+    settings = main[main.index("source, lay = bridge_settings()"):main.index("rclpy.init()")]
+    assert re.search(r"except ValueError as e:.*\n\s+rclpy\.logging\.get_logger\(NODE_NAME\)\.error\(str\(e\)\)"
+                     r"\n\s+sys\.exit\(1\)\n", settings)
+    assert main.index("sys.exit(1)") < main.index("GazeboBridge(source, lay)")
 
 
 def test_missing_model_folder_stops_the_bridge_before_spawning(tmp_path):   # Review Focus 5
@@ -505,6 +543,84 @@ def test_memory_starts_at_the_vocabulary_square_and_marks_measured():
     assert m.message(12.0)["source"] == "logical"
     m.update([("box_10", "box", 0.0, 0.0), ("box_2", "box", 1.0, 0.0)], 13.0)
     assert [o.id for o in m.objects()] == ["box_2", "box_10", "chair_1", "sofa_1"]   # _id_key order
+
+
+def test_logical_memory_starts_no_smaller_than_the_model():   # pre-final review F2 (R-PF; O12's premise)
+    # seeded with the layout's world sizes, the first footprint is the per-axis max of [L, L] and that size
+    seeds = {"table_1": (1.5, 0.8), "traffic_cone_1": (0.503, 0.503), "suitcase_1": (0.468, 0.291)}
+    m = ObjectMemory(seed_sizes=seeds)
+    m.update([("table_1", "table", -2.4, 4.4), ("traffic_cone_1", "traffic_cone", -0.3, -4.45),
+              ("suitcase_1", "suitcase", -1.62, -1.14), ("chair_1", "chair", 2.5, -1.5)], 10.0)
+    rows = {o.id: o for o in m.objects()}
+    assert rows["table_1"].size == (1.5, 1.2)                      # L 1.2 < the model's 1.5 along x
+    assert rows["traffic_cone_1"].size == (0.503, 0.503)           # L 0.35 < 0.503
+    assert rows["suitcase_1"].size == (0.468, 0.45)                # L 0.45 < 0.468 along x
+    assert rows["chair_1"].size == (0.45, 0.45)                    # no seed: the vocabulary square, as before
+    assert all(o.measured is False for o in rows.values())        # still not measured (O43)
+    m.update([("table_1", "table", -2.4, 4.4)], 11.0)
+    assert next(o for o in m.objects() if o.id == "table_1").size == (1.5, 1.2)   # kept across frames
+    m.set_size("table_1", (1.48, 0.79))
+    table = next(o for o in m.objects() if o.id == "table_1")
+    assert (table.size, table.measured) == ((1.5, 0.8), True)      # the first LiDAR size replaces it, but not
+    #                                                                below the layout's size (R-H5d, below)
+    # the household room: every first footprint covers the model in world axes and [L, L]; for the table, the
+    # cone and the suitcase it is larger than [L, L] (the review's three)
+    lay = layout.load("household")
+    sizes = {e.id: e.world_size() for e in lay.entries}
+    m = ObjectMemory(seed_sizes=sizes)
+    m.update([(e.id, e.label, e.x, e.y) for e in lay.entries], 10.0)
+    grown = set()
+    for o in m.objects():
+        square = bridge_core.default_size(o.label)
+        assert o.measured is False and all(a >= max(b, c) for a, b, c in zip(o.size, sizes[o.id], square)), o.id
+        if o.size != square:
+            grown.add(o.id)
+    assert grown == {"table_1", "traffic_cone_1", "suitcase_1"}
+    # the bridge node seeds its /go2/objects memory with the layout sizes its truth holds (the node needs rclpy,
+    # so its wiring is checked in its text, as for the publisher check)
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
+    assert "sizes = {e.id: e.world_size() for e in lay.entries}" in node
+    assert "self.truth = ObjectMemory(sizes=sizes)" in node
+    assert "self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None" in node
+
+
+def test_logical_memory_stays_no_smaller_than_the_model_once_measured():   # R-H5d (O12's premise; D4)
+    # H5's cone from R5: the LiDAR band hits the cone above its base, where it tapers, so the measured rows were
+    # 0.479-0.506 x 0.345-0.352 against the model's 0.503 x 0.503. With the layout's world size as seed, each axis
+    # keeps at least that size after measuring too; measured still says the LiDAR saw it.
+    seeds = {"traffic_cone_1": (0.503, 0.503), "table_1": (1.5, 0.8)}
+    m = ObjectMemory(seed_sizes=seeds)
+    m.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45), ("table_1", "table", -2.398, 4.4),
+              ("chair_1", "chair", 2.5, -1.5)], 10.0)
+
+    def row(obj_id):
+        return next(o for o in m.objects() if o.id == obj_id)
+
+    m.set_size("traffic_cone_1", (0.489, 0.349))                    # cone_near1's measured row
+    assert (row("traffic_cone_1").size, row("traffic_cone_1").measured) == ((0.503, 0.503), True)
+    m.set_size("traffic_cone_1", (0.506, 0.352))                    # cone_lap2's: wider than the model along x
+    assert (row("traffic_cone_1").size, row("traffic_cone_1").measured) == ((0.506, 0.503), True)
+    m.set_size("traffic_cone_1", (0.479, 0.345))                    # the larger per axis stays, as before
+    m.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 11.0)
+    cone = row("traffic_cone_1")
+    assert (cone.size, cone.measured, cone.visible) == ((0.506, 0.503), True, True)   # measured stays True
+    assert {r["id"]: r["measured"] for r in m.message(12.0)["objects"]}["traffic_cone_1"] is True
+    m.set_size("table_1", (1.412, 0.807))                           # H5's table from L: F2's 1.2 (the [L, L]
+    assert (row("table_1").size, row("table_1").measured) == ((1.5, 0.807), True)   # part) goes, 1.5 stays
+    m.set_size("chair_1", (0.4, 0.42))                              # no seed: the LiDAR size, as before
+    assert (row("chair_1").size, row("chair_1").measured) == ((0.4, 0.42), True)
+    # the truth keeps the layout's sizes and the plain /go2/objects memory (no seeds) its LiDAR sizes, as before;
+    # in detector mode the bridge keeps no /go2/objects memory at all (the detector publishes it), so nothing
+    # there changes
+    truth = ObjectMemory(sizes=seeds)
+    truth.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 10.0)
+    truth.set_size("traffic_cone_1", (0.489, 0.349))
+    assert truth.objects()[0].size == (0.503, 0.503) and truth.objects()[0].measured is None
+    plain = ObjectMemory()
+    plain.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 10.0)
+    plain.set_size("traffic_cone_1", (0.489, 0.349))
+    assert plain.objects()[0].size == (0.489, 0.349)
+    assert OBJECTS_TOPIC not in objects_topics("detector")
 
 
 def test_measuring_radius_follows_the_kind():

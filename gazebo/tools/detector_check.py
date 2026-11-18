@@ -2,9 +2,9 @@
 """Replay recorded still pairs through DetectorCore and score them against the truth, without Gazebo (spec §11.11,
 §12.8, §13.3; design-detector §12.2, §12.3).
 
-    python3 gazebo/tools/detector_check.py <set_dir> [--detector yoloe|oracle|yoloe_pf] [--layout household]
+    python3 gazebo/tools/detector_check.py <set_dir> [--detector yoloe|oracle] [--layout household]
 
-The detector image runs it for yoloe (and yoloe_pf), the app image for the oracle. <set_dir> holds the pairs of
+The detector image runs it for yoloe, the app image for the oracle. <set_dir> holds the pairs of
 gazebo/tools/record_frames.py (<view>.json, <view>.png, <view>_scan.npy). The detector is load_detector(--detector)
 (default: DETECTOR, else yoloe) with set_vocabulary(the vocabulary's detect / detect_ignore prompts); the oracle gets
 set_truth(the frame's truth rows) without heights, so its box uses the vocabulary height as in the node (review M8).
@@ -450,7 +450,7 @@ def _load_frame(path: Path) -> Frame:
 def _parse(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Replay recorded still pairs through the detector core (spec §11.11).")
     p.add_argument("set_dir", help="the folder record_frames.py wrote")
-    p.add_argument("--detector", choices=("yoloe", "oracle", "yoloe_pf"), default=None,
+    p.add_argument("--detector", choices=("yoloe", "oracle"), default=None,
                    help="the detector (default: DETECTOR, else yoloe)")
     p.add_argument("--layout", default=None, help="the layout (default: GO2_LAYOUT, else household)")
     return p.parse_args(argv)

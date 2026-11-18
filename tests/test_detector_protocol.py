@@ -229,8 +229,21 @@ def test_load_detector_rejects_unknown_names(monkeypatch):
     assert imported == []                               # nothing is imported for a bad name
 
 
-@pytest.mark.parametrize("name, module", [("yoloe", "detector.yoloe"), ("oracle", "detector.oracle"),
-                                          ("yoloe_pf", "detector.yoloe_pf")])
+def test_yoloe_pf_is_not_listed_until_it_is_built(monkeypatch):   # pre-final review F4 (O24: not built in v1)
+    from gazebo.tools import detector_check
+
+    assert set(protocol.DETECTORS) == {"yoloe", "oracle"}
+    imported = []
+    monkeypatch.setattr(protocol, "_import", lambda name: imported.append(name))
+    with pytest.raises(ValueError, match="yoloe_pf") as e:
+        load_detector("yoloe_pf")                       # a clear ValueError, not ModuleNotFoundError
+    assert "yoloe_pf" not in str(e.value).split(":")[0] and imported == []
+    with pytest.raises(SystemExit):
+        detector_check._parse(["set", "--detector", "yoloe_pf"])
+    assert "yoloe_pf" not in (detector_check.__doc__ or "")
+
+
+@pytest.mark.parametrize("name, module", [("yoloe", "detector.yoloe"), ("oracle", "detector.oracle")])
 def test_load_detector_imports_lazily(monkeypatch, name, module):
     class Fake:
         def __getattr__(self, attr):

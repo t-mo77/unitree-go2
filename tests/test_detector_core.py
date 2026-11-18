@@ -336,6 +336,15 @@ def test_image_and_scan_from_different_still_intervals_never_pair():
     assert job.still_since == pytest.approx(10.62)
 
 
+def test_a_frame_kept_while_still_is_not_run_once_the_go2_walks():   # pre-final review F13 (D5)
+    rig = Rig()
+    feed_still(rig, t0=10.0)                              # still: an image and a scan are kept, no worker
+    rig.feed(rig.t, rig.t + 0.3, trot=True, images=False, clouds=False, worker=False)   # walking again
+    dropped = rig.health()["frames_dropped"]
+    assert rig.core.next_job() is None                    # no inference while the Go2 walks
+    assert rig.health()["frames_dropped"] == dropped + 1  # the kept image is dropped, not kept for later
+
+
 def test_a_job_waits_for_odometry_to_reach_both_stamps():
     rig = Rig()
     core = rig.core
