@@ -113,7 +113,15 @@ def test_the_specs_point_to_each_other_and_carry_the_measured_room():
         assert words in spec, words
 
 
+# The voice plan's recording step names the agent temp folder twice on one line (line 941). It was on main before this
+# work and is left alone: the one known exception, pinned by its count so that a new temp path there still fails.
+KNOWN_TEMP = {"docs/superpowers/plans/2026-11-04-voice-ltl-go2.md": 2}
+
+
 def test_no_doc_carries_a_home_or_temp_path():
     home = re.compile(r"/Users/[A-Za-z0-9_.-]|/private/tmp/|/var/folders/")
+    temp = re.compile(r"/tmp/claude-\d+/|claude-\d+/-Users-")      # the agent temp folder and its scratchpad paths
     for path in [README, *sorted((ROOT / "docs").rglob("*.md"))]:
-        assert not home.search(text(path)), path.relative_to(ROOT)
+        name = path.relative_to(ROOT).as_posix()
+        assert not home.search(text(path)), name
+        assert len(temp.findall(text(path))) == KNOWN_TEMP.get(name, 0), name
