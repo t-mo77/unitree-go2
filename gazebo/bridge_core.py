@@ -169,6 +169,11 @@ PUBLISHER_NOTE_S = 10.0                   # /go2/objects の送り手の数を�
 # メッシュは 1 辺 0.3970367 m の立方体で、原点は底面の中心（patch-0005 のイメージの .dae で測った。単位は mm）
 CARDBOARD_MESH = "file:///opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box/meshes/cardboard_box.dae"
 CARDBOARD_MESH_SIDE = 0.3970367
+# その絵のフォルダ（R-H6e）。.dae は絵を名前だけ（cardboard_box.png）で引く。gz-common はメッシュの
+# ../materials/textures で見つけて描くが、Gazebo はその名前を GZ_SIM_RESOURCE_PATH でも探し、見つからないと
+# 「Could not resolve file [cardboard_box.png]」をログに出す（H6 の M5）。detector のときだけ launch がこのフォルダを
+# GZ_SIM_RESOURCE_PATH に足す（launch_config.gz_resource_paths）
+CARDBOARD_TEXTURES = "/opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box/materials/textures"
 
 _EPS = 1e-6
 _API_NAMES = {
