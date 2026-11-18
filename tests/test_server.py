@@ -22,6 +22,8 @@ from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, 
                                msg_ambiguous, msg_lap_too_big, msg_not_found, msg_not_listed, msg_too_big_here,
                                msg_too_far, snapshot_rows)
 from voice_ltl.server import control_loop, create_app
+from voice_ltl.objects import Scene
+from voice_ltl.translator import translate
 from voice_ltl.session import (MSG_BUSY, MSG_DONE, MSG_EMPTY, MSG_NO_AUDIO, MSG_OTHER_SENDERS,
                                MSG_POSTURE_CHANGED, MSG_POSTURE_UNKNOWN,
                                MSG_SETTLING, MSG_STOPPED, MSG_UNSATISFIABLE, MSG_WAITING,
@@ -701,6 +703,51 @@ def test_page_shows_substitutions_only_with_a_formula(tmp_path):
     assert r[0] == [[["substitution", "「走って」→ 前へ歩く（0.5 m）", True],
                      ["substitution", "「45度」→ 左へ 90 度（1 回）", True]], False]
     assert r[1] == [[], True] and r[2] == [[], True]
+
+
+# renderLogic's verdict and attempt rows: elements that keep what is appended to them
+ATTEMPT_ROWS = r"""
+const mk = () => ({ dataset: {}, hidden: false, textContent: "", className: "", kids: [],
+  append(...k) { this.kids.push(...k); }, replaceChildren(...k) { this.kids = k; } });
+document.createElement = mk;
+snaps.map((s) => {
+  byId["attempts"] = mk(); byId["verdict"] = mk();
+  renderLogic(s);
+  return { verdict: [byId["verdict"].dataset.tone, ...byId["verdict"].kids],
+           caption: byId["formula-caption"].textContent,
+           rows: byId["attempts"].kids.map((li) => li.kids.map((k) => [k.className, k.textContent, k.dataset.tone ?? null])) };
+});
+"""
+
+
+@needs_node
+def test_page_shows_why_a_formula_that_passed_the_check_was_refused(tmp_path):
+    """The final review, language-2: when the kind guard (O35) or a far object (P5) refuses a formula that passed the
+    check, its attempt row says 不合格 with the refusal as its reason, as the verdict (合格した式はありません) and the
+    caption (却下の理由は「LLM の試行」に) say. Before, the only row read 合格 with no reason."""
+    near = Scene(DEFAULT_LAYOUT, (0.0, 0.0, 0.0))
+    far = Scene((Obj("box_1", "box", 7.0, 0.0),), (0.0, 0.0, 0.0))
+    cases = (("ゴミ箱まで行って", near, msg_not_found("trash_can", "ゴミ箱")),
+             ("箱まで行って", far, msg_too_far("box", "箱")))
+    snaps = []
+    for text, scene, message in cases:
+        t = translate(text, FakeLLM([{"formula": "F near_box_1", "unsupported": []}]), scene=scene)
+        assert not t.ok and t.message == message
+        snaps.append(page_snapshot(tmp_path, status="error", message=t.message, formula=t.formula,
+                                   attempts=[dataclasses.asdict(a) for a in t.attempts]))
+    shown = run_page(ATTEMPT_ROWS, snaps=snaps)
+    for (_, _, message), r in zip(cases, shown):
+        assert r["verdict"] == ["fail", "合格した式はありません"]
+        assert r["caption"].endswith("却下の理由は「LLM の試行」に")
+        assert r["rows"] == [[["attempt-no", "1 回目", None], ["attempt-formula", "F near_box_1", None],
+                              ["attempt-verdict", "不合格", "fail"], ["attempt-reason", message, None]]]
+    # a formula that walks keeps its one row 合格, with no reason
+    t = translate("箱まで行って", FakeLLM([{"formula": "F near_box_1", "unsupported": []}]), scene=near)
+    ok = page_snapshot(tmp_path, formula=t.formula, attempts=[dataclasses.asdict(a) for a in t.attempts])
+    r = run_page(ATTEMPT_ROWS, snaps=[ok])[0]
+    assert r["verdict"] == ["ok", "1 回目で合格"]
+    assert r["rows"] == [[["attempt-no", "1 回目", None], ["attempt-formula", "F near_box_1", None],
+                          ["attempt-verdict", "合格", None]]]
 
 
 @needs_node

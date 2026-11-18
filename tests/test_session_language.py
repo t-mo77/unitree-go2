@@ -65,7 +65,8 @@ def test_kind_guard_does_not_stand_up(tmp_path):             # O35
     snap = sess.snapshot()
     assert snap["status"] == "error" and snap["message"] == msg_not_found("trash_can", "ゴミ箱")
     assert link.sim.accepted == [] and snap["formula"] is None
-    assert snap["attempts"] == [{"formula": "F near_box_1", "unsupported": [], "errors": [], "unresolved": []}]
+    assert snap["attempts"] == [{"formula": "F near_box_1", "unsupported": [],
+                                 "errors": [msg_not_found("trash_can", "ゴミ箱")], "unresolved": []}]
 
 
 def test_kind_guard_on_a_phrasing_off_the_list_does_not_stand_up(tmp_path):   # pre-final review F1
