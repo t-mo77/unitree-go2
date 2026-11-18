@@ -33,8 +33,13 @@ published box covers the object (O12; test_published_footprint_covers_the_object
     one face, partly hidden, is thin on both axes but shows no depth), when the face along the depth axis is
     seen to its far end (a face lies on the far side, or the end is seen at <= 60° incidence, by the camera;
     for a union, only by one of the single views passed as footprint(views=...), with its own returns and from
-    its own camera, R-PF3) and d_obs >= min(0.6 S, 0.1 m); or, in any view, when d_obs >= 0.6 S also reaches
-    the prior's depth for that view (within the far side's pad). Otherwise the prior's depth is used and filled
+    its own camera, R-PF3) and d_obs >= min(0.6 S, 0.1 m). A face lying on the far side that the camera sees
+    from the near side at <= 60° incidence faces the camera, so the object goes on behind it and that face is
+    not its far end (R-H6a: a sofa's backrest above its seat, whose front face the LiDAR's band reaches while
+    the backrest hides its back); a convex object's far face is seen from beyond it, or grazed (a leaning face
+    seen edge-on), and still counts. Or, in any view, when d_obs >= 0.6 S also reaches
+    the prior's depth for that view (within the far side's pad; this rule still keeps such an inner face when it
+    lies that deep, a documented limit). Otherwise the prior's depth is used and filled
     is True. A face seen at a grazing angle is sampled only part-way (the last 1° wedge can hide most of a
     sofa's side), so its last return says little about its end, however close the returns there lie (the
     rings of one column spread in XY on a leaning or curved face and with range noise). An object smaller than
@@ -458,7 +463,7 @@ def _rect(points_xy: np.ndarray, cam_xy: Sequence[float], prior: tuple[float, fl
     rays = p - cam
     # the near side is a face or a corner of two faces, both sampled on their plane: EDGE_PAD. The other sides
     # get one point spacing where a face ends there (side_pad)
-    pad_seen, far_sampled = _side(u, v, rays, lateral, +1)
+    pad_seen, far_sampled = _side(u, v, rays, lateral, +1, axis=depth)
     view_pad = 0.0
     pad_lo, pad_hi = side_pad(v, u, rays, depth, -1), side_pad(v, u, rays, depth, +1)
     if views:    # a union: the newest camera's rays also reach returns that only an older stop saw, so its far end
@@ -507,17 +512,25 @@ def side_pad(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np
 
 
 def _side(along: np.ndarray, across: np.ndarray, rays: np.ndarray, normal: np.ndarray,
-          side: int) -> tuple[float, bool]:
+          side: int, axis: np.ndarray | None = None) -> tuple[float, bool]:
     """side_pad's margin, and whether the returns reach the true end on that side (sampled): a face lies along
     the side, or the camera (rays from it) sees the face ending there at <= 60° incidence, at the extreme
     point. Beyond 60° the last return can sit far short of the end (a grazing face). How close the other
     returns lie is no evidence: the rings of one column spread in XY on a leaning or curved face and with range
     noise, so a grazed end looks densely sampled. For a union of views from several stops, the rays from one
     camera say nothing about the returns another camera saw: footprint judges the union's far end and lateral
-    sides from its single views too (_far_end_seen, _lateral_unseen)."""
+    sides from its single views too (_far_end_seen, _lateral_unseen).
+    axis (the unit vector of `along`, given for the far side): a face lying there that the camera sees from the
+    near side, at <= 60° incidence (its rays run outward along `axis`), faces the camera, so the object goes on
+    behind it (a sofa's backrest above its seat, R-H6a): EDGE_PAD as before, but not sampled. A convex object's
+    far face can only be seen from beyond it (or grazed, a leaning face seen edge-on), and still counts."""
     extreme = along.max() if side > 0 else along.min()
     on = np.flatnonzero(np.abs(along - extreme) <= FLAT_TOL)
     if float(np.ptp(across[on])) >= FLAT_SPREAD:
+        if axis is not None:
+            outward = side * (rays[on] @ axis) / np.maximum(np.hypot(rays[on, 0], rays[on, 1]), 1e-9)
+            if float(np.median(outward)) >= 1.0 / PAD_GAIN_MAX:
+                return EDGE_PAD, False
         return EDGE_PAD, True
     ranges = np.hypot(rays[on, 0], rays[on, 1])
     k = int(np.argmax(ranges))
@@ -570,7 +583,7 @@ def _far_end_seen(returns: _ViewReturns, lateral: np.ndarray, u_far: float) -> f
     for _k, u, v, rays in returns:
         top = float(u.max())
         beyond = top - u_far if beyond is None else max(beyond, top - u_far)
-        pad, sampled = _side(u, v, rays, lateral, +1)
+        pad, sampled = _side(u, v, rays, lateral, +1, axis=np.array([lateral[1], -lateral[0]]))
         if sampled and top + pad >= u_far:
             best = top + pad - u_far if best is None else min(best, top + pad - u_far)
     return None if best is None else max(best, beyond)

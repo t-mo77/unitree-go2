@@ -6,6 +6,7 @@ The synthetic clouds come from a small ray caster with the Gazebo LiDAR's patter
 boxes, so the geometry sees what gpu_lidar sees: returns of the visible faces only, one per ray.
 """
 
+import json
 import math
 import os
 import subprocess
@@ -887,6 +888,89 @@ def _faces_seen(s, p, tol=1e-6):
     faces = [(np.abs(u - side * sx / 2) <= tol, v) for side in (-1, 1)]
     faces += [(np.abs(v - side * sy / 2) <= tol, u) for side in (-1, 1)]
     return sum(1 for on, across in faces if on.sum() >= 2 and float(np.ptp(across[on])) >= g.FLAT_SPREAD)
+
+
+# R-H6a: the Fuel sofa of the household room (sofa_1, 1.044 x 1.8 m, 0.943 m high) is a seat 0.78 m deep and 0.45 m
+# high, its backrest behind it (the remaining 0.264 m, the full height) and two armrests 0.15 m wide and 0.62 m high
+# over the full depth. The vocabulary prior stays the sofa's 1.8 x 0.9 m (C2: sizes are not tuned to the models).
+SOFA_DEPTH, SOFA_SEAT, SOFA_WIDTH, SOFA_HEIGHT = 1.044, 0.78, 1.8, 0.943
+SOFA_SEAT_H, SOFA_ARM_W, SOFA_ARM_H = 0.45, 0.15, 0.62
+RECORDED = ROOT / "tests" / "fixtures" / "detector" / "recorded"
+
+
+def backrest_sofa(front, yaw_deg=0.0):
+    """The solids of that sofa with its front (the seat's front face) `front` m from the origin along yaw_deg and
+    its backrest the far part, and the whole sofa as one solid (its true footprint)."""
+    t = math.radians(yaw_deg)
+    e, n = np.array([math.cos(t), math.sin(t)]), np.array([-math.sin(t), math.cos(t)])
+    o = front * e
+    parts = [solid(*(o + SOFA_SEAT / 2 * e), SOFA_SEAT, SOFA_WIDTH - 2 * SOFA_ARM_W, yaw_deg=yaw_deg,
+                   height=SOFA_SEAT_H),
+             solid(*(o + (SOFA_SEAT + SOFA_DEPTH) / 2 * e), SOFA_DEPTH - SOFA_SEAT, SOFA_WIDTH, yaw_deg=yaw_deg,
+                   height=SOFA_HEIGHT)]
+    for side in (-1, 1):
+        parts.append(solid(*(o + SOFA_DEPTH / 2 * e + side * (SOFA_WIDTH - SOFA_ARM_W) / 2 * n), SOFA_DEPTH,
+                           SOFA_ARM_W, yaw_deg=yaw_deg, height=SOFA_ARM_H))
+    return parts, solid(*(o + SOFA_DEPTH / 2 * e), SOFA_DEPTH, SOFA_WIDTH, yaw_deg=yaw_deg, height=SOFA_HEIGHT)
+
+
+@pytest.mark.parametrize("front", [3.0, 3.5, 4.0])
+@pytest.mark.parametrize("lean, noise", [(0.0, 0.0), (0.5, 0.0), (0.0, 0.002)],
+                         ids=["plain", "lean-0.5deg", "noise-2mm"])
+def test_a_backrest_seen_from_the_front_is_not_the_far_end(front, lean, noise):
+    """R-H6a (H6 at Bf): the LiDAR rings that pass over the seat hit the backrest's front face, 0.78 m behind the
+    sofa's front, and the backrest hides its own back (1.044 m). The armrests' inner faces link the seat to the
+    backrest, so the returns make a two-face L-shape whose far extreme is that front face, spread across the whole
+    width: the corner branch took it as the far face and kept the observed depth (filled False; in H6 the far side
+    was 0.22 m short). A face lying along the far side that the camera sees from the near side at <= 60° incidence faces
+    the camera, so the object goes on behind it: the prior fills the depth (filled, C2), single view and the
+    tracker's union of one stop's hits."""
+    parts, whole = backrest_sofa(front)
+    L, S = vocabulary.size_of("sofa")
+    pts = g.cut(scan(parts, lean_deg=lean, noise=noise, seed=3))[:, :2]
+    assert pts[:, 0].max() < front + SOFA_DEPTH - 0.2               # the returns end at the backrest's front face
+    truth = objects.Obj("sofa_1", "sofa", whole[0], whole[1], (SOFA_DEPTH, SOFA_WIDTH))
+    from gazebo.tools import objects_check
+    for views in (None, [(pts, cam_xy())] * 3):
+        fp = g.footprint(pts, cam_xy(), (L, S), views=views)
+        assert fp.filled, (views is None, fp)
+        assert fp.x + fp.size[0] / 2 >= front + S + g.EDGE_PAD - 0.01   # the far side at the prior's depth
+        ok, short = objects_check.covers(objects.Obj("sofa_1", "sofa", fp.x, fp.y, fp.size), truth, True,
+                                         (0.0, 0.0))
+        assert ok and 0.0 < short <= SOFA_DEPTH - S                   # covers what was seen; fill_short recorded
+
+
+def test_the_recorded_sofa_at_bf_takes_the_priors_depth():
+    """R-H6a on the recorded data: H3b's view Bf_s3 (tests/fixtures/detector/recorded/, its record and scan
+    byte-identical to H3b's, no image: spec §11.11), observe()d with the oracle's box for sofa_1 (the vocabulary
+    height, as detector_check's oracle replay). The LiDAR's +6° ring reaches the backrest's front face 0.72-0.83 m
+    behind the sofa's front, 0.21 m short of its back; 23 returns lie within FLAT_TOL of that far extreme over 1.3 m.
+    Before, the corner branch kept the observed depth 0.781 m: filled False and the far side 0.135 m short of the
+    truth row, so detector_check's covers was False. Now the prior fills the depth, and covers (C2's judge: the seen
+    part) holds with fill_short 0.017 m."""
+    from detector.core import View
+    from detector.oracle import project_box
+    from gazebo.tools import objects_check
+
+    rec = json.loads((RECORDED / "Bf_s3.json").read_text(encoding="utf-8"))
+    pos, quat = tuple(rec["image_pose"]["pos"]), tuple(rec["image_pose"]["quat"])
+    info = rec["camera_info"]
+    camera = CameraModel.from_k(info["k"], info["width"], info["height"])
+    scan_xyz = np.asarray(np.load(RECORDED / "Bf_s3_scan.npy"), dtype=np.float64)
+    world = lidar_points_world(scan_xyz, tuple(rec["cloud_pose"]["pos"]), tuple(rec["cloud_pose"]["quat"]))
+    truth = {t.id: t for t in objects.parse(rec["truth"])}["sofa_1"]
+    box, _ = project_box(View(pos, quat, camera, float(rec["image_t"])), truth.x, truth.y, truth.size,
+                         vocabulary.height_of("sofa"), camera.width, camera.height)
+    s = g.observe(box, None, world, pos, quat, camera, "sofa")
+    assert s.supported and len(s.points_xy) == 102
+    back = truth.x - truth.size[0] / 2                                # the sofa faces +x, toward the Go2
+    assert s.points_xy[:, 0].min() > back + 0.2
+    L, S = vocabulary.size_of("sofa")
+    for fp in (s.footprint, g.footprint(s.points_xy, s.cam_xy, (L, S), views=[(s.points_xy, s.cam_xy)] * 3)):
+        assert fp.filled
+        ok, short = objects_check.covers(objects.Obj("sofa_1", "sofa", fp.x, fp.y, fp.size), truth, fp.filled,
+                                         (pos[0], pos[1]))
+        assert ok and short == pytest.approx(0.017, abs=0.002)
 
 
 def test_footprint_covers_an_object_smaller_than_its_prior():
