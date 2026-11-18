@@ -468,8 +468,8 @@ def test_h5_poses_plan_and_see_only_their_targets():           # R-H5a: H5's rea
 
 # R-H6d: the plan of the formula each H6 run walked, from its own pose with the layout's sizes: (area [cells], moves,
 # near keys or None, PLANT states), then the run's own plan length (H6's "手"; None for voice_sofa_lap, which
-# stopped at its 8th step). The detector-mode runs planned with the detector's rows (the suitcase 0.52-0.57 x
-# 0.35-0.60, the cone 0.54-0.65 x 0.46-0.61, the sofa 1.00-1.03 x 1.83-1.93), not the layout's sizes, so the moves
+# stopped at its 8th step). The detector-mode runs planned with the detector's rows (the suitcase 0.52-0.59 x
+# 0.35-0.60, the cone 0.54-0.68 x 0.46-0.61, the sofa 1.00-1.03 x 1.83-1.93), not the layout's sizes, so the moves
 # are the run's in 21 of the 31 runs with a known length; the 4 logical cone runs (h5d_*) are among them.
 H6_PLANS = {"sofa_near1": ((140, 5, 22, 2736), 5), "sofa_near2": ((140, 5, 21, 2736), 5),
             "sofa_near3": ((140, 5, 22, 2736), 5), "sofa_lap1": ((208, 52, None, 14208), 52),
@@ -581,9 +581,9 @@ def test_bf_plans_with_the_rows_the_bridge_publishes():         # R-H5a with R-H
     The thin margin: the sofa lap's ring passes the suitcase, and where the grid (anchored at the start,
     Grid.anchor) puts a ring cell within BLOCK_MARGIN of the suitcase's footprint, the ring breaks and the lap has no
     plan. A wider suitcase row breaks it at more starts, so the box holds holes between starts that plan. On a
-    6 x 6 x 6 grid over the Bf box the lap has no plan at 6 of 216 points with the smallest rows, 11 with the
-    largest, 0 with the layout sizes. A finer scan (0.005 m, 0.25°, 6 y values) of x -0.503..-0.453, heading
-    -170.1..-166.6° finds 97 of 990 with the smallest rows, 234 with the largest, and 16 with the layout sizes too.
+    6 x 6 x 6 grid over R-H5a's Bf box (R_H5A_BF) the lap has no plan at 6 of 216 points with the smallest rows,
+    11 with the largest, 0 with the layout sizes. A finer scan (0.005 m, 0.25°, 6 y values) of x -0.503..-0.453,
+    heading -170.1..-166.6° finds 97 of 990 with the smallest rows, 234 with the largest, and 16 with the layout sizes too.
     Every hole found lies at x -0.493..-0.453 and heading -169.1..-166.6°, in the part R-H5a added; none is at
     H5's poses. BF_LAP_HOLES pins four: the review's two (the
     first is 0.015 m and 1.2° from H5's sofa_near1 pose), one 0.5° from H5's suitcase_near2 pose with the largest

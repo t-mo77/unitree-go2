@@ -22,9 +22,12 @@ app コンテナ（ROS 2 Humble）で動かす。式は run_formula にそのま
   accept にあり、measured: true のものを待ち、その id を出す（{"target", "id", "measured", "listed_after_still_s"}）。
   見つかれば 0、時間切れ 1、データなし 2。組になっても名前が accept にない行（B でソファを chair と呼んだ行。
   Bf で名前が変われば、その id は退く）は標準エラーに書いて待ち続ける（pre-final review の 2 回目）。
-  listed_after_still_s は、このコマンドが見た止まり（歩いた後に止まった時刻）から、その行が measured: true で
-  初めて届くまでの秒数（ListedWait）。止まった後や行が出た後に始めると null（わけは標準エラー）なので、
-  テスト姿勢に着く式（Bf なら F moved_forward、R5 なら 5 歩の式）の直前に、別に始めておく（H6 M4）。
+  listed_after_still_s は、このコマンドが見た止まり（歩いた後に止まった時刻。動いた後の止まりごとに置き直す）から、
+  その行が measured: true で初めて届くまでの秒数（ListedWait）。止まった後や行が出た後に始めると null（わけは標準エラー）。
+  H6 M4 では 2 つを別に始めておく（R-H6c）：§13.5 の待ちを測る resolve は、F standing の後、最初の動く式（Bf なら
+  F(turned_left & X F turned_left)、R5 なら F turned_right）の直前に始め、その値は目標が一覧に出た止まり（B・R か
+  テスト姿勢）からの秒数。式に渡す id を引く resolve は、テスト姿勢に着く式（Bf なら F moved_forward、R5 なら 5 歩の式）の
+  直前に始め、その listed_after_still_s はたいてい null で、§13.5 の数ではない。
 - rtf：実際の時間の窓（--seconds 秒、monotonic）の間に /clock が進んだ秒数を、窓の長さで割る。{"rtf": …} を JSON 1 行で。
 - objects：/go2/objects を 1 通、JSON 1 行で出す。どの行も objects.parse を通れば 0、
   通らない行があるか物がなければ 1、届かなければ 2。
@@ -333,7 +336,11 @@ class ListedWait:
     after (listed_after_still_s) = that wall time minus still_wall, only when the Go2 stood still since a stop
     this tool saw and an earlier message had no measured row for the target. Else after is None and note says
     why: a resolve started after the stop, or after the row was listed, must not time the latency from its own
-    start (pre-final review F11). So start resolve just before the formula that reaches the test pose."""
+    start (pre-final review F11). The feed sets still_wall again at every stop after a move, so H6 M4 (R-H6c) times
+    §13.5 with the timing resolve, started just before the procedure's first motion formula (the turn): its after
+    runs from the stop at which the target was listed (B, R or the test pose). The id resolve, started just before
+    the formula that reaches the test pose, gives the id for the target formulas; its after is mostly None, and
+    that None is not the §13.5 number."""
 
     def __init__(self, target: str, lay: layouts.Layout):
         entry = lay.find(target)
