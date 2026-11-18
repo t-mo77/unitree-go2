@@ -768,9 +768,14 @@ def test_an_unseen_lateral_side_reaches_no_farther_than_the_prior_allows():   # 
 # R-PF3c). Its filled rectangle's axis-aligned box is already about MAX_SIZE; R-PF3b's lateral rule grows an unseen
 # side by up to 0.62 m, and geometry's box, clipped to MAX_SIZE about its new centre, loses the opposite side, which
 # the union saw: up to 0.268 m short (0.102 m on 3cc9d29). No vocabulary kind is that large (the bed's L x L box at
-# 45° is 2.97 m), and no vocabulary sweep shows it. R-PF3d's narrowing (an unseen side grows only as far as keeps the
-# box within MAX_SIZE) gives 3cc9d29's rows here, but it makes 22 other cover125 misses larger than now (by 2-10.5
-# mm, one new: the 2 m square (75°, 2.0 m, 30°) after a 20° turn, 0.0034 m), so it is not taken.
+# 45° is 2.97 m), and no vocabulary sweep shows it. By R-PF3c's measure (against 3cc9d29 or 97da92a) the 39 are
+# misses larger than on 3cc9d29. R-PF3d's narrowing (an unseen side grows only as far as keeps the box within
+# MAX_SIZE) misses these 39 by 3cc9d29's sizes, or covers (the three a45 rows that 3cc9d29 misses by up to 0.041 m).
+# It changes rows in cover125 only, and against either base it has no miss new or larger there, and no lost row or
+# grown side beyond now's: the 22 cover125 misses it makes larger than now (by 2-10.5 mm) are 3cc9d29's and
+# 97da92a's misses exactly, and both miss the 2 m square (75°, 2.0 m, 30°) after a 20° turn by the same 0.0034 m.
+# It was dropped against e17aa89's rows, which are not R-PF3c's base; the code stays e17aa89's, so these rows are a
+# documented limit.
 MAX_SIZE_CLIP_ROWS = {   # (cover case, move, faces): (every row in id order, the best row's miss, 3cc9d29's)
     ((2.0, 2.0, 0.8, 30, 1.0, 0), ("ahead", 0.5), "lean"): ([(2.868, 0.116, 3.000, 3.000)], 0.088, 0.082),
     ((2.0, 2.0, 0.8, 30, 1.0, 0), ("ahead", 0.5), "noise"): ([(2.862, 0.119, 3.000, 3.000)], 0.082, 0.077),
