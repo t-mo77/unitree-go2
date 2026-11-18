@@ -6,6 +6,7 @@ The synthetic clouds come from a small ray caster with the Gazebo LiDAR's patter
 boxes, so the geometry sees what gpu_lidar sees: returns of the visible faces only, one per ray.
 """
 
+import json
 import math
 import os
 import subprocess
@@ -887,6 +888,285 @@ def _faces_seen(s, p, tol=1e-6):
     faces = [(np.abs(u - side * sx / 2) <= tol, v) for side in (-1, 1)]
     faces += [(np.abs(v - side * sy / 2) <= tol, u) for side in (-1, 1)]
     return sum(1 for on, across in faces if on.sum() >= 2 and float(np.ptp(across[on])) >= g.FLAT_SPREAD)
+
+
+# R-H6a: the Fuel sofa of the household room (sofa_1, 1.044 x 1.8 m, 0.943 m high) is a seat 0.78 m deep and 0.45 m
+# high, its backrest behind it (the remaining 0.264 m, the full height) and two armrests 0.15 m wide and 0.62 m high
+# over the full depth. The vocabulary prior stays the sofa's 1.8 x 0.9 m (C2: sizes are not tuned to the models).
+SOFA_DEPTH, SOFA_SEAT, SOFA_WIDTH, SOFA_HEIGHT = 1.044, 0.78, 1.8, 0.943
+SOFA_SEAT_H, SOFA_ARM_W, SOFA_ARM_H = 0.45, 0.15, 0.62
+RECORDED = ROOT / "tests" / "fixtures" / "detector" / "recorded"
+
+
+def backrest_sofa(front, yaw_deg=0.0, bearing_deg=None):
+    """The solids of that sofa with its front (the seat's front face) `front` m from the origin along bearing_deg
+    (yaw_deg when not given), facing away along yaw_deg (its backrest the far part), and the whole sofa as one solid
+    (its true footprint)."""
+    t = math.radians(yaw_deg)
+    e, n = np.array([math.cos(t), math.sin(t)]), np.array([-math.sin(t), math.cos(t)])
+    b = t if bearing_deg is None else math.radians(bearing_deg)
+    o = front * np.array([math.cos(b), math.sin(b)])
+    parts = [solid(*(o + SOFA_SEAT / 2 * e), SOFA_SEAT, SOFA_WIDTH - 2 * SOFA_ARM_W, yaw_deg=yaw_deg,
+                   height=SOFA_SEAT_H),
+             solid(*(o + (SOFA_SEAT + SOFA_DEPTH) / 2 * e), SOFA_DEPTH - SOFA_SEAT, SOFA_WIDTH, yaw_deg=yaw_deg,
+                   height=SOFA_HEIGHT)]
+    for side in (-1, 1):
+        parts.append(solid(*(o + SOFA_DEPTH / 2 * e + side * (SOFA_WIDTH - SOFA_ARM_W) / 2 * n), SOFA_DEPTH,
+                           SOFA_ARM_W, yaw_deg=yaw_deg, height=SOFA_ARM_H))
+    return parts, solid(*(o + SOFA_DEPTH / 2 * e), SOFA_DEPTH, SOFA_WIDTH, yaw_deg=yaw_deg, height=SOFA_HEIGHT)
+
+
+@pytest.mark.parametrize("front", [3.0, 3.5, 4.0])
+@pytest.mark.parametrize("lean, noise", [(0.0, 0.0), (0.5, 0.0), (0.0, 0.002)],
+                         ids=["plain", "lean-0.5deg", "noise-2mm"])
+def test_a_backrest_seen_from_the_front_is_not_the_far_end(front, lean, noise):
+    """R-H6a (H6 at Bf): the LiDAR rings that pass over the seat hit the backrest's front face, 0.78 m behind the
+    sofa's front, and the backrest hides its own back (1.044 m). The armrests' inner faces link the seat to the
+    backrest, so the returns make a two-face L-shape whose far extreme is that front face, spread across the whole
+    width: the corner branch took it as the far face and kept the observed depth (filled False; in H6 the far side
+    was 0.22 m short). A face lying along the far side that the camera sees from the near side at <= 60° incidence faces
+    the camera, so the object goes on behind it: the prior fills the depth (filled, C2), single view and the
+    tracker's union of one stop's hits."""
+    parts, whole = backrest_sofa(front)
+    L, S = vocabulary.size_of("sofa")
+    pts = g.cut(scan(parts, lean_deg=lean, noise=noise, seed=3))[:, :2]
+    assert pts[:, 0].max() < front + SOFA_DEPTH - 0.2               # the returns end at the backrest's front face
+    truth = objects.Obj("sofa_1", "sofa", whole[0], whole[1], (SOFA_DEPTH, SOFA_WIDTH))
+    from gazebo.tools import objects_check
+    for views in (None, [(pts, cam_xy())] * 3):
+        fp = g.footprint(pts, cam_xy(), (L, S), views=views)
+        assert fp.filled, (views is None, fp)
+        assert fp.x + fp.size[0] / 2 >= front + S + g.EDGE_PAD - 0.01   # the far side at the prior's depth
+        ok, short = objects_check.covers(objects.Obj("sofa_1", "sofa", fp.x, fp.y, fp.size), truth, True,
+                                         (0.0, 0.0))
+        assert ok and 0.0 < short <= SOFA_DEPTH - S                   # covers what was seen; fill_short recorded
+
+
+def test_the_recorded_sofa_at_bf_takes_the_priors_depth():
+    """R-H6a on the recorded data: H3b's view Bf_s3 (tests/fixtures/detector/recorded/, its record and scan
+    byte-identical to H3b's, no image: spec §11.11), observe()d with the oracle's box for sofa_1 (the vocabulary
+    height, as detector_check's oracle replay). The LiDAR's +6° ring reaches the backrest's front face 0.72-0.83 m
+    behind the sofa's front, 0.21 m short of its back; 23 returns lie within FLAT_TOL of that far extreme over 1.3 m.
+    Before, the corner branch kept the observed depth 0.781 m: filled False and the far side 0.135 m short of the
+    truth row, so detector_check's covers was False. Now the prior fills the depth, and covers (C2's judge: the seen
+    part) holds with fill_short 0.017 m."""
+    from detector.core import View
+    from detector.oracle import project_box
+    from gazebo.tools import objects_check
+
+    rec = json.loads((RECORDED / "Bf_s3.json").read_text(encoding="utf-8"))
+    pos, quat = tuple(rec["image_pose"]["pos"]), tuple(rec["image_pose"]["quat"])
+    info = rec["camera_info"]
+    camera = CameraModel.from_k(info["k"], info["width"], info["height"])
+    scan_xyz = np.asarray(np.load(RECORDED / "Bf_s3_scan.npy"), dtype=np.float64)
+    world = lidar_points_world(scan_xyz, tuple(rec["cloud_pose"]["pos"]), tuple(rec["cloud_pose"]["quat"]))
+    truth = {t.id: t for t in objects.parse(rec["truth"])}["sofa_1"]
+    box, _ = project_box(View(pos, quat, camera, float(rec["image_t"])), truth.x, truth.y, truth.size,
+                         vocabulary.height_of("sofa"), camera.width, camera.height)
+    s = g.observe(box, None, world, pos, quat, camera, "sofa")
+    assert s.supported and len(s.points_xy) == 102
+    back = truth.x - truth.size[0] / 2                                # the sofa faces +x, toward the Go2
+    assert s.points_xy[:, 0].min() > back + 0.2
+    L, S = vocabulary.size_of("sofa")
+    for fp in (s.footprint, g.footprint(s.points_xy, s.cam_xy, (L, S), views=[(s.points_xy, s.cam_xy)] * 3)):
+        assert fp.filled
+        ok, short = objects_check.covers(objects.Obj("sofa_1", "sofa", fp.x, fp.y, fp.size), truth, fp.filled,
+                                         (pos[0], pos[1]))
+        assert ok and short == pytest.approx(0.017, abs=0.002)
+
+
+# R-H6a's bound and reach (the review of c9777ae): a face lying along the far side does not end the object when the
+# camera sees it from the near side at <= 60° incidence (its rays' median outward component >= 1 / PAD_GAIN_MAX).
+@pytest.mark.parametrize("deg, ends", [(0.0, False), (55.0, False), (65.0, True), (90.0, True), (120.0, True)])
+def test_the_far_face_test_turns_at_60_degrees(deg, ends):
+    """The bound on _side itself: returns spread 1 m across the far side (u = 1 along the depth axis +x), seen from a
+    camera 100 m off at `deg` from that axis, so every ray's outward component is about cos(deg). Up to 60° the face
+    faces the camera from the near side and the object goes on behind it (not sampled); past 60° it is grazed, or
+    at > 90° seen from beyond it, and it ends the object as it did before R-H6a (sampled). The pad is EDGE_PAD
+    either way, and without the axis (the lateral sides) the face always ends the object."""
+    v = np.linspace(-0.5, 0.5, 21)
+    p = np.column_stack([np.ones_like(v), v])
+    t = math.radians(deg)
+    rays = p - (np.array([1.0, 0.0]) - 100.0 * np.array([math.cos(t), math.sin(t)]))
+    u, lateral, depth = p[:, 0], np.array([0.0, 1.0]), np.array([1.0, 0.0])
+    assert g._side(u, p[:, 1], rays, lateral, +1, axis=depth) == (g.EDGE_PAD, ends)
+    assert g._side(u, p[:, 1], rays, lateral, +1) == (g.EDGE_PAD, True)
+
+
+LIDAR_XY = np.array(LIDAR_IN_BODY[:2]) + BASE[:2]
+
+
+def concave_sofa(width, depth, front_xy):
+    """The review's probe sofa, facing +x (its front toward the camera at front_xy): a seat to 0.75 of the depth,
+    0.45 m high, the backrest behind it 0.9 m high, and two armrests 0.15 m wide and 0.62 m high over the full depth.
+    Its solids and its true AABB (x0, x1, y0, y1)."""
+    x, y = front_xy
+    seat, arm = 0.75 * depth, 0.15
+    parts = [solid(x + seat / 2, y, seat, width - 2 * arm, height=0.45),
+             solid(x + (seat + depth) / 2, y, depth - seat, width, height=0.9)]
+    parts += [solid(x + depth / 2, y + side * (width - arm) / 2, depth, arm, height=0.62) for side in (-1, 1)]
+    return parts, (x, x + depth, y - width / 2, y + width / 2)
+
+
+def open_bookshelf(width, depth, front_xy):
+    """The review's probe bookshelf, its open front toward -x at front_xy: 0.02 m sides and a 0.01 m back panel 1.8 m
+    high, 0.02 m shelves every 0.35 m. Its solids and its true AABB (x0, x1, y0, y1)."""
+    x, y = front_xy
+    parts = [solid(x + depth / 2, y + side * (width - 0.02) / 2, depth, 0.02, height=1.8) for side in (-1, 1)]
+    parts.append(solid(x + depth - 0.005, y, 0.01, width, height=1.8))
+    parts += [solid(x + depth / 2, y, depth, width - 0.04, height=0.02, z0=z)
+              for z in (0.0, 0.35, 0.7, 1.05, 1.4, 1.78)]
+    return parts, (x, x + depth, y - width / 2, y + width / 2)
+
+
+def _margins(fp, box):
+    """How far each side of the footprint lies past the true AABB (x0, x1, y0, y1): -x, +x, -y, +y (>= 0 covers)."""
+    x0, x1 = fp.x - fp.size[0] / 2, fp.x + fp.size[0] / 2
+    y0, y1 = fp.y - fp.size[1] / 2, fp.y + fp.size[1] / 2
+    return np.array([box[0] - x0, x1 - box[1], box[2] - y0, y1 - box[3]])
+
+
+def _two_stop_union(parts, box, deg):
+    """One scan from BASE and one from the stop turned deg around the object's centre (the newest), fused raw."""
+    centre = solid((box[0] + box[1]) / 2, (box[2] + box[3]) / 2, 0.1, 0.1)
+    views = [(g.cut(scan(parts, base=b, q=q))[:, :2], cam_xy(b, q)) for b, q in ((BASE, Q0), around(centre, deg))]
+    return np.vstack([p for p, _ in views]), views
+
+
+def test_a_side_panel_seen_past_60_degrees_still_ends_the_object():
+    """The bound from below: a face lying along the far side that the camera sees at more than 60° incidence ends the
+    object, as before R-H6a. An open 0.8 x 0.25 m bookshelf (the prior 0.9 x 0.3) 2 m ahead, then a second stop 90°
+    around it (the newest, on its -y side): the union's far side is the bookshelf's +y side panel, and the first stop
+    saw that panel's inner face from the near side at about 79° (outward median 0.19). It stays seen: filled False,
+    the union covers, and that side lies 0.039 m past the panel. With no bound (any face seen from the near side,
+    threshold 0) the union was filled and that side 0.15 m past."""
+    parts, box = open_bookshelf(0.8, 0.25, (LIDAR_XY[0] + 2.0, 0.0))
+    union, views = _two_stop_union(parts, box, 90)
+    fp = g.footprint(union, views[1][1], (0.9, 0.3), views=views)
+    m = _margins(fp, box)
+    assert not fp.filled and (m >= 0).all() and m[3] == pytest.approx(0.0388, abs=0.002), (fp, m)
+
+
+@pytest.mark.parametrize("deg", [90, 45])
+def test_a_narrow_concave_union_can_fill_past_a_seen_side(deg):
+    """A documented limit of the 60° bound (Task 4.1): two different faces' end columns at one far coordinate read
+    as one face lying there. A 1.4 x 0.85 m loveseat (concave_sofa; the sofa prior 1.8 x 0.9) 2 m ahead and 0.6 m to
+    the left, then a second stop 90° or 45° around it (the newest, on its -y side): at the union's far side (+y) the
+    first stop's armrest end column and backrest end column lie within FLAT_TOL, 0.64 m apart, seen from the near
+    side at about 56° (outward median 0.557). That side, which the first stop saw, takes the prior: filled, and
+    L - W = 0.40 m farther out (0.45 m past the loveseat), into free space beside it. Before R-H6a, and with a 30°
+    bound, the row was 0.96 x 1.50 m, filled False, every side about 0.05 m past. Not reachable in the household
+    room: sofa_1 is the prior's 1.8 m wide."""
+    parts, box = concave_sofa(1.4, 0.85, (LIDAR_XY[0] + 2.0, 0.6))
+    union, views = _two_stop_union(parts, box, deg)
+    fp = g.footprint(union, views[1][1], vocabulary.size_of("sofa"), views=views)
+    m = _margins(fp, box)
+    assert fp.filled and fp.size[1] == pytest.approx(1.903, abs=0.002), fp
+    assert (m >= 0).all() and m[3] == pytest.approx(0.450, abs=0.002) and m[:3].max() < 0.08, m
+
+
+def _sofa_off_its_front(front):
+    """The backrest sofa facing +x, its front `front` m off at a bearing of 30° (seen 30° off its front): its
+    footprints (single view, one stop's union) with C2's covers and fill_short, and their margins (_margins)."""
+    from gazebo.tools import objects_check
+
+    parts, whole = backrest_sofa(front, 0.0, bearing_deg=30.0)
+    truth = objects.Obj("sofa_1", "sofa", whole[0], whole[1], (SOFA_DEPTH, SOFA_WIDTH))
+    box = (whole[0] - SOFA_DEPTH / 2, whole[0] + SOFA_DEPTH / 2, whole[1] - SOFA_WIDTH / 2, whole[1] + SOFA_WIDTH / 2)
+    pts = g.cut(scan(parts))[:, :2]
+    out = []
+    for views in (None, [(pts, cam_xy())] * 3):
+        fp = g.footprint(pts, cam_xy(), vocabulary.size_of("sofa"), views=views)
+        ok, short = objects_check.covers(objects.Obj("sofa_1", "sofa", fp.x, fp.y, fp.size), truth, fp.filled,
+                                         (0.0, 0.0))
+        out.append((fp, ok, short, _margins(fp, box)))
+    return out
+
+
+def test_a_sofa_seen_30_degrees_off_its_front_takes_the_priors_depth():
+    """The rule's reach beyond the head-on backrest: the backrest sofa 3.2 m off, seen 30° off its front. The
+    backrest's front face lies along the far side, seen from the near side at about 26° (outward median 0.90): the
+    prior fills the depth, and C2's covers holds with the true back 0.093 m beyond. Before R-H6a the corner branch
+    kept the observed depth: filled False and the far side 0.19 m short (covers False)."""
+    for fp, ok, short, m in _sofa_off_its_front(3.2):
+        assert fp.filled and ok and short == pytest.approx(0.0934, abs=0.002), (fp, short, m)
+        assert m[1] == pytest.approx(-0.0934, abs=0.002) and (m[[0, 2, 3]] > 0.04).all(), m
+
+
+def test_a_sofa_side_can_end_short_where_two_front_faces_end():
+    """A documented limit on the lateral sides (Task 4.1; as before R-H6a, which does not touch them): the same sofa
+    3.0 m off. At its +y extreme 4 returns of the +y armrest's front face and of the backrest's front face end within
+    FLAT_TOL of one lateral coordinate, 0.78 m apart along the depth axis, so side_pad reads them as a face lying
+    along that side and gives it EDGE_PAD; the last return lies 0.065 m inside the edge, and the side ends 0.015 m
+    short (C2's covers False). At H6's Bf poses the same pattern left the household sofa's +y side 1.5-7 mm short in
+    the model, and a recorded row (v_sofa_lap_rerun) 3 mm short. The far side is filled as at 3.2 m."""
+    for fp, ok, short, m in _sofa_off_its_front(3.0):
+        assert fp.filled and not ok and short == pytest.approx(0.094, abs=0.002), (fp, short, m)
+        assert m[3] == pytest.approx(-0.0154, abs=0.002) and (m[[0, 2]] > 0.04).all(), m
+
+
+def _hit_frustum(origin, d, c, r0, r1, height, n=48):
+    """A vertical cone frustum on the floor (centre c, radius r0 at z 0 and r1 at `height`) as an n-gon with sloped
+    faces: the inside of every plane, as _hit_leaning."""
+    lam, ap = math.atan2(r0 - r1, height), math.cos(math.pi / n)
+    planes = [(np.array([0.0, 0.0, 1.0]), height), (np.array([0.0, 0.0, -1.0]), 0.0)]
+    for k in range(n):
+        nh = np.array([math.cos(2 * math.pi * k / n), math.sin(2 * math.pi * k / n)])
+        nn = np.array([nh[0] * math.cos(lam), nh[1] * math.cos(lam), math.sin(lam)])
+        planes.append((nn, float(nn @ [c[0] + nh[0] * r0 * ap, c[1] + nh[1] * r0 * ap, 0.0])))
+    t_in, t_out, ok = np.full(len(d), -np.inf), np.full(len(d), np.inf), np.ones(len(d), bool)
+    for nrm, off in planes:
+        den, num = d @ nrm, off - origin @ nrm
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t = num / den
+        t_in = np.where(den < -1e-12, np.maximum(t_in, t), t_in)
+        t_out = np.where(den > 1e-12, np.minimum(t_out, t), t_out)
+        ok &= (np.abs(den) > 1e-12) | (num >= 0)
+    return np.where(ok & (t_in <= t_out) & (t_in > 0), t_in, np.inf)
+
+
+def test_a_tapered_cone_takes_the_priors_depth():
+    """The rule reaches round and tapered objects: the visible arc's two tangent columns lie at its far extreme,
+    FLAT_SPREAD or more apart, seen from the near side (outward median 1.0), so that extreme is not the far end and
+    the prior fills the depth. A cone 0.4 m across at the floor and 0.048 m at its 1.0 m top, its near side 4 m
+    ahead, the traffic_cone prior 0.35 x 0.35: the far side now lies 0.055 m past the cone (before R-H6a: filled
+    False, 0.193 m short). Its near side (4.7 mm) and lateral sides (0.049 m) stay short as before: the LiDAR band
+    sees the cone above its base (R-H5d, R-H6a (b)), and the prior is narrower than this cone."""
+    r0, r1 = 0.2, 0.024
+    c = LIDAR_XY + np.array([4.0 + r0, 0.0])
+    origin = lidar_points_world(np.zeros((1, 3)), BASE, Q0)[0]
+    az, el = np.meshgrid(AZ, EL)
+    d = np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)], axis=-1).reshape(-1, 3)
+    t = _hit_frustum(origin, d, c, r0, r1, 1.0)
+    ok = (t >= 0.05) & (t <= 10.0)
+    pts = g.cut(origin + d[ok] * t[ok, None])[:, :2]
+    fp = g.footprint(pts, cam_xy(), vocabulary.size_of("traffic_cone"))
+    m = _margins(fp, (c[0] - r0, c[0] + r0, c[1] - r0, c[1] + r0))
+    assert fp.filled and np.allclose(m, [-0.0047, 0.0547, -0.0492, -0.0492], atol=0.002), (fp, m)
+
+
+def primitive_chair(cx, cy, yaw_deg):
+    """bridge_core.object_sdf("chair") as solids: the seat 0.45 x 0.45 m at 0.41-0.45 m, four 0.04 m legs at
+    (±0.2, ±0.2) m, and the backrest 0.04 x 0.45 m on its -x side, 0.45-0.9 m high."""
+    t = math.radians(yaw_deg)
+
+    def part(dx, dy, sx, sy, z0, z1):
+        return solid(cx + math.cos(t) * dx - math.sin(t) * dy, cy + math.sin(t) * dx + math.cos(t) * dy, sx, sy,
+                     yaw_deg=yaw_deg, height=z1 - z0, z0=z0)
+    legs = [part(0.2 * i, 0.2 * j, 0.04, 0.04, 0.0, 0.41) for i in (-1, 1) for j in (-1, 1)]
+    return [part(0.0, 0.0, 0.45, 0.45, 0.41, 0.45), *legs, part(-0.205, 0.0, 0.04, 0.45, 0.45, 0.9)]
+
+
+def test_a_chair_seen_through_takes_the_priors_depth():
+    """Seen-through, legged furniture (Task 4.1): the primitive chair 3 m ahead, turned 165°, so its backrest is the
+    far part and its front face faces the camera. The far legs and that face no longer end the chair: the prior
+    (0.45 x 0.45) fills the depth, and the far side, which covered before R-H6a (filled False, 0.021 m past), grows
+    to 0.085 m past the chair (+0.064 m, the largest growth of a covered side in the review's probe of the chair)."""
+    parts = primitive_chair(3.0, 0.0, 165.0)
+    c = corners_xy(solid(3.0, 0.0, 0.45, 0.45, yaw_deg=165.0))
+    fp = g.footprint(g.cut(scan(parts))[:, :2], cam_xy(), vocabulary.size_of("chair"))
+    m = _margins(fp, (c[:, 0].min(), c[:, 0].max(), c[:, 1].min(), c[:, 1].max()))
+    assert fp.filled and (m >= 0).all() and m[1] == pytest.approx(0.0851, abs=0.002), (fp, m)
 
 
 def test_footprint_covers_an_object_smaller_than_its_prior():

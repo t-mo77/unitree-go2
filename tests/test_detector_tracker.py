@@ -877,6 +877,68 @@ def test_a_prior_larger_than_the_object_keeps_its_pinned_rows():   # R-PF3d (cov
                 assert miss > base and all(max(p[2:]) == g.MAX_SIZE for p in pinned), (case, move, faces)
 
 
+# R-H6a at the tracker: the household room's sofa_1 (geometry's backrest_sofa: x -5.102..-4.058, y -0.9..0.9, its
+# front toward the Go2) from H6's recorded Bf poses (base x, y, heading, z): the oracle diagnostic re-run, whose
+# messages published sofa_1 0.880 m deep with filled False, and M3's yoloe run (0.902 m, filled False); from Bf
+# alone and from B (0.5 m back along the heading, the stop before the forward step) then Bf. The tracker's row was
+# 0.880-0.899 m deep there, filled False, its far side 0.204-0.214 m short of the sofa's back.
+H6_BF_POSES = {"m3diag_oracle_Bf": (-0.500, -0.055, -168.4, 0.339), "m3_yoloe_Bf": (-0.522, -0.066, -168.8, 0.338)}
+
+
+def test_the_h6_sofa_at_bf_takes_the_priors_depth():
+    """The sofa's backrest front face, seen from the near side, is not its far end (geometry's
+    test_a_backrest_seen_from_the_front_is_not_the_far_end): the row is filled with the prior's depth, its far side
+    EDGE_PAD past it, and it covers what was seen (objects_check.covers, C2), the true back 0.094 m beyond."""
+    from detector import geometry as g
+    from gazebo.tools import objects_check
+    from test_detector_geometry import SOFA_DEPTH, SOFA_WIDTH, backrest_sofa, cam_xy, scan, yaw_q
+
+    parts, whole = backrest_sofa(4.058, 180.0)
+    front, (L, S) = whole[0] + SOFA_DEPTH / 2, vocabulary.size_of("sofa")
+    truth = objects.Obj("sofa_1", "sofa", whole[0], whole[1], (SOFA_DEPTH, SOFA_WIDTH))
+    for name, (x, y, heading, z) in H6_BF_POSES.items():
+        q, t = yaw_q(heading), math.radians(heading)
+        bf, b = (x, y, z), (x - 0.5 * math.cos(t), y - 0.5 * math.sin(t), z)
+        for stops in ([bf] * 2, [b, bf]):
+            tracker, t_sim, wall = Tracker(YOLOE_THRESHOLDS, PRIORS, g.footprint), 100.0, 5000.0
+            for base in stops:
+                cam = cam_xy(base, q)
+                for _ in range(2):
+                    pts = g.cut(scan(parts, base=base, q=q))[:, :2]
+                    fp = g.footprint(pts, cam, (L, S))
+                    t_sim, wall = t_sim + 1.0, wall + 1.0
+                    tracker.update([Observation("sofa", 0.8, BOX, fp.x, fp.y, fp.size, fp.filled, pts, True, False,
+                                                cam)], t_sim, wall, always)
+            rows = tracker.rows(wall, 3.0)
+            assert [r.id for r in rows] == ["sofa_1"] and tracker.stats()["filled"] == ["sofa_1"], (name, rows)
+            r = rows[0]
+            assert r.x - r.size[0] / 2 <= front - S - g.EDGE_PAD + 0.01, (name, len(set(stops)), r)
+            ok, short = objects_check.covers(r, truth, True, (x, y))
+            assert ok and short == pytest.approx(SOFA_DEPTH - S - g.EDGE_PAD, abs=0.005), (name, r, short)
+
+
+# R-H6a's bound: a face lying along the far side ends the object unless the camera sees it from the near side at
+# <= 60° incidence. A convex object's far face is seen from beyond it, or grazed: here a leaning end face, seen
+# edge-on with the camera 3 mm inside its plane, is the far face of the prior 1.25 x a 1.8 x 0.9 m sofa turned 60°,
+# 1 m away, after a second stop -90° around it (the cover125 a-90 lean sweep). Without the 60° bound (the camera's
+# side of the face alone) its row was (2.008, -0.196, 2.043, 2.536): the -x side 0.227 m and the -y side 0.392 m
+# farther out, the one row of the 127,575 sweep scenes that the side test alone changed. The row is e17aa89's.
+# Its outward median is slightly negative, so this pin rules out that camera-side variant only (any bound >= 0
+# passes it): the 60° value itself is pinned from both sides in test_detector_geometry
+# (test_the_far_face_test_turns_at_60_degrees, test_a_side_panel_seen_past_60_degrees_still_ends_the_object,
+# test_a_narrow_concave_union_can_fill_past_a_seen_side).
+FAR_FACE_EDGE_ON = ((1.8, 0.9, 0.85, 60, 1.0, 0), ("around", -90), 0.5, [(2.121, -0.001, 1.818, 2.146)])
+
+
+def test_a_far_face_seen_edge_on_still_ends_the_object():
+    from test_detector_geometry import _cover_solid
+
+    case, move, lean, pinned = FAR_FACE_EDGE_ON
+    s = _cover_solid(*case)
+    rows, _ = _two_stop_rows([s], (1.25 * case[0], 1.25 * case[1]), _stops(s, move), lean)
+    assert _rows_match(rows, pinned), rows
+
+
 def test_frames_beyond_6_m_do_not_count_toward_n():
     run = Run()
     for _ in range(4):
