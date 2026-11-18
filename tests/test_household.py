@@ -48,11 +48,15 @@ MEASURED_POSES = {"Bf": (-0.506, -0.062, -169.2), "R5": (-0.251, -2.730, -95.8),
 # R-H3k (1) widened the R5 box to H3b's real R5 pose (H3B_R5: x 0.017 m and the heading 0.38° beyond the
 # screening's -0.342 and -97.6°). R-H5a widened it again: Bf to H5's x -0.501..-0.453 (the old box ended at
 # -0.506), y up to -0.032 (was -0.054) and heading down to -174.0° (was -172.4°), each with the old box; R5 to H5's
-# x -0.413; and L got a box, H3's L and H5's four (it had none).
+# x -0.413; and L got a box, H3's L and H5's four (it had none). R-H6d widened Bf and R5 to every pose H6 reached
+# (H6_POSES), by the same rule (the old box plus the poses, no margin): Bf y -0.142..-0.024 (was -0.141..-0.032) and
+# heading up to -165.5° (was -166.6°); R5 x -0.492..-0.122 (was -0.413..-0.225), y -2.877..-2.631 (was
+# -2.804..-2.654) and heading -100.5..-93.5° (was -98.0..-95.1°). L is unchanged (H6 has no L run).
 H3B_R5 = (-0.359, -2.709, -98.0)
-MEASURED_RANGES = {"Bf": ((-0.560, -0.453), (-0.141, -0.032), (-174.0, -166.6)),
-                   "R5": ((-0.413, -0.225), (-2.804, -2.654), (-98.0, -95.1)),
+MEASURED_RANGES = {"Bf": ((-0.560, -0.453), (-0.142, -0.024), (-174.0, -165.5)),
+                   "R5": ((-0.492, -0.122), (-2.877, -2.631), (-100.5, -93.5)),
                    "L": ((0.011, 0.037), (-0.045, 0.037), (92.5, 96.6))}
+R_H5A_BF = ((-0.560, -0.453), (-0.141, -0.032), (-174.0, -166.6))    # the Bf box before R-H6d (R-H5a's)
 # H5's poses at the end of the procedure (H5's record, "着いた姿勢"; odometry read after resolve): run, then
 # (x, y, heading). Each run walked the one formula of its name.
 H5_POSES = {"Bf": (("sofa_near1", (-0.453, -0.112, -166.9)), ("sofa_near2", (-0.484, -0.060, -173.8)),
@@ -63,6 +67,33 @@ H5_POSES = {"Bf": (("sofa_near1", (-0.453, -0.112, -166.9)), ("sofa_near2", (-0.
                    ("cone_lap1", (-0.413, -2.718, -97.6)), ("cone_lap2", (-0.374, -2.755, -96.9))),
             "L": (("table_near1", (0.037, -0.045, 96.6)), ("table_near2", (0.036, 0.035, 92.5)),
                   ("table_lap1", (0.012, 0.024, 94.6)), ("table_lap2", (0.034, 0.019, 96.0)))}
+# H6's poses at the end of the procedure (H6's record, "着いた姿勢"; odometry read after the resolves): run, then
+# (x, y, heading). The M4 runs (sofa_*, suitcase_*, cone_*) and m0w_* (M0, GUI off) walked the formula of their
+# name in detector mode, voice_* the formula Claude gave (the same; voice_sofa_lap stopped at its 8th step, R-H6b),
+# h5d_* in logical mode (R-H5d's cone re-runs); m3_* are M3's accuracy poses (oracle, yoloe, and the run that looked
+# for covers' cause) and walked no formula.
+H6_POSES = {"Bf": (("m3_oracle_Bf", (-0.529, -0.029, -173.6)), ("m3_yoloe_Bf", (-0.522, -0.066, -168.8)),
+                   ("m3_cover_Bf", (-0.500, -0.055, -168.4)),
+                   ("sofa_near1", (-0.517, -0.103, -170.8)), ("sofa_near2", (-0.525, -0.049, -171.2)),
+                   ("sofa_near3", (-0.521, -0.105, -171.3)), ("sofa_lap1", (-0.501, -0.030, -173.6)),
+                   ("sofa_lap2", (-0.501, -0.130, -165.5)), ("sofa_lap2_rerun", (-0.530, -0.137, -168.6)),
+                   ("sofa_lap3", (-0.521, -0.033, -171.4)),
+                   ("suitcase_near1", (-0.524, -0.104, -171.0)), ("suitcase_near2", (-0.474, -0.070, -170.6)),
+                   ("suitcase_near3", (-0.498, -0.142, -166.5)), ("suitcase_lap1", (-0.534, -0.113, -170.4)),
+                   ("suitcase_lap2", (-0.512, -0.087, -168.2)), ("suitcase_lap3", (-0.533, -0.029, -172.7)),
+                   ("m0w_sofa_near", (-0.556, -0.106, -171.0)), ("m0w_sofa_lap", (-0.557, -0.111, -169.8)),
+                   ("voice_sofa_near", (-0.516, -0.080, -168.1)), ("voice_sofa_lap", (-0.528, -0.080, -167.8)),
+                   ("voice_sofa_lap_rerun", (-0.515, -0.032, -172.2)),
+                   ("voice_suitcase_near", (-0.490, -0.045, -170.3)),
+                   ("voice_suitcase_lap", (-0.525, -0.024, -173.6))),
+            "R5": (("m3_oracle_R5", (-0.435, -2.715, -98.6)), ("m3_yoloe_R5", (-0.382, -2.658, -97.5)),
+                   ("m3_cover_R5", (-0.359, -2.694, -97.6)),
+                   ("cone_near1", (-0.285, -2.736, -96.8)), ("cone_near2", (-0.210, -2.701, -95.4)),
+                   ("cone_near3", (-0.489, -2.667, -100.5)), ("cone_lap1", (-0.393, -2.631, -98.2)),
+                   ("cone_lap2", (-0.122, -2.877, -93.5)), ("cone_lap3", (-0.310, -2.662, -96.3)),
+                   ("voice_cone_near", (-0.294, -2.710, -96.4)), ("voice_cone_lap", (-0.492, -2.713, -99.7)),
+                   ("h5d_cone_near1", (-0.264, -2.663, -96.0)), ("h5d_cone_near2", (-0.384, -2.642, -98.8)),
+                   ("h5d_cone_lap1", (-0.448, -2.694, -100.1)), ("h5d_cone_lap2", (-0.339, -2.665, -97.9)))}
 POSE_TARGETS = {**DETECTOR_TARGETS, "L": {"table_1"}}          # the targets of each test pose (L: logical only)
 # The four jittered starts of §12.4 (±0.1 m, ±5°), world axes, around the test pose. The yaw turns with the x shift.
 JITTERS = ((0.1, 0.1, 5.0), (0.1, -0.1, 5.0), (-0.1, 0.1, -5.0), (-0.1, -0.1, -5.0))
@@ -327,9 +358,10 @@ def test_every_measured_pose_plans():
     the runs: the old Bf box's corner (-0.56, -0.141, -172.4°) jittered by (+0.1, +0.1, +5°) loses the sofa lap, and
     so does the widened box's corner (-0.453, -0.141, -166.6°) jittered by (+0.1, -0.1, +5°) (R-H5a; no other corner
     jitter loses it), as does H5's sofa_near1 pose (-0.453, -0.112, -166.9°) with the same jitter: the thin margin
-    of the sofa lap from Bf that H5 and H6 should know. All three lie outside every real run. These are the layout's
-    sizes; with the rows the bridge publishes the sofa lap is thinner still, inside the box too
-    (test_bf_plans_with_the_rows_the_bridge_publishes)."""
+    of the sofa lap from Bf that H5 and H6 should know. In R-H6d's box only the corner (-0.453, -0.024, -165.5°)
+    with that jitter loses it (every jitter of every Bf and R5 corner plans every other formula). All four lie
+    outside every real run. These are the layout's sizes; with the rows the bridge publishes the sofa lap is thinner
+    still, inside the box too (test_bf_plans_with_the_rows_the_bridge_publishes)."""
     for pose, ids in POSE_TARGETS.items():
         for start in measured_corners(pose):
             for obj_id in sorted(ids):
@@ -337,7 +369,7 @@ def test_every_measured_pose_plans():
                     formula = f"F {kind}_{obj_id}"
                     assert moves(build(formula, start, scene()), target(formula)) is not None, (formula, start)
     for edge in ((-0.56 + 0.1, -0.141 + 0.1, -172.4 + 5.0), (-0.453 + 0.1, -0.141 - 0.1, -166.6 + 5.0),
-                 (-0.453 + 0.1, -0.112 - 0.1, -166.9 + 5.0)):
+                 (-0.453 + 0.1, -0.112 - 0.1, -166.9 + 5.0), (-0.453 + 0.1, -0.024 - 0.1, -165.5 + 5.0)):
         x, y, heading = edge
         assert moves(build("F around_sofa_1", (x, y, math.radians(heading)), scene()), "around_sofa_1") is None
 
@@ -434,6 +466,93 @@ def test_h5_poses_plan_and_see_only_their_targets():           # R-H5a: H5's rea
         assert in_camera_view(poses[run], table.x, table.y), run
 
 
+# R-H6d: the plan of the formula each H6 run walked, from its own pose with the layout's sizes: (area [cells], moves,
+# near keys or None, PLANT states), then the run's own plan length (H6's "手"; None for voice_sofa_lap, which
+# stopped at its 8th step). The detector-mode runs planned with the detector's rows (the suitcase 0.52-0.57 x
+# 0.35-0.60, the cone 0.54-0.65 x 0.46-0.61, the sofa 1.00-1.03 x 1.83-1.93), not the layout's sizes, so the moves
+# are the run's in 21 of the 31 runs with a known length; the 4 logical cone runs (h5d_*) are among them.
+H6_PLANS = {"sofa_near1": ((140, 5, 22, 2736), 5), "sofa_near2": ((140, 5, 21, 2736), 5),
+            "sofa_near3": ((140, 5, 22, 2736), 5), "sofa_lap1": ((208, 52, None, 14208), 52),
+            "sofa_lap2": ((208, 48, None, 14304), 55), "sofa_lap2_rerun": ((208, 52, None, 14256), 50),
+            "sofa_lap3": ((208, 49, None, 14016), 49),
+            "suitcase_near1": ((56, 2, 8, 1248), 2), "suitcase_near2": ((56, 2, 6, 1224), 2),
+            "suitcase_near3": ((64, 6, 4, 1416), 3), "suitcase_lap1": ((100, 26, None, 7920), 26),
+            "suitcase_lap2": ((100, 26, None, 8064), 26), "suitcase_lap3": ((100, 26, None, 7920), 28),
+            "m0w_sofa_near": ((140, 5, 21, 2760), 5), "m0w_sofa_lap": ((208, 50, None, 14016), 52),
+            "voice_sofa_near": ((154, 5, 18, 3096), 5), "voice_sofa_lap": ((208, 52, None, 14256), None),
+            "voice_sofa_lap_rerun": ((208, 49, None, 14208), 52),
+            "voice_suitcase_near": ((56, 2, 7, 1200), 2), "voice_suitcase_lap": ((110, 26, None, 8496), 28),
+            "cone_near1": ((72, 1, 5, 1584), 1), "cone_near2": ((63, 1, 10, 1368), 1),
+            "cone_near3": ((63, 1, 8, 1368), 1), "cone_lap1": ((100, 28, None, 8400), 28),
+            "cone_lap2": ((121, 39, None, 8880), 37), "cone_lap3": ((100, 30, None, 8256), 29),
+            "voice_cone_near": ((72, 1, 6, 1608), 1), "voice_cone_lap": ((110, 30, None, 8880), 35),
+            "h5d_cone_near1": ((63, 1, 5, 1344), 1), "h5d_cone_near2": ((63, 1, 6, 1368), 1),
+            "h5d_cone_lap1": ((110, 30, None, 8880), 30), "h5d_cone_lap2": ((100, 28, None, 8016), 28)}
+H6_RUN_TARGETS = {"sofa": "sofa_1", "suitcase": "suitcase_1", "cone": "traffic_cone_1"}
+
+
+def h6_formula(run: str) -> str | None:
+    """The formula an H6 run walked ("voice_cone_lap" -> "F around_traffic_cone_1"); None for M3's poses."""
+    if run.startswith("m3_"):
+        return None
+    words = run.split("_")
+    (obj,) = [w for w in words if w in H6_RUN_TARGETS]
+    (what,) = [w for w in words if w.rstrip("0123456789") in ("near", "lap")]
+    return f"F {'near' if what.startswith('near') else 'around'}_{H6_RUN_TARGETS[obj]}"
+
+
+def test_h6_poses_plan_and_see_only_their_targets():           # R-H6d: H6's real poses, pinned as R-H5a did
+    """Every pose H6 reached lies in its widened box, and 14 of the 38 lie outside the boxes before R-H6d (Bf: y up
+    to 0.008 m past, heading 1.1° past; R5: x up to 0.103 m, y 0.073 m, heading 2.5° past). From each, every near and
+    lap formula of the pose's targets plans, and the formula the run walked has its pinned plan (H6_PLANS). The pose
+    views and their 4 shifts show the pose's targets alone (R-H3c): table_1 stays at least 0.91° outside a Bf view
+    (sofa_lap1's pose with s3; H5's least was 0.34°). From R5 the cone stays inside ±35° of the image centre (R-H3b):
+    -3.7…+20.2° from the camera, 1.58-1.82 m from the base."""
+    old = {"Bf": R_H5A_BF, "R5": ((-0.413, -0.225), (-2.804, -2.654), (-98.0, -95.1))}
+
+    def inside(box, x, y, heading):
+        (x0, x1), (y0, y1), (h0, h1) = box
+        return x0 <= x <= x1 and y0 <= y <= y1 and h0 <= heading <= h1
+
+    outside, matches = [], 0
+    for pose, runs in H6_POSES.items():
+        for run, (x, y, heading) in runs:
+            assert inside(MEASURED_RANGES[pose], x, y, heading), run
+            if not inside(old[pose], x, y, heading):
+                outside.append(run)
+            start = (x, y, math.radians(heading))
+            for obj_id in sorted(POSE_TARGETS[pose]):
+                for kind in ("near", "around"):
+                    formula = f"F {kind}_{obj_id}"
+                    prop = target(formula)
+                    gw = build(formula, start, scene())
+                    assert moves(gw, prop) is not None, (run, formula)
+                    if formula == h6_formula(run):
+                        keys = len(gw.near[prop]) if kind == "near" else None
+                        plan, steps = H6_PLANS[run]
+                        assert (area(gw), moves(gw, prop), keys, len(gw.world.states)) == plan, run
+                        matches += plan[1] == steps
+    assert sorted(H6_PLANS) == sorted(run for runs in H6_POSES.values() for run, _ in runs if h6_formula(run))
+    assert sum(steps is not None for _, steps in H6_PLANS.values()) == 31 and matches == 21
+    assert sorted(outside) == sorted(["m3_oracle_Bf", "sofa_lap1", "sofa_lap2", "suitcase_near3", "suitcase_lap3",
+                                      "voice_suitcase_lap", "m3_oracle_R5", "cone_near2", "cone_near3", "cone_lap1",
+                                      "cone_lap2", "voice_cone_lap", "h5d_cone_near2", "h5d_cone_lap1"])
+    poses = {run: (x, y, math.radians(heading)) for runs in H6_POSES.values() for run, (x, y, heading) in runs}
+    table, cone = (next(o for o in scene() if o.id == i) for i in ("table_1", "traffic_cone_1"))
+    margins = []
+    for pose, ids in DETECTOR_TARGETS.items():
+        for run, _ in H6_POSES[pose]:
+            views = [poses[run]] + [shifted(poses[run], s) for s in VIEW_SHIFTS]
+            assert [{o.id for o in scene() if rendered(v, o)} for v in views] == [ids] * 5, run
+            if pose == "Bf":
+                margins.append((min(min(abs(b) for b, _ in bearings(v, table)) for v in views) - HALF_FOV, run))
+    assert min(margins)[0] == pytest.approx(0.912, abs=0.001) and min(margins)[1] == "sofa_lap1"
+    r5 = [poses[run] for run, _ in H6_POSES["R5"]]
+    cam, base = [sight(p, cone.x, cone.y) for p in r5], [sight(p, cone.x, cone.y, camera=False) for p in r5]
+    assert (min(b for b, _ in cam), max(b for b, _ in cam)) == pytest.approx((-3.7, 20.2), abs=0.05)
+    assert (min(d for _, d in base), max(d for _, d in base)) == pytest.approx((1.583, 1.821), abs=0.0005)
+
+
 # The rows the bridge publishes from Bf (H5's record, "測った足跡の大きさ"): the sofa measured 1.052-1.054 x 1.782-1.830
 # and the suitcase 0.495-0.506 x 0.305-0.312 (world axes). R-H5d floors each axis at the layout's size, so the sofa
 # row is 1.052-1.054 x 1.8-1.830 and the suitcase's stays as measured (above the layout's 0.468 x 0.291). Each range
@@ -495,9 +614,61 @@ def test_bf_plans_with_the_rows_the_bridge_publishes():         # R-H5a with R-H
         for sizes, steps_got in (({"suitcase_1": (0.468, 0.305)}, steps), ({"suitcase_1": (0.495, 0.291)}, None),
                                  ({"suitcase_1": (0.495, 0.305)}, None)):
             assert moves(build("F around_sofa_1", start, scene(sizes)), "around_sofa_1") == steps_got, (start, sizes)
-    corner = (x1, y1, math.radians(h1))                         # (-0.453, -0.032, -166.6°)
+    (_, cx), (_, cy), (_, ch) = R_H5A_BF
+    corner = (cx, cy, math.radians(ch))                         # R-H5a's box corner (-0.453, -0.032, -166.6°)
     for sizes, steps_got in (({}, 54), (sets[0], 54), ({"sofa_1": (1.054, 1.83)}, None), (sets[1], None)):
         assert moves(build("F around_sofa_1", corner, scene(sizes)), "around_sofa_1") == steps_got, sizes
+
+
+# R-H6d: the Scene two H6 sofa laps planned with (`objects_check.py objects` just before the formula; detector rows:
+# id, x, y, size in world axes). The sofa row stands about 0.075 m nearer than the layout's centre and is about
+# 1.0 x 1.86 (its far side short, R-H6a); the suitcase row is 0.526-0.555 along world x against the layout's 0.468.
+H6_BF_ROWS = {"sofa_lap1": (("chair_1", 2.496, -1.5, (0.555, 0.544)), ("sofa_1", -4.504, -0.006, (1.0, 1.858)),
+                            ("suitcase_1", -1.602, -1.115, (0.555, 0.373))),
+              "sofa_lap2": (("chair_1", 2.496, -1.506, (0.556, 0.551)), ("sofa_1", -4.505, 0.008, (1.002, 1.861)),
+                            ("suitcase_1", -1.593, -1.119, (0.526, 0.378)))}
+# Spots in the part of the Bf box that R-H6d added (no run was there) where the sofa lap has no plan with the layout
+# sizes, nor with either row set above: (x, y, heading)
+H6_BF_LAP_HOLES = ((-0.4744, -0.024, -166.2), (-0.453, -0.024, -167.2))
+
+
+def test_bf_sofa_lap_with_the_rows_h6_planned_with():           # R-H6d with H6's detector rows
+    """In detector mode the sofa lap plans with the detector's rows, and its thin margin from Bf (the ring passes
+    the suitcase; test_bf_plans_with_the_rows_the_bridge_publishes) is thinner at the least turned headings. H6's
+    sofa_lap2 ended its procedure at -165.5° and planned with its own rows (55 moves, as the run). With sofa_lap1's
+    rows the same pose has no plan, and so has suitcase_near3's (-166.5°): the suitcase row's width along world x
+    does it (sofa_lap2's 0.526 and 0.53 plan, 0.54 and wider do not). With the other five row sets of H6's sofa laps
+    (not pinned here) sofa_lap2's pose has no plan either, and suitcase_near3's plans with 2 of the 7; every other H6
+    Bf pose plans with all 7. On a scan of R-H6d's Bf box (a 6 x 6 x 6 grid plus the added edges, 360 points) the
+    lap has no plan at 4 points with the layout sizes, all in the part R-H6d added (H6_BF_LAP_HOLES pins two), and
+    at 48-125 points with each of those 7 row sets (4-21 of them inside R-H5a's box). So in H6b a sofa lap from Bf
+    whose procedure ends turned less than about 167° can be refused with no plan; that is a refusal, not a fault."""
+    def rows(run, suitcase_x=None):
+        out = []
+        for obj_id, x, y, size in H6_BF_ROWS[run]:
+            if obj_id == "suitcase_1" and suitcase_x is not None:
+                size = (suitcase_x, size[1])
+            out.append(Obj(obj_id, obj_id.rsplit("_", 1)[0], x, y, size))
+        return tuple(out)
+
+    def lap(start, objs):
+        return moves(build("F around_sofa_1", start, objs), "around_sofa_1")
+
+    poses = {run: (x, y, math.radians(heading)) for run, (x, y, heading) in H6_POSES["Bf"]}
+    assert [lap(poses["sofa_lap2"], objs) for objs in (rows("sofa_lap2"), rows("sofa_lap1"), scene())] == \
+        [55, None, 48]
+    assert [lap(poses["suitcase_near3"], objs) for objs in (rows("sofa_lap2"), rows("sofa_lap1"), scene())] == \
+        [55, None, 50]
+    assert [lap(poses["sofa_lap1"], objs) for objs in (rows("sofa_lap2"), rows("sofa_lap1"), scene())] == \
+        [53, 53, 52]
+    assert [lap(poses["sofa_lap2"], rows("sofa_lap2", w)) for w in (0.53, 0.54, 0.555)] == [55, None, None]
+    (x0, x1), (y0, y1), (h0, h1) = MEASURED_RANGES["Bf"]
+    (ox0, ox1), (oy0, oy1), (oh0, oh1) = R_H5A_BF
+    for x, y, heading in H6_BF_LAP_HOLES:
+        assert x0 <= x <= x1 and y0 <= y <= y1 and h0 <= heading <= h1
+        assert not (ox0 <= x <= ox1 and oy0 <= y <= oy1 and oh0 <= heading <= oh1)     # R-H5a's box
+        start = (x, y, math.radians(heading))
+        assert [lap(start, objs) for objs in (scene(), rows("sofa_lap2"), rows("sofa_lap1"))] == [None] * 3
 
 
 def test_each_test_pose_sees_its_targets():                     # §12.3: so the turn puts them in the Scene
@@ -516,43 +687,59 @@ def test_no_undetectable_model_in_a_detector_test_view():
     (its corner (-3.148, 4.0) at 59.88° against the 59.99° edge) and the s2 and s3 views (both -5°). At the
     measured headings it stays outside every view, but only just at the widened box's extremes: 0.03° at the
     corner (-0.453, -0.032, -174.0°) with s3 (2.3° at the corner (-0.506, -0.054, -172.4°) of the box before
-    R-H5a; 0.34° at H5's most turned real pose). R-H3e: the turns overshoot, so the room was placed with the measured
-    yaws; re-run this view check if the turn controller changes. Also R-H3b: from Bf the suitcase never covers the
-    sofa."""
+    R-H5a; 0.34° at H5's most turned real pose). R-H6d's box breaks it at one corner, where no run was: at
+    (-0.453, -0.024, -174.0°), which joins H6's y with H5's heading and x, table_1's corner comes 0.02° inside the
+    s3 view. Every other view of the corners keeps it at least 0.69° outside (the corner (-0.453, -0.142, -174.0°)
+    with s3), and H6's own poses at least 0.91° (test_h6_poses_plan_and_see_only_their_targets). R-H3e: the turns
+    overshoot, so the room was placed with the measured yaws; re-run this view check if the turn controller changes.
+    Also R-H3b: from Bf the suitcase never covers the sofa."""
     table = next(o for o in scene() if o.id == "table_1")
     nominal = anchor("Bf")
     assert [rendered(v, table) for v in [nominal] + [shifted(nominal, s) for s in VIEW_SHIFTS]] == \
         [True, False, True, True, False]                        # the pose view, s2 and s3
-    margins = []
+    margins, more = [], []
     for pose, ids in DETECTOR_TARGETS.items():
         for start in [anchor(pose, poses=MEASURED_POSES)] + measured_corners(pose):
-            for view in [start] + [shifted(start, s) for s in VIEW_SHIFTS]:
-                assert {o.id for o in scene() if rendered(view, o)} == ids, (pose, view)
+            for k, view in enumerate([start] + [shifted(start, s) for s in VIEW_SHIFTS]):
+                seen = {o.id for o in scene() if rendered(view, o)}
+                assert ids <= seen, (pose, view)
+                if seen != ids:                                 # a model that is not a target is in view
+                    x, y, yaw = start
+                    more.append((pose, (round(x, 3), round(y, 3), round(math.degrees(yaw), 1)), k, seen - ids))
                 if pose == "Bf":
                     spans = {o.id: [b for b, _ in bearings(view, o)] for o in scene() if o.id in ids}
                     assert max(spans["sofa_1"]) < min(spans["suitcase_1"]), view    # the suitcase is left of it
-                    margins.append(min(abs(b) for b, _ in bearings(view, table)) - HALF_FOV)
-    assert min(margins) == pytest.approx(0.029, abs=0.0005) and min(margins) > 0   # table_1's least margin, Bf
+                    margins.append((min(abs(b) for b, _ in bearings(view, table)) - HALF_FOV, seen == ids))
+    assert more == [("Bf", (-0.453, -0.024, -174.0), 3, {"table_1"})]              # R-H6d's corner, s3
+    assert [m for m, alone in margins if not alone] == pytest.approx([-0.020], abs=0.0005)
+    least = min(m for m, alone in margins if alone)                                 # table_1's least margin, Bf
+    assert least == pytest.approx(0.690, abs=0.0005) and least > 0
 
 
 def test_the_suitcase_from_the_camera_and_from_the_base():
     """R-H3b's ±35° is about the image centre, so it is measured from the camera, which sits 0.327 m ahead of the base
     (CAMERA_IN_BODY); its 1.5-2.5 m is about the test pose, the base. The room proposal and R-H3h (4) gave base ->
     footprint centre (+29…+36°, 1.47-1.56 m over the screening's runs). From the camera, the suitcase's centre is
-    +41.3° at H3's Bf, +35.3…+46.0° at H5's eight Bf poses and +34.0…+49.6° over the box of measured Bf poses
-    (+27.2…+40.3° from the base): outside ±35° at every real pose (H3's, H5's), and inside it only near the widened
-    box's corner (-0.453, -0.141, -166.6°), 34.0° (R-H5a). It is 1.457-1.609 m from the base, under R-H3b's 1.5 m
-    in part of the box, and 1.184-1.364 m from the camera. At every real pose its truth box stays in the image in
-    the pose view and the s1, s3 and s4 views (the pose view's far edge 2.0° inside at worst); in s2 (dyaw -5°) it
-    runs past the left image edge at H3's pose and at 7 of H5's 8 (sofa_near1's keeps it 0.2° inside), so a miss in
-    Bf_s2 reads as clipping, not as a detector fault. Two corners of the widened box leave that pattern, where no run
-    was: (-0.453, -0.141, -166.6°) clips no view, and (-0.56, -0.032, -174.0°) clips the pose view and s3 too (far
-    edges 61.7° and 61.3°). The placement stands as R-H3h (4) accepted it (Part B passed on real renders; H3b is the
-    gate). These pins make a change to the turn controller show up."""
+    +41.3° at H3's Bf, +35.3…+46.0° at H5's eight Bf poses, +34.7…+48.1° at H6's 23 and +32.6…+49.8° over the box
+    of measured Bf poses (+26.0…+40.5° from the base): outside ±35° at every real pose but H6's sofa_lap2 (34.7°,
+    the least turned run, -165.5°), and inside it only near the box's corner (-0.453, -0.142, -165.5°), 32.6°
+    (R-H5a's box: near (-0.453, -0.141, -166.6°), 34.0°). It is 1.456-1.615 m from the base, under R-H3b's 1.5 m in
+    part of the box, and 1.180-1.371 m from the camera. At H3's and H5's poses its truth box stays in the image in the
+    pose view and the s1, s3 and s4 views (the pose view's far edge 2.0° inside at worst); in s2 (dyaw -5°) it runs
+    past the left image edge at H3's pose, at 7 of H5's 8 (sofa_near1's keeps it 0.2° inside) and at 22 of H6's 23
+    (sofa_lap2's keeps it inside), so a miss in Bf_s2 reads as clipping, not as a detector fault. H6's M3 oracle pose
+    (-0.529, -0.029, -173.6°) also clips the pose view (far edge 60.05° against the 59.99° edge). Three corners of
+    the box leave the s2 pattern, where no run was: (-0.453, -0.142, -165.5°) and (-0.453, -0.024, -165.5°) clip no
+    view, and (-0.56, -0.024, -174.0°) clips the pose view and s3 too (far edges 61.8° and 61.5°). The placement
+    stands as R-H3h (4) accepted it (Part B passed on real renders; H3b is the gate). These pins make a change to the
+    turn controller show up."""
     s = next(o for o in scene() if o.id == "suitcase_1")
     h3 = anchor("Bf", poses=MEASURED_POSES)
     real = [h3] + [(x, y, math.radians(heading)) for _, (x, y, heading) in H5_POSES["Bf"]]
-    poses = real + measured_corners("Bf")
+    h6_runs = [run for run, _ in H6_POSES["Bf"]]
+    h6 = [(x, y, math.radians(heading)) for _, (x, y, heading) in H6_POSES["Bf"]]
+    poses = real + h6 + measured_corners("Bf")
+    n, m = len(real), len(real) + len(h6)                     # poses[:n] H3's and H5's, poses[n:m] H6's
 
     def span(rows, k):
         return min(r[k] for r in rows), max(r[k] for r in rows)
@@ -562,11 +749,13 @@ def test_the_suitcase_from_the_camera_and_from_the_base():
     assert sight(h3, s.x, s.y, camera=False)[1] == pytest.approx(1.550, abs=0.0005)
     cam = [sight(p, s.x, s.y) for p in poses]
     base = [sight(p, s.x, s.y, camera=False) for p in poses]
-    assert span(cam, 0) == pytest.approx((34.0, 49.6), abs=0.05) and span(cam, 0)[0] < 35.0
-    assert span(cam[1:len(real)], 0) == pytest.approx((35.25, 45.99), abs=0.005) and span(cam[:len(real)], 0)[0] > 35.0
-    assert span(base, 0) == pytest.approx((27.2, 40.3), abs=0.05)
-    assert span(base, 1) == pytest.approx((1.457, 1.609), abs=0.0005) and span(base, 1)[0] < 1.5
-    assert span(cam, 1) == pytest.approx((1.184, 1.364), abs=0.0005)
+    assert span(cam, 0) == pytest.approx((32.6, 49.8), abs=0.05) and span(cam, 0)[0] < 35.0
+    assert span(cam[1:n], 0) == pytest.approx((35.25, 45.99), abs=0.005) and span(cam[:n], 0)[0] > 35.0
+    assert span(cam[n:m], 0) == pytest.approx((34.66, 48.12), abs=0.005)
+    assert [run for run, (b, _) in zip(h6_runs, cam[n:m]) if b < 35.0] == ["sofa_lap2"]
+    assert span(base, 0) == pytest.approx((26.0, 40.5), abs=0.05)
+    assert span(base, 1) == pytest.approx((1.456, 1.615), abs=0.0005) and span(base, 1)[0] < 1.5
+    assert span(cam, 1) == pytest.approx((1.180, 1.371), abs=0.0005)
     left, clipped = {}, []                       # per view: the footprint's leftmost bearing, box x0; clipped views
     for p in poses:
         cut = set()
@@ -578,13 +767,16 @@ def test_the_suitcase_from_the_camera_and_from_the_base():
                 cut.add(k)
             left.setdefault(k, []).append((far, box[0]))
         clipped.append(cut)
-    assert clipped[:len(real)] == [{2}, set()] + [{2}] * 7           # H3's, then H5's (sofa_near1 clips none)
-    assert clipped[len(real):] == [{2}, {2}, {0, 2, 3}, {2}, {2}, set(), {2}, {2}]   # measured_corners' order
-    assert span(left[2], 0) == pytest.approx((58.94, 72.78), abs=0.005)  # s2: past the 60° edge, clipped at u = 0
-    assert span(left[2][:len(real)], 0) == pytest.approx((59.76, 69.23), abs=0.005)
-    assert span(left[0][:len(real)], 0) == pytest.approx((47.70, 57.945), abs=0.005)  # the pose view: inside
-    assert span(left[0][:len(real)], 1) == pytest.approx((24.825, 116.85), abs=0.005)  # its left edge at u (px)
-    assert span(left[0], 0)[1] == pytest.approx(61.68, abs=0.005)       # ... but past the edge at the box corner
+    assert clipped[:n] == [{2}, set()] + [{2}] * 7                   # H3's, then H5's (sofa_near1 clips none)
+    assert {run: cut for run, cut in zip(h6_runs, clipped[n:m]) if cut != {2}} == {"m3_oracle_Bf": {0, 2},
+                                                                                    "sofa_lap2": set()}
+    assert clipped[m:] == [{2}, {2}, {0, 2, 3}, {2}, {2}, set(), {2}, set()]         # measured_corners' order
+    assert span(left[2], 0) == pytest.approx((57.69, 72.87), abs=0.005)  # s2: past the 60° edge, clipped at u = 0
+    assert span(left[2][:n], 0) == pytest.approx((59.76, 69.23), abs=0.005)
+    assert span(left[0][:n], 0) == pytest.approx((47.70, 57.945), abs=0.005)  # the pose view: inside
+    assert span(left[0][:n], 1) == pytest.approx((24.825, 116.85), abs=0.005)  # its left edge at u (px)
+    assert span(left[0][n:m], 0)[1] == pytest.approx(60.045, abs=0.005)  # past the edge at H6's m3_oracle_Bf
+    assert span(left[0], 0)[1] == pytest.approx(61.81, abs=0.005)       # ... and at the box corner
 
 
 def test_vocabulary_sizes_also_plan():
