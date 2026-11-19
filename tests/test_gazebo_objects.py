@@ -1,21 +1,29 @@
-"""Gazebo の物（logical camera・box_1 と chair_1・/go2/objects）の、ROS を使わない部品（Task D）。"""
+"""Gazebo の物（logical camera・配置ファイルの物・/go2/objects と /gazebo/objects_truth）の、ROS を使わない部品
+（Task D、open-objects Task 2.3）。"""
 
+import io
 import json
 import math
 import re
+import tokenize
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
-from gazebo.bridge_core import (OBJECT_SPAWN_Z, SIZE_BOX_GRACE_S, SIZE_BOX_MARGIN, BoxWorld,
-                                ObjectMemory, compose, drop_box_points, footprint_size,
-                                lidar_points_world, object_label, object_sdf, quat_to_matrix)
+from gazebo import bridge_core
+from gazebo.bridge_core import (CARDBOARD_MESH_SIDE, OBJECT_SPAWN_Z, OBJECTS_SOURCES, SIZE_BOX_GRACE_S,
+                                SIZE_BOX_MARGIN, SIZE_RADIUS, TRUTH_TOPIC, BoxWorld, ObjectMemory, box_sdf,
+                                bridge_settings, compose, drop_box_points, footprint_size, layout_name, lidar_points_world,
+                                logical_rows, missing_models, object_label, object_sdf, objects_publisher_note,
+                                objects_source, objects_topics, quat_to_matrix, spawn_fields)
 from sim.sim_core import BOX_HEIGHT, Box
+from voice_ltl import layout
 from voice_ltl.grid import NEAR_MAX_DISTANCE, NEAR_MAX_MARGIN, NEAR_MIN_MARGIN
 from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_HZ, CAMERA_IN_BODY, CAMERA_NEAR,
-                               DEFAULT_LAYOUT, DEFAULT_SIZE, parse)
+                               DEFAULT_LAYOUT, DEFAULT_SIZE, OBJECTS_TOPIC, measure_radius, parse)
 
 ROOT = Path(__file__).resolve().parent.parent
 XACRO = ROOT / "gazebo" / "go2_sensors.urdf.xacro"
@@ -65,14 +73,14 @@ def test_memory_remembers_flags_visibility_and_keeps_the_largest_size():
     m = ObjectMemory()
     m.update([("box_1", "box", 2.5, 1.5)], 10.0)
     (o,) = m.objects()
-    assert (o.visible, o.seen, o.size) == (True, 10.0, DEFAULT_SIZE)
+    assert (o.visible, o.seen, o.size, o.measured) == (True, 10.0, DEFAULT_SIZE, False)   # box: [0.5, 0.5]
     m.update([], 11.0)
     (o,) = m.objects()
     assert (o.visible, o.seen) == (False, 10.0)
     m.set_size("box_1", (0.4, 0.6))
     m.set_size("box_1", (0.45, 0.5))
     m.set_size("nope_1", (1, 1))
-    assert m.objects()[0].size == (0.45, 0.6)
+    assert m.objects()[0].size == (0.45, 0.6) and m.objects()[0].measured is True
     assert parse(m.message(12.0)) == tuple(m.objects())
 
 
@@ -164,18 +172,22 @@ def test_object_sdf_is_static_xml_of_the_right_size():
 
 
 def test_objects_stand_on_the_floor_with_the_layout_footprint():   # R23
-    for o in DEFAULT_LAYOUT:
+    for e in layout.load("default").entries:
+        sdf, x, y, z, yaw = spawn_fields(e)
+        assert (x, y, yaw) == (e.x, e.y, 0.0), e.id
         lo, hi = [], []
-        for c in ET.fromstring(object_sdf(o.id, o.label)).iter("collision"):
+        for c in ET.fromstring(sdf).iter("collision"):
             centre = np.array([float(v) for v in c.find("pose").text.split()[:3]])
             half = np.array([float(v) for v in c.find("geometry/box/size").text.split()]) / 2
             lo.append(centre - half)
             hi.append(centre + half)
-        spawn = np.array([0.0, 0.0, OBJECT_SPAWN_Z[o.label]])
+        spawn = np.array([0.0, 0.0, z])
         lo, hi = np.min(lo, axis=0) + spawn, np.max(hi, axis=0) + spawn
-        assert lo[2] == pytest.approx(0.0), o.id                       # neither floating nor sunk
-        assert tuple(hi[:2] - lo[:2]) == pytest.approx(o.size), o.id   # the footprint the fake Go2 uses
-        assert hi[2] == pytest.approx({"box": 0.5, "chair": 0.9}[o.label]), o.id   # chair back up to 0.9 m
+        assert lo[2] == pytest.approx(0.0), e.id                              # neither floating nor sunk
+        assert tuple(hi[:2] - lo[:2]) == pytest.approx(e.world_size()), e.id  # the footprint the fake Go2 uses
+        assert tuple((hi[:2] + lo[:2]) / 2) == pytest.approx(e.world_offset()), e.id   # centred on the footprint
+        assert hi[2] == pytest.approx(e.height), e.id                         # chair back up to 0.9 m
+        assert e.height == {"box": 0.5, "chair": 0.9}[e.label]
 
 
 def test_xacro_mounts_the_logical_camera_like_the_real_front_camera():
@@ -190,8 +202,10 @@ def test_xacro_mounts_the_logical_camera_like_the_real_front_camera():
 
 
 def test_launch_bridges_the_logical_camera():
-    assert ('"/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage"'
-            in LAUNCH.read_text(encoding="utf-8"))
+    from gazebo.launch_config import GZ_BRIDGE_ARGS       # the main bridge's arguments (open-objects Task 2.9)
+    assert ("/gazebo/logical_camera@ros_gz_interfaces/msg/LogicalCameraImage[gz.msgs.LogicalCameraImage"
+            in GZ_BRIDGE_ARGS)
+    assert "arguments=list(GZ_BRIDGE_ARGS)," in LAUNCH.read_text(encoding="utf-8")
 
 
 def test_the_readme_echo_shows_the_whole_objects_message():
@@ -301,10 +315,11 @@ def test_the_docs_state_the_gazebo_lap_result():
 
 def test_the_gazebo_image_carries_the_controller_patches():
     """Patches 0003-0004 (gazebo_objects_e2e.md part 5) and 0005 (part 6) are applied by
-    Dockerfile.gazebo with 0001-0002, and compose builds and runs them as go2-voice-ltl-gazebo:patch-0005;
-    the older images (kept as go2-voice-ltl-gazebo:patch-0004 and :patch-0002) are reached through
-    GO2_GAZEBO_IMAGE, with a warning never to build with it set (this tree would build 0001-0005 under
-    that tag). 0003 drops the three lines that wrote the low-pass velocity back into the Kalman state and
+    Dockerfile.gazebo with 0001-0002 (go2-voice-ltl-gazebo:patch-0005, built first); compose builds and runs
+    the thin image go2-voice-ltl-gazebo:patch-0005-fuel2 on top of it (Dockerfile.gazebo-fuel: the pinned
+    Fuel models, open-objects spec §12.6, R-H3g); the older images (kept as go2-voice-ltl-gazebo:patch-0005-fuel1,
+    :patch-0004 and :patch-0002) are reached through GO2_GAZEBO_IMAGE, with a warning never to build with it set (compose
+    would build the thin Fuel image under that tag). 0003 drops the three lines that wrote the low-pass velocity back into the Kalman state and
     keeps feeding the filters; 0004 makes StateTrotting::enter() start from STANCE_ALL; 0005 makes the
     wave generator count the controller's update time (the simulation time) instead of the wall clock."""
     patches = sorted(p.name for p in (ROOT / "docker" / "patches").glob("*.patch"))
@@ -335,8 +350,338 @@ def test_the_gazebo_image_carries_the_controller_patches():
     assert "for p in /tmp/quadruped_ros2_control_patches/*.patch; do git apply --verbose" in dockerfile
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     gazebo = compose[compose.index("\n  gazebo:"):compose.index("\nvolumes:")]
-    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005}" in gazebo.splitlines()
+    assert "    image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel2}" in gazebo.splitlines()
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0004 docker compose --profile gazebo up" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:patch-0002 docker compose --profile gazebo up" in gazebo
     assert "Never run" in gazebo and "this tree cannot rebuild it" in gazebo
+    for tag in ("patch-0004", "patch-0002"):          # those images have no Fuel models (pre-final review F6)
+        assert f"GO2_LAYOUT=default GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:{tag} docker compose" in gazebo
     assert "GO2_GAZEBO_IMAGE=go2-voice-ltl-gazebo:dev" not in gazebo
+
+
+# ---- open-objects Task 2.3: the layout, the truth topic, the source switch and the sizing ----
+
+def household_like_layout() -> layout.Layout:
+    """The spec §12.5 household rows (gazebo/layouts/household.json itself belongs to Task 2.5), with the model
+    folders of that time, so that a later room change (R-H3b: TrashBin and LampAndStand left docker/fuel_models.json)
+    does not move these bridge tests."""
+    def row(obj_id, model, x, y, size, height, offset=(0.0, 0.0), detectable=False, accept=None):
+        return {"id": obj_id, "model": model, "x": x, "y": y, "yaw_deg": 0,
+                "footprint": {"offset": list(offset), "size": list(size)}, "height": height,
+                "detectable": detectable, "accept": accept or [obj_id.rsplit("_", 1)[0]]}
+    return layout.parse({"version": 1, "objects": [
+        row("box_1", "primitive:box", 2.5, 1.5, (0.5, 0.5), 0.5),
+        row("chair_1", "primitive:chair", 2.5, -1.5, (0.45, 0.45), 0.9),
+        row("trash_can_1", "model://TrashBin", -1.5, -1.5, (0.266, 0.375), 0.446),
+        row("suitcase_1", "model://Suitcase1", -1.5, 1.5, (0.6, 0.4), 0.8),
+        row("sofa_1", "model://Sofa", -4.4, 0.0, (1.044, 1.8), 0.943, offset=(0.02, 0.0), detectable=True),
+        row("lamp_1", "model://LampAndStand", 0.8, -4.4, (0.622, 0.525), 1.021, detectable=True),
+        row("table_1", "model://Table", -2.4, 4.4, (1.5, 0.8), 1.015, offset=(0.002, 0.0),
+            accept=["table", "desk"]),
+    ]}, "household_like", folders=frozenset({"Sofa", "TrashBin", "LampAndStand", "Table", "Suitcase1"}))
+
+
+def one_entry(**changes) -> layout.Entry:
+    base = {"id": "sofa_1", "model": "model://Sofa", "x": -4.4, "y": 0.0, "yaw_deg": 0,
+            "footprint": {"offset": [0.02, 0.0], "size": [1.044, 1.8]}, "height": 0.943,
+            "detectable": True, "accept": ["sofa"]}
+    return layout.parse({"version": 1, "objects": [{**base, **changes}]}, "one").entries[0]
+
+
+def test_objects_topics_and_source():
+    assert OBJECTS_SOURCES == ("logical", "detector") and TRUTH_TOPIC == "/gazebo/objects_truth"
+    assert objects_topics("logical") == ("/go2/objects", "/gazebo/objects_truth")
+    assert objects_topics("detector") == ("/gazebo/objects_truth",)
+    for bad in ("Logical", "", "detecter"):
+        with pytest.raises(ValueError):
+            objects_topics(bad)
+    assert objects_source({}) == "logical" and objects_source({"OBJECTS_SOURCE": "detector"}) == "detector"
+    assert objects_source({"OBJECTS_SOURCE": "logical"}) == "logical"
+    for bad in ("Logical", "", "fake", "detecter"):          # any other value: the bridge does not start
+        with pytest.raises(ValueError, match="OBJECTS_SOURCE") as e:
+            objects_source({"OBJECTS_SOURCE": bad})
+        assert "logical" in str(e.value) and "detector" in str(e.value) and "\n" not in str(e.value)
+    assert layout_name({}) == "household" and layout_name({"GO2_LAYOUT": "default"}) == "default"
+
+
+def test_publisher_note_names_the_missing_detector():    # Review Focus 3
+    assert objects_publisher_note("logical", 1) is None and objects_publisher_note("detector", 1) is None
+    assert "--profile detector" in objects_publisher_note("detector", 0)
+    assert "OBJECTS_SOURCE" in objects_publisher_note("logical", 2)
+    assert "OBJECTS_SOURCE" in objects_publisher_note("detector", 2) and "3" in objects_publisher_note("logical", 3)
+    assert objects_publisher_note("logical", 0) is None       # the bridge is the publisher; not yet in the graph
+    for source, count in (("detector", 0), ("logical", 2)):
+        note = objects_publisher_note(source, count)
+        assert OBJECTS_TOPIC in note and "\n" not in note
+    with pytest.raises(ValueError):
+        objects_publisher_note("fake", 1)
+
+
+def code_text(path: Path) -> str:
+    """The file's text with every comment cut off (tokenize), so a line commented out passes no text check
+    (pre-final review round 2: 「# self.create_timer(…)」 and 「pass  # self.get_logger().error(note)」 passed)."""
+    text = path.read_text(encoding="utf-8")
+    cut = {tok.start[0]: tok.start[1] for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+           if tok.type == tokenize.COMMENT}
+    lines = io.StringIO(text).readlines()                       # numbered as tokenize numbers them
+    return "".join(line[:cut[n]].rstrip() + "\n" if n in cut else line for n, line in enumerate(lines, 1))
+
+
+def test_code_text_cuts_comments_only(tmp_path):
+    f = tmp_path / "m.py"
+    f.write_text('a = 1  # one\n# b = 2\nc = "# not a comment"\nif a:\n    pass  # d = 4\n', encoding="utf-8")
+    assert code_text(f) == 'a = 1\n\nc = "# not a comment"\nif a:\n    pass\n'
+
+
+def test_the_bridge_node_checks_the_publishers_every_10_s_and_stops_on_bad_settings():   # pre-final review F14
+    # the node needs rclpy and the Jazzy types, so its wiring is checked in its text without comments (as
+    # test_bridge_core does for parse_switch): the 10 s timer, the error line, and exit 1 before GazeboBridge on
+    # bad settings
+    assert bridge_core.PUBLISHER_NOTE_S == 10.0
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
+    assert "self.create_timer(PUBLISHER_NOTE_S, self._check_publishers, clock=wall)" in node
+    check = node[node.index("    def _check_publishers(self)"):]
+    check = check[:check.index("\n    def ", 1)]
+    assert "objects_publisher_note(self.source, self.count_publishers(OBJECTS_TOPIC))" in check
+    assert "self.get_logger().error(note)" in check
+    main = node[node.index("def main() -> None:"):]
+    settings = main[main.index("source, lay = bridge_settings()"):main.index("rclpy.init()")]
+    assert re.search(r"except ValueError as e:.*\n\s+rclpy\.logging\.get_logger\(NODE_NAME\)\.error\(str\(e\)\)"
+                     r"\n\s+sys\.exit\(1\)\n", settings)
+    assert main.index("sys.exit(1)") < main.index("GazeboBridge(source, lay)")
+
+
+def test_missing_model_folder_stops_the_bridge_before_spawning(tmp_path):   # Review Focus 5
+    (tmp_path / "Sofa").mkdir()
+    assert missing_models(household_like_layout(), str(tmp_path)) == ["LampAndStand", "Suitcase1", "Table", "TrashBin"]
+    assert missing_models(layout.load("default"), "") == []
+    other = tmp_path / "other"
+    for folder in ("LampAndStand", "Suitcase1", "Table"):
+        (other / folder).mkdir(parents=True)
+    (other / "TrashBin").write_text("not a folder", encoding="utf-8")
+    path = f"{tmp_path / 'none'}::{tmp_path}:{other}"          # any entry may hold a folder; empty entries skipped
+    assert missing_models(household_like_layout(), path) == ["TrashBin"]
+    assert missing_models(household_like_layout(), "") == ["LampAndStand", "Sofa", "Suitcase1", "Table", "TrashBin"]
+
+
+def test_bridge_settings_stop_before_spawning_with_one_line(tmp_path, monkeypatch):   # Review Focus 5
+    assert bridge_settings({"GO2_LAYOUT": "default"}) == ("logical", layout.load("default"))
+    assert bridge_settings({"OBJECTS_SOURCE": "detector", "GO2_LAYOUT": "default"})[0] == "detector"
+    with pytest.raises(ValueError, match="OBJECTS_SOURCE"):
+        bridge_settings({"OBJECTS_SOURCE": "detecter", "GO2_LAYOUT": "default"})
+    with pytest.raises(ValueError) as e:
+        bridge_settings({"GO2_LAYOUT": "nope"})
+    assert all(w in str(e.value) for w in ("GO2_LAYOUT", "nope", "default")) and "\n" not in str(e.value)
+    monkeypatch.setattr(bridge_core, "load_layout", lambda name: household_like_layout())
+    (tmp_path / "Sofa").mkdir()
+    with pytest.raises(ValueError) as e:
+        bridge_settings({"GZ_SIM_RESOURCE_PATH": str(tmp_path)})
+    note = str(e.value)
+    assert all(f in note for f in ("LampAndStand", "Suitcase1", "Table", "TrashBin", "GZ_SIM_RESOURCE_PATH", "household"))
+    assert "Sofa" not in note and str(tmp_path) not in note and "\n" not in note   # names the variable, not its value
+    assert "go2-voice-ltl-gazebo:patch-0005-fuel2" in note and "fuel1" not in note    # the image with the room
+    (tmp_path / "sub").mkdir()
+    for folder in ("LampAndStand", "Suitcase1", "Table", "TrashBin"):
+        (tmp_path / "sub" / folder).mkdir()
+    assert bridge_settings({"GZ_SIM_RESOURCE_PATH": f"{tmp_path}:{tmp_path / 'sub'}"})[1].name == "household_like"
+
+
+def test_logical_rows_use_the_footprint_centre():        # C3
+    rows = logical_rows([("box_1", 2.5, 1.5), ("chair_1", 2.5, -1.5), ("sim_box_1", 1.0, 0.0), ("ground_plane", 0, 0)],
+                        layout.load("default"))
+    assert rows == [("box_1", "box", 2.5, 1.5), ("chair_1", "chair", 2.5, -1.5)]   # today's positions
+    # an entry with offset (0.19, 0) at yaw 90 is published 0.19 m along +y of its origin
+    # (the alternative Bookshelf's offset, spec §12.3; any folder of docker/fuel_models.json passes the loader)
+    lay = layout.parse({"version": 1, "objects": [
+        {"id": "bookshelf_1", "model": "model://Sofa", "x": 1.0, "y": 2.0, "yaw_deg": 90,
+         "footprint": {"offset": [0.19, 0.0], "size": [0.9, 0.3]}, "height": 1.8,
+         "detectable": False, "accept": ["bookshelf"]}]}, "turned")
+    ((obj_id, label, x, y),) = logical_rows([("bookshelf_1", 1.0, 2.0), ("box_1", 2.5, 1.5)], lay)
+    assert (obj_id, label) == ("bookshelf_1", "bookshelf") and (x, y) == pytest.approx((1.0, 2.19))
+    household = household_like_layout()
+    rows = logical_rows([("sofa_1", -4.4, 0.0), ("table_1", -2.4, 4.4)], household)
+    assert rows == [("sofa_1", "sofa", pytest.approx(-4.38), 0.0), ("table_1", "table", pytest.approx(-2.398), 4.4)]
+
+
+def test_truth_rows_come_from_the_layout():
+    lay = household_like_layout()
+    truth = ObjectMemory(sizes={e.id: e.world_size() for e in lay.entries})
+    truth.update(logical_rows([("sofa_1", -4.4, 0.0), ("box_1", 2.5, 1.5), ("sim_box_1", 1.0, 0.0)], lay), 10.0)
+    truth.update(logical_rows([("sofa_1", -4.4, 0.0)], lay), 11.0)
+    truth.set_size("sofa_1", (0.5, 0.5))                       # the truth keeps the layout's sizes
+    rows = {o.id: o for o in truth.objects()}
+    assert list(rows) == ["box_1", "sofa_1"]                   # no button boxes; only what the camera saw
+    sofa, box = rows["sofa_1"], rows["box_1"]
+    assert (sofa.x, sofa.y) == pytest.approx((-4.38, 0.0))
+    assert sofa.size == (1.044, 1.8) and box.size == (0.5, 0.5)   # world axes of the layout footprint
+    assert (sofa.visible, sofa.seen, box.visible, box.seen) == (True, 11.0, False, 10.0)
+    assert sofa.measured is None and box.measured is None
+    msg = truth.message(12.0, layout=lay.name)
+    assert (msg["frame"], msg["source"], msg["layout"]) == ("odom", "logical", "household_like")
+    assert all("measured" not in r and "confidence" not in r for r in msg["objects"])
+    parsed = parse(json.loads(json.dumps(msg)))
+    assert [(o.id, o.label, o.size, o.visible, o.seen) for o in parsed] == [
+        (o.id, o.label, o.size, o.visible, o.seen) for o in truth.objects()]
+    assert [(o.x, o.y) for o in parsed] == pytest.approx([(2.5, 1.5), (-4.38, 0.0)])
+    assert "layout" not in ObjectMemory().message(12.0)        # /go2/objects carries no layout
+
+
+def test_memory_starts_at_the_vocabulary_square_and_marks_measured():
+    m = ObjectMemory()
+    m.update([("sofa_1", "sofa", -4.38, 0.0), ("chair_1", "chair", 2.5, -1.5)], 10.0)
+    chair, sofa = m.objects()
+    assert (chair.size, chair.measured) == ((0.45, 0.45), False)   # the vocabulary square [L, L]
+    assert (sofa.size, sofa.measured) == ((1.8, 1.8), False)
+    m.set_size("chair_1", (0.5, 0.48))
+    m.update([("chair_1", "chair", 2.5, -1.5)], 11.0)               # kept across frames
+    chair = m.objects()[0]
+    assert (chair.size, chair.measured) == ((0.5, 0.48), True)     # the first LiDAR size replaces the square
+    m.set_size("chair_1", (0.4, 0.55))
+    assert m.objects()[0].size == (0.5, 0.55)                       # then the larger per axis (today)
+    rows = {r["id"]: r for r in m.message(12.0)["objects"]}
+    assert rows["chair_1"]["measured"] is True and rows["sofa_1"]["measured"] is False
+    assert m.message(12.0)["source"] == "logical"
+    m.update([("box_10", "box", 0.0, 0.0), ("box_2", "box", 1.0, 0.0)], 13.0)
+    assert [o.id for o in m.objects()] == ["box_2", "box_10", "chair_1", "sofa_1"]   # _id_key order
+
+
+def test_logical_memory_starts_no_smaller_than_the_model():   # pre-final review F2 (R-PF; O12's premise)
+    # seeded with the layout's world sizes, the first footprint is the per-axis max of [L, L] and that size
+    seeds = {"table_1": (1.5, 0.8), "traffic_cone_1": (0.503, 0.503), "suitcase_1": (0.468, 0.291)}
+    m = ObjectMemory(seed_sizes=seeds)
+    m.update([("table_1", "table", -2.4, 4.4), ("traffic_cone_1", "traffic_cone", -0.3, -4.45),
+              ("suitcase_1", "suitcase", -1.62, -1.14), ("chair_1", "chair", 2.5, -1.5)], 10.0)
+    rows = {o.id: o for o in m.objects()}
+    assert rows["table_1"].size == (1.5, 1.2)                      # L 1.2 < the model's 1.5 along x
+    assert rows["traffic_cone_1"].size == (0.503, 0.503)           # L 0.35 < 0.503
+    assert rows["suitcase_1"].size == (0.468, 0.45)                # L 0.45 < 0.468 along x
+    assert rows["chair_1"].size == (0.45, 0.45)                    # no seed: the vocabulary square, as before
+    assert all(o.measured is False for o in rows.values())        # still not measured (O43)
+    m.update([("table_1", "table", -2.4, 4.4)], 11.0)
+    assert next(o for o in m.objects() if o.id == "table_1").size == (1.5, 1.2)   # kept across frames
+    m.set_size("table_1", (1.48, 0.79))
+    table = next(o for o in m.objects() if o.id == "table_1")
+    assert (table.size, table.measured) == ((1.5, 0.8), True)      # the first LiDAR size replaces it, but not
+    #                                                                below the layout's size (R-H5d, below)
+    # the household room: every first footprint covers the model in world axes and [L, L]; for the table, the
+    # cone and the suitcase it is larger than [L, L] (the review's three)
+    lay = layout.load("household")
+    sizes = {e.id: e.world_size() for e in lay.entries}
+    m = ObjectMemory(seed_sizes=sizes)
+    m.update([(e.id, e.label, e.x, e.y) for e in lay.entries], 10.0)
+    grown = set()
+    for o in m.objects():
+        square = bridge_core.default_size(o.label)
+        assert o.measured is False and all(a >= max(b, c) for a, b, c in zip(o.size, sizes[o.id], square)), o.id
+        if o.size != square:
+            grown.add(o.id)
+    assert grown == {"table_1", "traffic_cone_1", "suitcase_1"}
+    # the bridge node seeds its /go2/objects memory with the layout sizes its truth holds (the node needs rclpy,
+    # so its wiring is checked in its text, as for the publisher check)
+    node = code_text(ROOT / "gazebo" / "gazebo_bridge.py")
+    assert "sizes = {e.id: e.world_size() for e in lay.entries}" in node
+    assert "self.truth = ObjectMemory(sizes=sizes)" in node
+    assert "self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None" in node
+
+
+def test_logical_memory_stays_no_smaller_than_the_model_once_measured():   # R-H5d (O12's premise; D4)
+    # H5's cone from R5: the LiDAR band hits the cone above its base, where it tapers, so the measured rows were
+    # 0.479-0.506 x 0.345-0.352 against the model's 0.503 x 0.503. With the layout's world size as seed, each axis
+    # keeps at least that size after measuring too; measured still says the LiDAR saw it.
+    seeds = {"traffic_cone_1": (0.503, 0.503), "table_1": (1.5, 0.8)}
+    m = ObjectMemory(seed_sizes=seeds)
+    m.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45), ("table_1", "table", -2.398, 4.4),
+              ("chair_1", "chair", 2.5, -1.5)], 10.0)
+
+    def row(obj_id):
+        return next(o for o in m.objects() if o.id == obj_id)
+
+    m.set_size("traffic_cone_1", (0.489, 0.349))                    # cone_near1's measured row
+    assert (row("traffic_cone_1").size, row("traffic_cone_1").measured) == ((0.503, 0.503), True)
+    m.set_size("traffic_cone_1", (0.506, 0.352))                    # cone_lap2's: wider than the model along x
+    assert (row("traffic_cone_1").size, row("traffic_cone_1").measured) == ((0.506, 0.503), True)
+    m.set_size("traffic_cone_1", (0.479, 0.345))                    # the larger per axis stays, as before
+    m.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 11.0)
+    cone = row("traffic_cone_1")
+    assert (cone.size, cone.measured, cone.visible) == ((0.506, 0.503), True, True)   # measured stays True
+    assert {r["id"]: r["measured"] for r in m.message(12.0)["objects"]}["traffic_cone_1"] is True
+    m.set_size("table_1", (1.412, 0.807))                           # H5's table from L: F2's 1.2 (the [L, L]
+    assert (row("table_1").size, row("table_1").measured) == ((1.5, 0.807), True)   # part) goes, 1.5 stays
+    m.set_size("chair_1", (0.4, 0.42))                              # no seed: the LiDAR size, as before
+    assert (row("chair_1").size, row("chair_1").measured) == ((0.4, 0.42), True)
+    # the truth keeps the layout's sizes and the plain /go2/objects memory (no seeds) its LiDAR sizes, as before;
+    # in detector mode the bridge keeps no /go2/objects memory at all (the detector publishes it), so nothing
+    # there changes
+    truth = ObjectMemory(sizes=seeds)
+    truth.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 10.0)
+    truth.set_size("traffic_cone_1", (0.489, 0.349))
+    assert truth.objects()[0].size == (0.503, 0.503) and truth.objects()[0].measured is None
+    plain = ObjectMemory()
+    plain.update([("traffic_cone_1", "traffic_cone", -0.3, -4.45)], 10.0)
+    plain.set_size("traffic_cone_1", (0.489, 0.349))
+    assert plain.objects()[0].size == (0.489, 0.349)
+    assert OBJECTS_TOPIC not in objects_topics("detector")
+
+
+def test_measuring_radius_follows_the_kind():
+    sofa = side_points(-4.38, 0.0, 1.8, 1.04, top=0.9)
+    assert footprint_size(sofa, -4.38, 0.0, radius=measure_radius("sofa")) == pytest.approx((1.8, 1.04), abs=0.05)
+    assert max(footprint_size(sofa, -4.38, 0.0, radius=SIZE_RADIUS)) <= 1.2      # today's 0.6 m cut it
+    assert measure_radius("box") == pytest.approx(0.654, abs=1e-3)
+    assert measure_radius("chair") == pytest.approx(0.618, abs=1e-3)
+    for label, (sx, sy, top) in {"box": (0.5, 0.5, 0.5), "chair": (0.45, 0.45, 0.9)}.items():
+        pts = side_points(2.5, 1.5, sx, sy, top=top)       # nothing else near: the same size as with 0.6 m
+        assert footprint_size(pts, 2.5, 1.5, radius=measure_radius(label)) == footprint_size(pts, 2.5, 1.5)
+
+
+def test_spawn_fields_for_primitives_and_fuel_models():
+    box, chair = layout.load("default").entries
+    assert spawn_fields(box) == (object_sdf("box_1", "box"), 2.5, 1.5, 0.25, 0.0)
+    assert spawn_fields(chair) == (object_sdf("chair_1", "chair"), 2.5, -1.5, 0.45, 0.0)
+    sdf, x, y, z, yaw = spawn_fields(one_entry(yaw_deg=90))
+    inc = ET.fromstring(sdf).find("include")
+    assert (inc.find("uri").text, inc.find("name").text, inc.find("static").text) == ("model://Sofa", "sofa_1", "true")
+    assert (x, y, z) == (-4.4, 0.0, 0.0)                     # the model origin, not the footprint centre
+    assert yaw == pytest.approx(math.pi / 2)
+    assert spawn_fields(one_entry(z=0.15))[3] == 0.15 and spawn_fields(one_entry(yaw_deg=-90))[4] == pytest.approx(-math.pi / 2)
+    for e in household_like_layout().entries:
+        sdf, x, y, z, yaw = spawn_fields(e)
+        assert ET.fromstring(sdf).find(".//static").text == "true" and (x, y) == (e.x, e.y), e.id
+
+
+def test_box_sdf_cardboard_only_in_detector_mode():
+    b = Box(1.0, 2.0)
+    plain, card = (ET.fromstring(box_sdf("sim_box_1", b, cardboard=c)) for c in (False, True))
+    assert ET.tostring(ET.fromstring(box_sdf("sim_box_1", b))) == ET.tostring(plain)      # the default is plain
+    assert ([ET.tostring(c) for c in plain.iter("collision")] == [ET.tostring(c) for c in card.iter("collision")])
+    assert plain.find(".//collision/geometry/box/size").text == f"{b.size} {b.size} {BOX_HEIGHT}"
+    assert "cardboard_box" not in box_sdf("sim_box_1", b) and "cardboard_box" not in ET.tostring(plain, "unicode")
+    (visual,) = card.iter("visual")
+    assert "cardboard_box" in visual.find("geometry/mesh/uri").text
+    scale = np.array([float(v) for v in visual.find("geometry/mesh/scale").text.split()])
+    assert scale * CARDBOARD_MESH_SIDE == pytest.approx([b.size, b.size, BOX_HEIGHT], abs=1e-4)   # same size
+    assert [float(v) for v in visual.find("pose").text.split()] == pytest.approx([0, 0, -BOX_HEIGHT / 2, 0, 0, 0])
+    assert card.find("model").get("name") == "sim_box_1" and card.find("model/static").text == "true"
+
+
+def test_compose_gazebo_service():
+    text = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    gazebo = yaml.safe_load(text)["services"]["gazebo"]
+    assert gazebo["image"] == "${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005-fuel2}"
+    assert gazebo["build"] == {"context": "./docker", "dockerfile": "Dockerfile.gazebo-fuel"}
+    assert gazebo["environment"] == {"OBJECTS_SOURCE": "${OBJECTS_SOURCE:-logical}",
+                                     "GO2_LAYOUT": "${GO2_LAYOUT:-household}"}
+    assert gazebo["ports"] == ["127.0.0.1:${GO2_GAZEBO_PORT:-6080}:6080"]
+    lines = text[text.index("\n  gazebo:"):text.index("\nvolumes:")].splitlines()
+    assert ("    # go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with "
+            "docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image patch-0005-fuel2 on top "
+            "of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). The older images are kept on this Mac only:"
+            in lines)
+    older = lines[lines.index("    # go2-voice-ltl-gazebo:patch-0005 (patches 0001-0005, docker/patches) is built first with "
+                              "docker/Dockerfile.gazebo (docs/simulation.md); build here makes the thin image "
+                              "patch-0005-fuel2 on top of it (docker/Dockerfile.gazebo-fuel: the pinned Fuel models). "
+                              "The older images are kept on this Mac only:") + 1]
+    assert older.startswith("    #   go2-voice-ltl-gazebo:patch-0005-fuel1 (")    # the first Fuel room, kept (R-H3g)
+    assert "    # the thin Fuel image (Dockerfile.gazebo-fuel, on top of patch-0005) and put it under the given tag." in lines
+    assert not any("# patches 0001-0005 (docker/patches)." in line for line in lines)
+    assert "0001-0005 from this tree" not in "\n".join(lines)

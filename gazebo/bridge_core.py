@@ -39,16 +39,22 @@ controller の状態の番号・切り替え・速度の倍率は docs/reference
 - 転んだことは、橋渡しのノードが Gazebo の本当の胴の傾きと高さで知らせる（observe、Ruling R38）。
   立っているつもりで転んだら error_code を 1001（伏せ扱い）にし、速度を 0 にする。起き上がらせはしない。
 
-物（box_1・chair_1）の部品も持つ：logical camera が見た model を世界（= odom）の位置に直し（compose）、
-名前で絞り（object_label）、画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）
-胴が止まっている間（StillGate）の LiDAR の点で底面の大きさを測り（footprint_size）、覚えておく（ObjectMemory）。
+物の部品も持つ（open-objects spec §11.3・§12.5）。物は配置ファイル（gazebo/layouts/<GO2_LAYOUT>.json、
+voice_ltl/layout.py）から置き（spawn_fields。モデルのフォルダがなければ置く前に止まる：missing_models）、
+logical camera が見た model を世界（= odom）の位置に直し（compose）、配置の id だけを足跡の中心に直して
+（logical_rows）覚えておく（ObjectMemory）。正解（/gazebo/objects_truth）は配置の大きさのまま、/go2/objects は
+画面のボタンで置いた箱の点を除いて（drop_box_points、BoxWorld.sizing_boxes）胴が止まっている間（StillGate）の
+LiDAR の点で、種類ごとの半径（objects.measure_radius）で底面の大きさを測る（footprint_size）。
+その大きさは、測る前も後も軸ごとに配置の大きさより小さくしない（ObjectMemory の seed_sizes。F2、R-H5d）。
+/go2/objects を出すのは OBJECTS_SOURCE=logical のときだけ（objects_topics。detector のときは検出器が出す）。
 /go2/objects の形は voice_ltl/objects.py。
 """
 
 import json
 import math
+import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Tuple
 
@@ -58,7 +64,10 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     RISE_SIT, SCRAPE, SIT, STAND_DOWN, STAND_UP, STANDING,
                                     STOP_MOVE, STRETCH, state_from_error_code)
 from sim.sim_core import BOX_HEIGHT, FOOTPRINT, Box
-from voice_ltl.objects import DEFAULT_SIZE, ID_RE, MAX_SIZE, Obj, format_message
+from voice_ltl.layout import Entry, Layout, LayoutError
+from voice_ltl.layout import load as load_layout
+from voice_ltl.objects import (ID_RE, MAX_SIZE, OBJECTS_TOPIC, Obj, _count, _id_key, default_size,
+                               format_message)
 
 # ---- /control_input の command（unitree_guide controller） ----
 STAND_CMD = 2    # 伏せ → 立つ
@@ -138,8 +147,8 @@ SELF_Z = (-0.35, 0.15)
 GROUND_Z = 0.05                     # 世界の z がこれ未満の点は地面とみなして除く（Ruling R23）[m]
 BOX_DISTANCE = 1.2                  # 箱は Go2 の今の位置から前（後ろ）にこの距離 [m]
 
-# ---- 物（box_1・chair_1）。位置は logical camera、大きさは LiDAR の点で測る ----
-SIZE_RADIUS = 0.6          # 物の中心から水平にこの距離より近い点を、その物の点とみなす [m]
+# ---- 物。位置は logical camera、大きさは LiDAR の点で測る（正解は配置の大きさ） ----
+SIZE_RADIUS = 0.6          # footprint_size の既定の半径 [m]。橋渡しは種類ごとの objects.measure_radius で測る
 SIZE_MIN_POINTS = 10       # これより点が少なければ測らない
 # 胴が止まっている間に撮った点群だけで測る（StillGate）。動いていると、点群と位置の時刻のずれで点が広がり、
 # 地面の点が GROUND_Z より上に出る（Gazebo で、出した直後に床へ落ちる間の 1 枚で 0.5 m の箱が 1.07 m になった）
@@ -150,6 +159,21 @@ SIZE_MIN = 0.1             # 測った大きさの下限 [m]（上限は objects
 SIZE_BOX_MARGIN = 0.05     # 画面のボタンで置いた箱の点を除くとき、箱をこれだけ広げる [m]
 SIZE_BOX_GRACE_S = 2.0     # 箱を消すよう頼んでからこの秒数（実際の時間）は、まだ点群に写りうるので点を除き続ける
 OBJECT_SPAWN_Z = {"box": 0.25, "chair": 0.45}   # 出す高さ = model の原点の高さ [m]（箱は中心、椅子は座面の上）
+# 物の出どころ（spec §11.3）。OBJECTS_SOURCE で選び、橋渡し・launch・検出器が起動のときに 1 回読む
+OBJECTS_SOURCES = ("logical", "detector")
+TRUTH_TOPIC = "/gazebo/objects_truth"     # 正解：論理カメラで見た配置の物を、配置の足跡で（どちらのときも出す）
+DEFAULT_LAYOUT_NAME = "household"         # GO2_LAYOUT の既定（Gazebo。偽の Go2 とテストは default）
+PUBLISHER_NOTE_S = 10.0                   # /go2/objects の送り手の数を確かめる間（実際の時間）[s]
+# 画面のボタンで置く箱の見た目（detector のときだけ。spec §11.13、O18）：Gazebo のイメージの
+# ros_gz_sim_demos/models/cardboard_box のメッシュ（段ボールの絵は .dae が ../materials/textures から読む）。
+# メッシュは 1 辺 0.3970367 m の立方体で、原点は底面の中心（patch-0005 のイメージの .dae で測った。単位は mm）
+CARDBOARD_MESH = "file:///opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box/meshes/cardboard_box.dae"
+CARDBOARD_MESH_SIDE = 0.3970367
+# その絵のフォルダ（R-H6e）。.dae は絵を名前だけ（cardboard_box.png）で引く。gz-common はメッシュの
+# ../materials/textures で見つけて描くが、Gazebo はその名前を GZ_SIM_RESOURCE_PATH でも探し、見つからないと
+# 「Could not resolve file [cardboard_box.png]」をログに出す（H6 の M5）。detector のときだけ launch がこのフォルダを
+# GZ_SIM_RESOURCE_PATH に足す（launch_config.gz_resource_paths）
+CARDBOARD_TEXTURES = "/opt/ros/jazzy/share/ros_gz_sim_demos/models/cardboard_box/materials/textures"
 
 _EPS = 1e-6
 _API_NAMES = {
@@ -708,14 +732,22 @@ def drop_ground_and_self_points(points_lidar: np.ndarray, base_z: float,
 
 
 # ---- 箱 ----
-def box_sdf(name: str, box: Box) -> str:
-    """Gazebo に出す箱（動かない・ぶつかる）の SDF。高さはにせ Go2 と同じ BOX_HEIGHT。"""
+def box_sdf(name: str, box: Box, cardboard: bool = False) -> str:
+    """Gazebo に出す箱（動かない・ぶつかる）の SDF。高さはにせ Go2 と同じ BOX_HEIGHT、原点は箱の中心。
+    cardboard（detector のときだけ。spec §11.13）：見た目を同じ大きさの段ボールのメッシュ（CARDBOARD_MESH）にする。
+    ぶつかる形・大きさ・logical のときの見た目（橙の四角）は変えない。"""
     size = f"{box.size} {box.size} {BOX_HEIGHT}"
     geometry = f"<geometry><box><size>{size}</size></box></geometry>"
+    if cardboard:
+        scale = "{:.7g} {:.7g} {:.7g}".format(*(v / CARDBOARD_MESH_SIDE for v in (box.size, box.size, BOX_HEIGHT)))
+        visual = (f'<visual name="visual"><pose>0 0 {-BOX_HEIGHT / 2:g} 0 0 0</pose>'   # the mesh origin is its bottom
+                  f'<geometry><mesh><uri>{CARDBOARD_MESH}</uri><scale>{scale}</scale></mesh></geometry></visual>')
+    else:
+        visual = (f'<visual name="visual">{geometry}<material><ambient>0.8 0.4 0.1 1</ambient>'
+                  f'<diffuse>0.8 0.4 0.1 1</diffuse></material></visual>')
     return (f'<?xml version="1.0"?><sdf version="1.6"><model name="{name}"><static>true</static>'
             f'<link name="link"><collision name="collision">{geometry}</collision>'
-            f'<visual name="visual">{geometry}<material><ambient>0.8 0.4 0.1 1</ambient>'
-            f'<diffuse>0.8 0.4 0.1 1</diffuse></material></visual></link></model></sdf>')
+            f'{visual}</link></model></sdf>')
 
 
 class BoxWorld:
@@ -773,7 +805,99 @@ def _dist_to_box(px: float, py: float, b: Box) -> float:
     return math.hypot(max(abs(px - b.x) - h, 0.0), max(abs(py - b.y) - h, 0.0))
 
 
-# ---- 物（box_1・chair_1） ----
+# ---- 物 ----
+def objects_topics(source: str) -> Tuple[str, ...]:
+    """橋渡しが物の一覧を出すトピック（spec §11.3）：logical → /go2/objects と正解、detector → 正解だけ
+    （/go2/objects は検出器が出す）。ほかの値なら ValueError。"""
+    if source == "logical":
+        return (OBJECTS_TOPIC, TRUTH_TOPIC)
+    if source == "detector":
+        return (TRUTH_TOPIC,)
+    raise ValueError(f"OBJECTS_SOURCE は {' か '.join(OBJECTS_SOURCES)} です: {source!r}")
+
+
+def objects_source(environ: Mapping[str, str] = os.environ) -> str:
+    """環境の OBJECTS_SOURCE（ないときは logical）。OBJECTS_SOURCES のほかの値なら、その値と選べる値を書いた
+    ValueError（橋渡しは起動しない）。"""
+    source = environ.get("OBJECTS_SOURCE", "logical")
+    objects_topics(source)
+    return source
+
+
+def objects_publisher_note(source: str, count: int) -> Optional[str]:
+    """/go2/objects の送り手の数 count（自分も数える）から、ログにエラーで出す 1 行。送り手が 1 つなら None。
+    2 つ以上なら OBJECTS_SOURCE を名指す（メッセージごとに混ざる）。detector で 0 なら、検出器が動いていないので
+    --profile detector を名指す（物の指示はどれも「見つかりません」になる。Review Focus 3）。logical で 0 は
+    自分がまだ数えられていないだけなので None。ほかの source なら ValueError。"""
+    objects_topics(source)
+    if count >= 2:
+        return (f"{OBJECTS_TOPIC} の送り手が {_count(count)}あります（OBJECTS_SOURCE={source}）。"
+                f"出すのは logical なら橋渡し、detector なら検出器の 1 つだけです。"
+                f"ほかの送り手（別の OBJECTS_SOURCE で起動した Gazebo や検出器、偽の Go2）を止めてください")
+    if count == 0 and source == "detector":
+        return (f"OBJECTS_SOURCE=detector ですが、{OBJECTS_TOPIC} の送り手（検出器）がいません。物を使う指示は"
+                f"どれも「見つかりません」になります。検出器は --profile detector で起動します"
+                f"（OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d）")
+    return None
+
+
+def layout_name(environ: Mapping[str, str] = os.environ) -> str:
+    """環境の GO2_LAYOUT（ないときは household）。確かめるのは voice_ltl.layout.load。"""
+    return environ.get("GO2_LAYOUT", DEFAULT_LAYOUT_NAME)
+
+
+def missing_models(lay: Layout, resource_path: str) -> List[str]:
+    """配置の model://<フォルダ> のうち、resource_path（GZ_SIM_RESOURCE_PATH、os.pathsep で区切る）のどの
+    フォルダの下にもないもの（名前の順）。簡単な形（primitive:）は数えない。橋渡しは 1 つでもあれば置く前に止まる。"""
+    roots = [d for d in resource_path.split(os.pathsep) if d]
+    folders = {e.folder for e in lay.entries if e.folder is not None}
+    return sorted(f for f in folders if not any(os.path.isdir(os.path.join(d, f)) for d in roots))
+
+
+def bridge_settings(environ: Mapping[str, str] = os.environ) -> Tuple[str, Layout]:
+    """橋渡しが起動のときに 1 回だけ読む (OBJECTS_SOURCE, GO2_LAYOUT の配置)。知らない OBJECTS_SOURCE、知らない配置
+    （LayoutError：選べる配置を書く）、GZ_SIM_RESOURCE_PATH にない model:// のフォルダがあれば、ログに書く 1 行の
+    ValueError。橋渡しはそれを書いて、何も置かずに 0 でない値で終わる（Review Focus 5）。"""
+    source = objects_source(environ)
+    name = layout_name(environ)
+    try:
+        lay = load_layout(name)
+    except LayoutError as e:
+        raise ValueError(f"GO2_LAYOUT: {e}") from None
+    missing = missing_models(lay, environ.get("GZ_SIM_RESOURCE_PATH", ""))
+    if missing:
+        raise ValueError(
+            f"GO2_LAYOUT={name} のモデルのフォルダ {', '.join(missing)} が GZ_SIM_RESOURCE_PATH のどのフォルダにも"
+            f"ありません。Fuel のモデルの入ったイメージ（go2-voice-ltl-gazebo:patch-0005-fuel2）で起動するか、"
+            f"GO2_LAYOUT=default にしてください。物を置かずに止めます")
+    return source, lay
+
+
+def spawn_fields(e: Entry) -> Tuple[str, float, float, float, float]:
+    """配置の 1 つを Gazebo に出す (sdf, x, y, z, yaw [rad])。x, y はモデルの原点（足跡の中心ではない）。
+    簡単な形は object_sdf と OBJECT_SPAWN_Z、model://<フォルダ> は uri・名前・static の <include> と e.z。"""
+    yaw = math.radians(e.yaw_deg)
+    if e.folder is None:
+        return object_sdf(e.id, e.label), e.x, e.y, OBJECT_SPAWN_Z[e.label], yaw
+    sdf = (f'<?xml version="1.0"?><sdf version="1.9"><include><uri>{e.model}</uri>'
+           f'<name>{e.id}</name><static>true</static></include></sdf>')
+    return sdf, e.x, e.y, e.z, yaw
+
+
+def logical_rows(models: Iterable[Tuple[str, float, float]], lay: Layout) -> List[Tuple[str, str, float, float]]:
+    """logical camera が見た model（名前, 原点の世界の x, y）のうち、配置の id のものだけを (id, label, 足跡の
+    中心の x, y) にする。中心は原点 + 配置の世界の軸のずれ（C3。box_1・chair_1 はずれ 0 なので今と同じ位置）。
+    ground_plane・robot・画面のボタンで置いた sim_box_<n> など、配置にない名前は除く。"""
+    rows = []
+    for name, x, y in models:
+        e = lay.find(name) if isinstance(name, str) else None
+        if e is None:
+            continue
+        dx, dy = e.world_offset()
+        rows.append((e.id, e.label, float(x) + dx, float(y) + dy))
+    return rows
+
+
 def quat_to_matrix(q: Tuple[float, float, float, float]) -> np.ndarray:
     """四元数 (w, x, y, z) の回転行列（3×3）。"""
     w, x, y, z = (float(v) for v in q)
@@ -794,8 +918,8 @@ def compose(parent_pos: Sequence[float], parent_quat: Tuple[float, float, float,
 
 
 def object_label(name: str) -> Optional[str]:
-    """Gazebo の model の名前が物（box_<n>・chair_<n>、R21）なら "box" か "chair"。
-    ground_plane・robot・画面のボタンで置く sim_box_<n> などは None。"""
+    """Gazebo の model の名前が物の id（<label>_<n>、単語帳の label。R21）ならその label。
+    ground_plane・robot・画面のボタンで置く sim_box_<n> などは None。橋渡しは配置の id だけを使う（logical_rows）。"""
     m = ID_RE.fullmatch(name) if isinstance(name, str) else None
     return m.group(1) if m else None
 
@@ -889,42 +1013,78 @@ class StillGate:
 
 class ObjectMemory:
     """logical camera が見た物の控え（物は動かないので、見えなくなっても覚えておく。R20）。
-    /go2/objects の中身（voice_ltl/objects.py の形、odom = Gazebo の世界）を作る。"""
+    物の一覧のメッセージ（voice_ltl/objects.py の形、odom = Gazebo の世界）を作る。2 通り：
+    - sizes なし（/go2/objects、logical のとき）：はじめの大きさは単語帳の [L, L]（objects.default_size）で
+      measured False、LiDAR ではじめて測ったら（set_size）その大きさで measured True（O43）。
+      seed_sizes（id → 配置の世界の軸の大きさ。橋渡しが正解に持つもの）があれば、はじめの大きさは軸ごとに
+      [L, L] とその大きさの大きい方（measured は False のまま）。足跡は物より小さくならない（O12 の前提。
+      L が物より短いテーブル・コーン・スーツケース。pre-final review F2、R-PF）。測った後も、軸ごとに
+      その大きさより小さくしない（細くなるコーン。R-H5d。measured は True）。
+    - sizes あり（正解、/gazebo/objects_truth）：id → 配置の世界の軸の大きさ。大きさは変えず（set_size は無視）、
+      measured は付けない。sizes にない id は覚えない。"""
 
-    def __init__(self):
+    def __init__(self, sizes: Optional[Mapping[str, Tuple[float, float]]] = None,
+                 seed_sizes: Optional[Mapping[str, Tuple[float, float]]] = None):
+        self._sizes = None if sizes is None else {k: (float(v[0]), float(v[1])) for k, v in sizes.items()}
+        self._seeds = {} if seed_sizes is None else {k: (float(v[0]), float(v[1])) for k, v in seed_sizes.items()}
         self._objects: Dict[str, Obj] = {}
         self._measured: set = set()   # LiDAR で大きさを測った物の id
 
+    def _first_size(self, obj_id: str, label: str) -> Tuple[float, float]:
+        """測るまでの大きさ：[L, L]、seed_sizes にあれば軸ごとにそれとの大きい方。"""
+        square = default_size(label)
+        seed = self._seeds.get(obj_id)
+        return square if seed is None else (max(square[0], seed[0]), max(square[1], seed[1]))
+
     def update(self, seen: Sequence[Tuple[str, str, float, float]], now: float) -> None:
         """カメラの 1 枚分：見えた物 (id, label, x, y)。見えた物は visible・seen = now、
-        ほかの物は visible False（seen は最後に見た時刻のまま）。初めての物の大きさは DEFAULT_SIZE。"""
+        ほかの物は visible False（seen は最後に見た時刻のまま）。大きさと measured は上の 2 通り。"""
         ids = set()
         for obj_id, label, x, y in seen:
+            if self._sizes is not None:
+                if obj_id not in self._sizes:
+                    continue
+                size, measured = self._sizes[obj_id], None
+            else:
+                old = self._objects.get(obj_id)
+                size = self._first_size(obj_id, label) if old is None else old.size
+                measured = obj_id in self._measured
             ids.add(obj_id)
-            old = self._objects.get(obj_id)
-            size = DEFAULT_SIZE if old is None else old.size
-            self._objects[obj_id] = Obj(obj_id, label, float(x), float(y), size, True, float(now))
+            self._objects[obj_id] = Obj(obj_id, label, float(x), float(y), size, True, float(now),
+                                        measured=measured)
         for obj_id, o in list(self._objects.items()):
             if obj_id not in ids and o.visible:
                 self._objects[obj_id] = replace(o, visible=False)
 
     def set_size(self, obj_id: str, size: Tuple[float, float]) -> None:
         """LiDAR で測った大きさ (x の幅, y の幅) を [SIZE_MIN, MAX_SIZE] に収めて入れる。
-        初めて測ったら DEFAULT_SIZE と置き換え（0.45 m の椅子を 0.5 のままにしない）、その後は軸ごとに
-        測った中で大きい方を残す（一方からは手前の面しか見えないので）。知らない id は無視する。"""
+        初めて測ったら測るまでの大きさ（[L, L]、seed_sizes があればそれとの大きい方）と置き換え
+        （0.45 m の椅子を膨らんだまま残さない）、その後は軸ごとに測った中で大きい方を残す
+        （一方からは手前の面しか見えないので）。seed_sizes にある id は、測った後も軸ごとにその大きさ
+        （配置の世界の軸の大きさ）より小さくしない。上の方で細くなるコーンでは、LiDAR の帯が底より上の
+        細い所に当たり、底より小さく測れるので（H5、R-H5d）。measured は測った後 True のまま。
+        知らない id と正解の控えでは何もしない。"""
         o = self._objects.get(obj_id)
-        if o is None or not all(math.isfinite(v) for v in size):
+        if self._sizes is not None or o is None or not all(math.isfinite(v) for v in size):
             return
         sx, sy = (min(max(float(v), SIZE_MIN), MAX_SIZE) for v in size)
         if obj_id in self._measured:
             sx, sy = max(sx, o.size[0]), max(sy, o.size[1])
+        seed = self._seeds.get(obj_id)
+        if seed is not None:                              # 配置の大きさより小さくしない（R-H5d）
+            sx, sy = max(sx, seed[0]), max(sy, seed[1])
         self._measured.add(obj_id)
-        self._objects[obj_id] = replace(o, size=(sx, sy))
+        self._objects[obj_id] = replace(o, size=(sx, sy), measured=True)
 
     def objects(self) -> List[Obj]:
-        """覚えている物（id の順）。"""
-        return [self._objects[k] for k in sorted(self._objects)]
+        """覚えている物（id の順：ラベルの中で番号の順、box_2 は box_10 より前）。"""
+        return [self._objects[k] for k in sorted(self._objects, key=_id_key)]
 
-    def message(self, stamp: float) -> dict:
-        """/go2/objects に出す dict（json.dumps して std_msgs/String に入れる）。"""
-        return format_message(self.objects(), stamp)
+    def message(self, stamp: float, source: str = "logical", layout: Optional[str] = None) -> dict:
+        """物の一覧のメッセージの dict（json.dumps して std_msgs/String に入れる）。橋渡しの source はどちらの
+        トピックも logical。layout（配置の名前）を渡したときだけ、上の段に "layout" を書く（正解のメッセージ）。"""
+        msg = format_message(self.objects(), stamp, source=source)
+        if layout is None:
+            return msg
+        rows = msg.pop("objects")
+        return {**msg, "layout": layout, "objects": rows}

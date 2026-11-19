@@ -8,7 +8,8 @@ RosLink は Session の Link（send / posture / pose / reading）を満たす。
   呼び出し側は finally で close(3) を呼ぶ。呼び忘れても、プロセスの終わりに close(3) が走る（atexit）。
 - close は StopMove を送り切るまで、Ctrl+C・SIGTERM・SIGHUP を受け流す。
 - /sportmodestate が 0.5 秒途切れたら、前後とも SENSOR_LOST にする（移動を保留させる）。
-- /go2/objects（物の一覧の JSON）を受け、検査した行を objects() で返す。2 秒途切れたら []。
+- /go2/objects（物の一覧の JSON）を受け、検査した行を objects() で、送り手（source）を objects_source() で返す。
+  2 秒途切れたら [] と None。
 
 時刻 now はすべて time.time() で渡す。
 """
@@ -40,7 +41,7 @@ from go2_nl_control.perception import PerceptionConfig
 from go2_nl_control.supervisor import CLEAR, SENSOR_LOST
 from go2_nl_control.actions import MOVE, STOP_MOVE
 
-from voice_ltl.objects import OBJECTS_STALE_S, OBJECTS_TOPIC, parse
+from voice_ltl.objects import OBJECTS_STALE_S, OBJECTS_TOPIC, parse, parse_source
 from voice_ltl.sensing import Reading, Sensing
 from voice_ltl.publisher_guard import PublisherGuard
 
@@ -111,7 +112,8 @@ class RosLink:
         self._error_code: Optional[int] = None
         self._state_time: Optional[float] = None
         self._cloud_time: Optional[float] = None
-        self._objects: Optional[Tuple[float, list]] = None   # (受けた time.time(), 検査した行)
+        # (受けた time.time(), 検査した行, メッセージの source か None)
+        self._objects: Optional[Tuple[float, list, Optional[str]]] = None
         self._req_id = time.monotonic_ns()
         self._send_lock = threading.Lock()   # Web の「止める」は別のスレッドから send する
         self._closed = False
@@ -142,8 +144,8 @@ class RosLink:
         except (ValueError, RecursionError):   # 入れ子が深すぎる JSON も、受信を止めずに無視する
             return
         if isinstance(payload, dict):
-            # frame や行の検査（R21）は objects.parse の一か所で行う。受けた時刻と一緒に 1 回で入れ替える
-            self._objects = (time.time(), [o.to_row() for o in parse(payload)])
+            # frame・source や行の検査（R21）は objects.parse の一か所で行う。受けた時刻と一緒に 1 回で入れ替える
+            self._objects = (time.time(), [o.to_row() for o in parse(payload)], parse_source(payload))
 
     def spin_once(self) -> None:
         """届いている受信をすべて処理する（待たない）。制御ループから毎周期呼ぶ。"""
@@ -213,6 +215,14 @@ class RosLink:
         if last is None or time.time() - last[0] > OBJECTS_STALE_S:
             return []
         return list(last[1])
+
+    def objects_source(self) -> Optional[str]:
+        """最後に受けた /go2/objects の source（logical・detector・fake）。書いていない送り手、
+        まだ届いていないか、OBJECTS_STALE_S 途切れたら None（objects() と同じ）。"""
+        last = self._objects
+        if last is None or time.time() - last[0] > OBJECTS_STALE_S:
+            return None
+        return last[2]
 
     def reading(self, now: float) -> Reading:
         r = (Reading(CLEAR, CLEAR, None, None, authority="go2")

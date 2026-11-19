@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from go2_nl_control.actions import ACTIONS, LYING, SITTING, STANDING
 
+from voice_ltl import vocabulary
 from voice_ltl.automata import World
 
 ACTION_NAMES = (
@@ -47,6 +48,11 @@ PROP_DESCRIPTION_JA = {
 }
 
 UNCONTROLLABLE = ("front_blocked", "front_clear", "back_blocked", "back_clear")
+# No object label may use a segment of these names (open-objects spec §7.3 rule 2): checked at import,
+# so the app does not start with such a vocabulary. Adding an action adds its segments here by itself.
+RESERVED_LABEL_SEGMENTS = frozenset(s for n in ACTION_NAMES + PROPOSITIONS + UNCONTROLLABLE for s in n.split("_"))
+vocabulary.check_reserved_segments(vocabulary.VOCABULARY, RESERVED_LABEL_SEGMENTS, "voice_ltl/world.py")
+
 # The safety rules (design §7.1). Synthesis does not add this formula: go2_world puts
 # every controllable event whose label breaks it into World.forbidden, which means the same.
 SAFETY_FORMULA = "G(!(obstacle_front & moved_forward)) & G(!(obstacle_back & moved_backward))"

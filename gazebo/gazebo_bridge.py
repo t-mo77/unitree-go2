@@ -12,13 +12,20 @@
   /utlidar/cloud（frame utlidar_lidar）に出し直す。
 - /sim/obstacles（std_msgs/String、{"cmd": "front" | "back" | "clear"}）で Gazebo に箱を出し入れし
   （/world/empty/create・/world/empty/remove）、/sim/world（{"boxes": [[x, y, size], ...], "collided": bool}）を出す。
-- 起動時に物（voice_ltl/objects.py の DEFAULT_LAYOUT：box_1 と chair_1）を Gazebo に 1 回だけ置く
-  （すでにあれば、あるものとして扱う）。
-- logical camera（/gazebo/logical_camera、ros_gz_interfaces/LogicalCameraImage）が見た model を名前で絞り
-  （box_<n>・chair_<n> だけ。ground_plane・robot・sim_box_<n> は除く）、世界（= odom）の位置に直して覚え、
-  胴が止まっている間（角速度が軸ごとに 0.1 rad/s 以下・速さ 0.05 m/s 以下が 0.3 秒続いた後。bridge_core.StillGate）に
-  撮った LiDAR の点で底面の大きさを測る（画面のボタンで置いた箱の点は除く）。覚えている物を 2 Hz で /go2/objects
-  （std_msgs/String の JSON、voice_ltl/objects.py の形）に出す。時刻（stamp・seen）は実際の時間（time.time()）。
+  OBJECTS_SOURCE=detector のときだけ、箱の見た目を段ボールにする（bridge_core.box_sdf、open-objects spec §11.13）。
+- 起動のときに OBJECTS_SOURCE（logical か detector、既定 logical）と GO2_LAYOUT（既定 household）を 1 回読み、
+  配置ファイル gazebo/layouts/<GO2_LAYOUT>.json（voice_ltl/layout.py）を読む。知らない値・知らない配置・
+  GZ_SIM_RESOURCE_PATH にない model:// のフォルダがあれば、わけを 1 行ログに書き、何も置かずに 0 でない値で終わる。
+  配置の物を Gazebo に 1 回だけ置く（bridge_core.spawn_fields。すでにあれば、あるものとして扱う）。
+- logical camera（/gazebo/logical_camera、ros_gz_interfaces/LogicalCameraImage）が見た model のうち配置の id だけを、
+  世界（= odom）の足跡の中心に直して覚える（bridge_core.logical_rows。ground_plane・robot・sim_box_<n> は除く）。
+  - 正解：配置の大きさのまま、2 Hz で /gazebo/objects_truth に出す（どちらのときも。"layout" に配置の名前）。
+  - logical のときだけ：胴が止まっている間（角速度が軸ごとに 0.1 rad/s 以下・速さ 0.05 m/s 以下が 0.3 秒続いた後。
+    bridge_core.StillGate）に撮った LiDAR の点で、種類ごとの半径（objects.measure_radius）で底面の大きさを測り
+    （画面のボタンで置いた箱の点は除く）、2 Hz で /go2/objects に出す。detector のときは検出器が /go2/objects を出す。
+  どちらも std_msgs/String の JSON（voice_ltl/objects.py の形、"source": "logical"）。時刻（stamp・seen）は
+  実際の時間（time.time()）。10 秒ごとに /go2/objects の送り手の数を確かめ、1 つでなければエラーを書く
+  （bridge_core.objects_publisher_note）。
 
 時計は 2 つ。窓口の時間（error_code が変わるまで、Move の 1 秒の期限）はアプリと同じ実際の時間、
 controller へ command を送る間隔はシミュレーションの時間（/clock）で数える（bridge_core.py の説明）。
@@ -36,11 +43,13 @@ go2_gazebo.launch.py が起動する。自分で起動するなら（gazebo コ�
 
 import json
 import math
+import sys
 import time
 from typing import Optional, Tuple
 
 import numpy as np
 import rclpy
+import rclpy.logging
 from control_input_msgs.msg import Inputs
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import Log
@@ -58,12 +67,14 @@ from unitree_api.msg import Request
 from unitree_go.msg import SportModeState
 
 from go2_nl_control.actions import MOVE
-from gazebo.bridge_core import (OBJECT_SPAWN_Z, BoxWorld, BridgeCore, ControllerInput,
-                                ObjectMemory, StillGate, api_name, box_sdf, compose,
+from gazebo.bridge_core import (PUBLISHER_NOTE_S, TRUTH_TOPIC, BoxWorld, BridgeCore, ControllerInput,
+                                ObjectMemory, StillGate, api_name, box_sdf, bridge_settings, compose,
                                 drop_box_points, drop_ground_and_self_points, footprint_size,
-                                lidar_points_world, log_time, object_label, object_sdf, parse_switch)
+                                lidar_points_world, log_time, logical_rows, objects_publisher_note,
+                                objects_topics, parse_switch, spawn_fields)
 from sim.sim_core import BOX_HEIGHT
-from voice_ltl.objects import DEFAULT_LAYOUT, OBJECTS_HZ, OBJECTS_TOPIC
+from voice_ltl.layout import Layout
+from voice_ltl.objects import OBJECTS_HZ, OBJECTS_TOPIC, measure_radius
 
 # 実機と同じトピック
 REQUEST_TOPIC = "/api/sport/request"
@@ -104,13 +115,24 @@ def _rpy(q) -> Tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+NODE_NAME = "go2_gazebo_bridge"
+
+
 class GazeboBridge(Node):
-    def __init__(self):
-        super().__init__("go2_gazebo_bridge",
+    def __init__(self, source: str, lay: Layout):
+        super().__init__(NODE_NAME,
                          parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)])
         self.core = BridgeCore(*self._now(), reports_switches=True)
         self.boxes = BoxWorld()
-        self.memory = ObjectMemory()   # logical camera が見た物（box_1・chair_1）
+        self.source = source           # OBJECTS_SOURCE（起動のときに 1 回読んだ）
+        self.layout = lay              # GO2_LAYOUT の配置（置く物と正解の大きさ）
+        topics = objects_topics(source)
+        # 正解（配置の大きさ）。logical camera が見た配置の物
+        sizes = {e.id: e.world_size() for e in lay.entries}
+        self.truth = ObjectMemory(sizes=sizes)
+        # /go2/objects（logical のときだけ）：LiDAR で測った大きさ。測るまでは [L, L] と配置の大きさの軸ごとの
+        # 大きい方（pre-final review F2）。detector のときは検出器が出すので持たない
+        self.memory = ObjectMemory(seed_sizes=sizes) if OBJECTS_TOPIC in topics else None
         self.still = StillGate()       # 胴が止まっている間の点群だけで物の大きさを測る
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)
@@ -122,7 +144,8 @@ class GazeboBridge(Node):
         self._state_pub = self.create_publisher(SportModeState, STATE_TOPIC, qos_profile_sensor_data)
         self._cloud_pub = self.create_publisher(PointCloud2, LIDAR_TOPIC, qos_profile_sensor_data)
         self._world_pub = self.create_publisher(String, WORLD_TOPIC, 10)
-        self._objects_pub = self.create_publisher(String, OBJECTS_TOPIC, 10)
+        self._truth_pub = self.create_publisher(String, TRUTH_TOPIC, 10)
+        self._objects_pub = self.create_publisher(String, OBJECTS_TOPIC, 10) if self.memory is not None else None
         self.create_subscription(Request, REQUEST_TOPIC, self._on_request, qos_profile_sensor_data)
         self.create_subscription(Odometry, ODOM_TOPIC, self._on_odom, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, RAW_CLOUD_TOPIC, self._on_cloud, qos_profile_sensor_data)
@@ -138,6 +161,7 @@ class GazeboBridge(Node):
         self.create_timer(1.0 / TICK_HZ, self._on_tick, clock=wall)
         self.create_timer(1.0 / WORLD_HZ, self._publish_world, clock=wall)
         self.create_timer(1.0 / OBJECTS_HZ, self._publish_objects, clock=wall)
+        self.create_timer(PUBLISHER_NOTE_S, self._check_publishers, clock=wall)
         self._spawn_timer = self.create_timer(1.0 / SPAWN_HZ, self._spawn_objects, clock=wall)
 
     def _now(self) -> Tuple[float, float]:
@@ -226,21 +250,23 @@ class GazeboBridge(Node):
             drop_ground_and_self_points(pts, self._pose[2], self._quat), dtype=np.float32)
         header = Header(frame_id=LIDAR_FRAME, stamp=msg.header.stamp)
         self._cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, kept))
-        # 動いていると点群と位置の時刻のずれで点が広がるので、胴が止まっている間に撮った点群だけで大きさを測る
-        if self.still.allows(_stamp(msg.header.stamp)):
+        # 動いていると点群と位置の時刻のずれで点が広がるので、胴が止まっている間に撮った点群だけで大きさを測る。
+        # detector のときは測らない（/go2/objects は検出器が出し、正解は配置の大きさ）
+        if self.memory is not None and self.still.allows(_stamp(msg.header.stamp)):
             self._measure_sizes(kept)
 
-    # ---------- 物（box_1・chair_1） ----------
+    # ---------- 物（配置ファイルの物） ----------
     def _measure_sizes(self, kept: np.ndarray) -> None:
-        """覚えている物ごとに、近くの LiDAR の点で底面の大きさを測って入れる。画面のボタンで置いた箱の点は
-        先に除く（箱が物のそばにあると、物の大きさが膨らんだまま戻らないので）。"""
+        """覚えている物ごとに、足跡の中心から種類ごとの半径（objects.measure_radius）の中の LiDAR の点で底面の
+        大きさを測って入れる。画面のボタンで置いた箱の点は先に除く（箱が物のそばにあると、物の大きさが
+        膨らんだまま戻らないので）。"""
         objects = self.memory.objects()
         if not objects or len(kept) == 0:
             return
         world = drop_box_points(lidar_points_world(kept, self._pose[0:3], self._quat),
                                 self.boxes.sizing_boxes(time.time()))
         for o in objects:
-            size = footprint_size(world, o.x, o.y)
+            size = footprint_size(world, o.x, o.y, radius=measure_radius(o.label))
             if size is not None:
                 self.memory.set_size(o.id, size)
 
@@ -248,38 +274,54 @@ class GazeboBridge(Node):
         """msg.pose はカメラの世界の位置と向き、model[i].pose はカメラから見た model の原点。"""
         p, q = msg.pose.position, msg.pose.orientation
         camera_pos, camera_quat = (p.x, p.y, p.z), (q.w, q.x, q.y, q.z)
-        rows = []
+        models = []
         for model in msg.model:
-            label = object_label(model.name)
-            if label is None:      # ground_plane・robot・画面のボタンで置いた sim_box_<n> など
+            if self.layout.find(model.name) is None:   # ground_plane・robot・画面のボタンで置いた sim_box_<n> など
                 continue
             r = model.pose.position
             x, y, _ = compose(camera_pos, camera_quat, (r.x, r.y, r.z))
-            rows.append((model.name, label, x, y))
-        self.memory.update(rows, time.time())
+            models.append((model.name, x, y))
+        rows = logical_rows(models, self.layout)       # 原点 → 足跡の中心（C3）
+        now = time.time()
+        self.truth.update(rows, now)
+        if self.memory is not None:
+            self.memory.update(rows, now)
 
     def _publish_objects(self) -> None:
-        self._objects_pub.publish(String(data=json.dumps(self.memory.message(time.time()))))
+        now = time.time()
+        self._truth_pub.publish(String(data=json.dumps(self.truth.message(now, layout=self.layout.name))))
+        if self._objects_pub is not None:
+            self._objects_pub.publish(String(data=json.dumps(self.memory.message(now))))
+
+    def _check_publishers(self) -> None:
+        """/go2/objects の送り手が 1 つでなければ、エラーを書く（止めはしない。spec §11.3・§11.9）。"""
+        note = objects_publisher_note(self.source, self.count_publishers(OBJECTS_TOPIC))
+        if note is not None:
+            self.get_logger().error(note)
 
     def _spawn_objects(self) -> None:
-        """create のサービスが使えて Go2 の位置が分かったら、DEFAULT_LAYOUT の物を 1 回だけ置く。"""
+        """create のサービスが使えて Go2 の位置が分かったら、配置の物を 1 回だけ置く（モデルの原点の位置と向き）。"""
         if self._pose is None or not self._create.service_is_ready():
             return
         self._spawn_timer.cancel()
-        for obj in DEFAULT_LAYOUT:
+        for e in self.layout.entries:
+            sdf, x, y, z, yaw = spawn_fields(e)
             req = SpawnEntity.Request()
-            req.entity_factory.name = obj.id
-            req.entity_factory.sdf = object_sdf(obj.id, obj.label)
-            req.entity_factory.pose.position.x = float(obj.x)
-            req.entity_factory.pose.position.y = float(obj.y)
-            req.entity_factory.pose.position.z = float(OBJECT_SPAWN_Z[obj.label])
+            req.entity_factory.name = e.id
+            req.entity_factory.sdf = sdf
+            req.entity_factory.pose.position.x = float(x)
+            req.entity_factory.pose.position.y = float(y)
+            req.entity_factory.pose.position.z = float(z)
+            req.entity_factory.pose.orientation.w = math.cos(yaw / 2.0)
+            req.entity_factory.pose.orientation.z = math.sin(yaw / 2.0)
 
-            def done(future, obj=obj) -> None:
+            def done(future, e=e) -> None:
                 res = future.result()
                 if res is not None and res.success:
-                    self.get_logger().info(f"物を置きました: {obj.id} x={obj.x:.2f} y={obj.y:.2f}")
+                    self.get_logger().info(f"物を置きました: {e.id}（{e.model}）x={e.x:.2f} y={e.y:.2f} "
+                                           f"向き {e.yaw_deg}°")
                 else:   # 橋渡しだけを起動し直したときなど。同じ名前の物はもうある
-                    self.get_logger().info(f"すでにあります（{obj.id}）")
+                    self.get_logger().info(f"すでにあります（{e.id}）")
 
             self._create.call_async(req).add_done_callback(done)
 
@@ -307,7 +349,8 @@ class GazeboBridge(Node):
         name, box = self.boxes.place(where, x, y, yaw)
         req = SpawnEntity.Request()
         req.entity_factory.name = name
-        req.entity_factory.sdf = box_sdf(name, box)
+        # detector のときは段ボールの見た目（D9：箱として見られうる。ぶつかる形は同じ）
+        req.entity_factory.sdf = box_sdf(name, box, cardboard=self.source == "detector")
         req.entity_factory.pose.position.x = float(box.x)
         req.entity_factory.pose.position.y = float(box.y)
         req.entity_factory.pose.position.z = BOX_HEIGHT / 2.0
@@ -345,9 +388,15 @@ class GazeboBridge(Node):
 
 
 def main() -> None:
+    try:
+        source, lay = bridge_settings()
+    except ValueError as e:     # 何も置かずに止まる（launch のログに 1 行。Review Focus 5）
+        rclpy.logging.get_logger(NODE_NAME).error(str(e))
+        sys.exit(1)
     rclpy.init()
-    node = GazeboBridge()
-    node.get_logger().info(f"Gazebo の Go2 の橋渡しを起動しました（error_code {node.core.error_code}）")
+    node = GazeboBridge(source, lay)
+    node.get_logger().info(f"Gazebo の Go2 の橋渡しを起動しました（error_code {node.core.error_code}、"
+                           f"OBJECTS_SOURCE={source}、GO2_LAYOUT={lay.name}：物 {len(lay.entries)} 個）")
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

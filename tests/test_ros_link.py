@@ -393,3 +393,26 @@ def test_objects_come_from_go2_objects_and_go_stale(ros, monkeypatch):
     assert [r["id"] for r in link.objects()] == ["box_1"]
     monkeypatch.setattr(ros_link.time, "time", lambda: 102.1)
     assert link.objects() == []
+
+
+def test_detector_rows_keep_confidence_measured_and_source(ros, monkeypatch):
+    _, make = ros
+    link = make()
+    assert link.objects_source() is None
+    monkeypatch.setattr(ros_link.time, "time", lambda: 100.0)
+    sofa = {"id": "sofa_1", "label": "sofa", "x": -4.402, "y": 0.013, "size": [1.09, 1.85], "seen": 99.6,
+            "visible": True, "confidence": 0.71, "measured": True}
+    msg = {"frame": "odom", "stamp": 99.8, "source": "detector", "objects": [sofa, {**sofa, "id": "sofa_2",
+                                                                               "confidence": 1.5}]}
+    link._on_objects(String(data=json.dumps(msg)))
+    assert link.objects() == [sofa] and link.objects_source() == "detector"   # the bad confidence row is dropped
+    monkeypatch.setattr(ros_link.time, "time", lambda: 102.1)
+    assert link.objects() == [] and link.objects_source() is None              # stale, like objects()
+    monkeypatch.setattr(ros_link.time, "time", lambda: 103.0)
+    link._on_objects(String(data=json.dumps({**msg, "source": "logical"})))
+    assert link.objects_source() == "logical" and [r["id"] for r in link.objects()] == ["sofa_1"]
+    old = {k: v for k, v in msg.items() if k != "source"}                     # an older sender: unknown source
+    link._on_objects(String(data=json.dumps(old)))
+    assert link.objects_source() is None and [r["id"] for r in link.objects()] == ["sofa_1"]
+    link._on_objects(String(data=json.dumps({**msg, "source": "yoloe"})))      # any other value drops the message
+    assert link.objects() == [] and link.objects_source() is None

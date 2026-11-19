@@ -4,13 +4,14 @@
 速度の積分、箱との衝突、箱の LiDAR 点群を持つ。時刻は呼び出し側が渡す。
 
 名前つきの物（SimGo2.objects：box_1・chair_1 など）は、画面のボタンで置く箱（boxes）とは別に持つ。
-物も衝突と LiDAR 点群には入るが、/sim/world と clear_boxes には入らない（R22）。
+物も衝突と LiDAR 点群には入るが、/sim/world と clear_boxes には入らない（R22）。置き方は配置ファイル
+（gazebo/layouts/<名前>.json、layout_objects）から取り、点群の壁は物ごとの高さまで（ボタンの箱は BOX_HEIGHT）。
 FakeCamera は Gazebo の logical camera と同じ視野（120°、0.1〜8 m）で物を見て、見た物を覚えておく。
 """
 
 import json
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Optional
 
@@ -21,8 +22,10 @@ from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO
                                     STAND_UP, STANDING, STOP_MOVE, STRETCH,
                                     state_from_error_code)
 from go2_nl_control.perception import PerceptionConfig
+from voice_ltl import layout as layouts
 from voice_ltl.objects import (CAMERA_FAR, CAMERA_HFOV, CAMERA_IN_BODY, CAMERA_NEAR,
-                               DEFAULT_LAYOUT, Obj, wrap_rad)
+                               DEFAULT_LAYOUT, Obj, _id_key, wrap_rad)
+from voice_ltl.vocabulary import height_of
 
 FOOTPRINT = 0.35      # 体の前後の半分の長さ（本物の Go2 は約 0.70 m）[m]
 FOOTPRINT_HALF_WIDTH = 0.16   # 体の左右の半分の幅（本物の Go2 は約 0.31 m）[m]
@@ -30,7 +33,7 @@ CONTACT_MARGIN = 0.02         # 体の長方形と箱の隙間がこれより狭
 MOVE_HOLD_S = 1.0     # Move は送り直しが無ければこの秒数で止まる
 GROUND_Z = -0.30      # 機体座標での地面の高さ [m]
 POINT_STEP = 0.05     # 点群の間隔 [m]
-BOX_HEIGHT = 0.4      # 箱の高さ [m]
+BOX_HEIGHT = 0.4      # 画面のボタンで置く箱の高さ [m]（名前つきの物は物ごとの高さ）
 GESTURE_S = 3.0
 GESTURES = (HELLO, STRETCH, CONTENT, DANCE1, SCRAPE, HEART)
 _EPS = 1e-9
@@ -74,13 +77,22 @@ class Box:
 
 @dataclass
 class SimObject:
-    """名前つきの物。底面は軸に平行な sx × sy の長方形（odom の x 方向・y 方向の長さ）。"""
+    """名前つきの物。底面は軸に平行な sx × sy の長方形（odom の x 方向・y 方向の長さ）、
+    偽の LiDAR の壁は床から height まで。"""
     id: str
     label: str
     x: float
     y: float
     sx: float
     sy: float
+    height: float = BOX_HEIGHT
+
+
+def layout_objects(name: str) -> tuple[tuple[Obj, ...], dict[str, float]]:
+    """配置ファイル gazebo/layouts/<name>.json の物（足跡の中心と世界の軸の大きさ）と、id から高さ。
+    知らない名前や壊れたファイルは layout.LayoutError（ファイル・id・値を書いた 1 行）。"""
+    lay = layouts.load(name)
+    return lay.objs(), {e.id: e.height for e in lay.entries}
 
 
 def in_camera_view(pose: tuple[float, float, float], x: float, y: float) -> bool:
@@ -248,18 +260,25 @@ class SimGo2:
         self.boxes.clear()
         self.collided = False
 
-    def place_objects(self, layout: Iterable[Obj] = DEFAULT_LAYOUT) -> None:
-        """名前つきの物を layout の通りに置き直す（それまでの物は消える。何度呼んでも同じ）。"""
-        self.objects[:] = [SimObject(o.id, o.label, o.x, o.y, o.size[0], o.size[1]) for o in layout]
+    def place_objects(self, layout: Iterable[Obj] = DEFAULT_LAYOUT,
+                      heights: Optional[Mapping[str, float]] = None) -> None:
+        """名前つきの物を layout の通りに置き直す（それまでの物は消える。何度呼んでも同じ）。
+        高さは heights[id]、なければ単語帳の高さ（どちらもなければ BOX_HEIGHT）。
+        配置ファイルからは place_objects(*layout_objects(name))。"""
+        heights = {} if heights is None else heights
+        self.objects[:] = [SimObject(o.id, o.label, o.x, o.y, o.size[0], o.size[1],
+                                     _object_height(o, heights)) for o in layout]
 
     def cloud_lidar(self) -> np.ndarray:
-        """箱と物の4側面（0.05 m 間隔、高さ 0〜0.4 m）を LiDAR 座標の点群にする（N×3）。"""
-        rects = self._rects()
-        if not rects:
+        """箱と物の4側面（0.05 m 間隔、高さ 0 からボタンの箱は BOX_HEIGHT・物はそれぞれの height まで）を
+        LiDAR 座標の点群にする（N×3）。"""
+        walls = ([(b.x, b.y, b.size / 2.0, b.size / 2.0, BOX_HEIGHT) for b in self.boxes]
+                 + [(o.x, o.y, o.sx / 2.0, o.sy / 2.0, o.height) for o in self.objects])
+        if not walls:
             return np.zeros((0, 3))
-        hs = np.arange(0.0, BOX_HEIGHT + _EPS, POINT_STEP)
         world = []
-        for x, y, hx, hy in rects:
+        for x, y, hx, hy, height in walls:
+            hs = _levels(height)
             ux = np.arange(-hx, hx + _EPS, POINT_STEP)
             uy = np.arange(-hy, hy + _EPS, POINT_STEP)
             edges = ([(x + e, y - hy) for e in ux] + [(x + e, y + hy) for e in ux]
@@ -282,11 +301,27 @@ class SimGo2:
         return body @ (rz @ ry)
 
 
+def _object_height(o: Obj, heights: Mapping[str, float]) -> float:
+    h = heights.get(o.id)
+    if h is None:
+        h = height_of(o.label)
+    return BOX_HEIGHT if h is None else float(h)
+
+
+def _levels(height: float) -> np.ndarray:
+    """壁の点の高さ：0 から POINT_STEP ごと、最後は height ちょうど（POINT_STEP の倍数の高さでは足さない。
+    だからボタンの箱の BOX_HEIGHT 0.4 m は今までと同じ 9 段）。"""
+    hs = np.arange(0.0, height + _EPS, POINT_STEP)
+    if hs[-1] < height - 1e-6:
+        hs = np.append(hs, height)
+    return hs
+
+
 class FakeCamera:
     """SimGo2 の前カメラ（in_camera_view）で物を見て、一度見た物を覚えておく。
 
     いま見えている物は visible True・seen = now、前に見た物は visible False・seen = 最後に見た時刻。
-    一度も見ていない物は出さない。並びは id 順。
+    一度も見ていない物は出さない。並びは id 順（ラベルの中で番号の順：box_2 は box_10 より前。objects._id_key）。
     """
 
     def __init__(self) -> None:
@@ -295,7 +330,7 @@ class FakeCamera:
     def see(self, sim: SimGo2, now: float) -> List[Obj]:
         pose = (sim.x, sim.y, sim.yaw)
         out = []
-        for o in sorted(sim.objects, key=lambda k: k.id):
+        for o in sorted(sim.objects, key=lambda k: _id_key(k.id)):
             visible = in_camera_view(pose, o.x, o.y)
             if visible:
                 self._last_seen[o.id] = now

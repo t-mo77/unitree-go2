@@ -5,14 +5,16 @@ The objects are not boxes: they block motion and show in the LiDAR, but the page
 (120°, 0.1–8 m, at CAMERA_IN_BODY) and remembers what it saw.
 """
 
+import json
 import math
 
+import numpy as np
 import pytest
 
 from go2_nl_control.actions import MOVE, STANDING
 from sim import sim_core
-from sim.sim_core import FakeCamera, SimGo2, SimObject, in_camera_view
-from voice_ltl import objects
+from sim.sim_core import BOX_HEIGHT, GROUND_Z, FakeCamera, SimGo2, SimObject, in_camera_view, layout_objects
+from voice_ltl import layout, objects
 
 
 def standing_sim():
@@ -68,3 +70,95 @@ def test_fake_camera_remembers_what_it_saw():
 
 def test_sim_core_uses_the_shared_wrap():      # one (−π, π] wrap for the whole project (objects.wrap_rad)
     assert sim_core.wrap_rad is objects.wrap_rad and not hasattr(sim_core, "_wrap")
+
+
+def world_points(sim):
+    """The fake LiDAR cloud back in world axes (the sim at the origin facing +x, the default LiDAR mount)."""
+    k = sim.cfg
+    assert (sim.x, sim.y, sim.yaw) == (0.0, 0.0, 0.0) and (k.lidar_pitch, k.lidar_yaw) == (0.0, 0.0)
+    c = sim.cloud_lidar()
+    return np.column_stack([c[:, 0] + k.lidar_x, c[:, 1], c[:, 2] + k.lidar_z - GROUND_Z])
+
+
+def test_fake_lidar_uses_object_heights():
+    sim = standing_sim()
+    sim.place_objects(*layout_objects("default"))
+    sim.place_box("front", 1.2)                                  # a button box: (1.2, 0), BOX_HEIGHT
+    w = world_points(sim)
+    chair, box, button = w[w[:, 1] < -1.0], w[w[:, 1] > 1.0], w[np.abs(w[:, 1]) < 0.5]
+    assert chair[:, 2].max() == pytest.approx(0.9) and box[:, 2].max() == pytest.approx(0.5)
+    assert button[:, 2].max() == pytest.approx(0.4) == pytest.approx(BOX_HEIGHT)
+    assert min(chair[:, 2].min(), box[:, 2].min(), button[:, 2].min()) == pytest.approx(0.0, abs=1e-9)
+    assert len(chair) + len(box) + len(button) == len(w)
+
+
+def test_placed_objects_take_the_vocabulary_height_without_a_layout():
+    sim = standing_sim()
+    sim.place_objects()                                          # DEFAULT_LAYOUT, no heights given
+    assert [o.height for o in sim.objects] == [0.5, 0.9]         # vocabulary.height_of: box, chair
+    laid = standing_sim()
+    laid.place_objects(*layout_objects("default"))
+    assert np.array_equal(sim.cloud_lidar(), laid.cloud_lidar())
+    sim.place_objects(objects.DEFAULT_LAYOUT, {"chair_1": 1.2})  # a height given for one id only
+    assert [o.height for o in sim.objects] == [0.5, 1.2]
+    assert SimObject("box_1", "box", 0.9, 0.0, 0.5, 0.5).height == BOX_HEIGHT
+
+
+def test_a_wall_reaches_a_height_off_the_point_step():
+    sim = standing_sim()
+    sim.objects.append(SimObject("sofa_1", "sofa", 2.0, 0.0, 1.0, 1.8, 0.943))
+    w = world_points(sim)
+    assert w[:, 2].max() == pytest.approx(0.943) and np.isclose(w[:, 2], 0.9).any()
+
+
+def test_fake_camera_orders_ids_by_number():
+    sim, cam = SimGo2(), FakeCamera()
+    sim.objects[:] = [SimObject("chair_1", "chair", 2.5, -1.0, 0.45, 0.45), SimObject("box_10", "box", 2.5, 0.0, 0.5, 0.5),
+                      SimObject("box_2", "box", 2.5, 1.0, 0.5, 0.5)]
+    assert [o.id for o in cam.see(sim, 1.0)] == ["box_2", "box_10", "chair_1"]
+
+
+def test_layout_objects_reads_a_layout():
+    objs, heights = layout_objects("default")
+    assert objs == objects.DEFAULT_LAYOUT and heights == {"box_1": 0.5, "chair_1": 0.9}
+    with pytest.raises(layout.LayoutError):
+        layout_objects("houshold")
+
+
+def test_fake_go2_message_says_fake_and_keeps_its_rows():
+    from sim.fake_go2 import objects_message
+    sim, cam = SimGo2(), FakeCamera()
+    sim.place_objects(*layout_objects("default"))
+    msg = objects_message(cam, sim, 12.5)
+    assert list(msg) == ["frame", "stamp", "source", "objects"]
+    assert (msg["frame"], msg["stamp"], msg["source"]) == ("odom", 12.5, "fake")
+    seen = [o.to_row() for o in FakeCamera().see(sim, 12.5)]
+    assert msg["objects"] == seen and len(seen) == 2
+    assert all(set(row) == {"id", "label", "x", "y", "size", "seen", "visible"} for row in msg["objects"])
+    assert objects.parse(json.loads(json.dumps(msg))) == tuple(
+        objects.Obj(o.id, o.label, o.x, o.y, o.size, True, 12.5) for o in objects.DEFAULT_LAYOUT)
+
+
+def test_fake_go2_places_the_layout_named_by_go2_layout(monkeypatch):
+    from sim import fake_go2
+    monkeypatch.setenv("GO2_LAYOUT", "houshold")
+    with pytest.raises(layout.LayoutError) as e:                 # before any ROS node exists
+        fake_go2.FakeGo2()
+    assert "houshold" in str(e.value) and "default" in str(e.value)
+    asked = []
+
+    class Stop(Exception):
+        pass
+
+    def record(name):
+        asked.append(name)
+        raise Stop
+
+    monkeypatch.setattr(fake_go2, "layout_objects", record)
+    monkeypatch.delenv("GO2_LAYOUT")
+    with pytest.raises(Stop):
+        fake_go2.FakeGo2()
+    monkeypatch.setenv("GO2_LAYOUT", "household")
+    with pytest.raises(Stop):
+        fake_go2.FakeGo2()
+    assert asked == ["default", "household"]

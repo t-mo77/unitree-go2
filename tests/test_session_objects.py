@@ -15,10 +15,10 @@ import voice_ltl.automata as automata
 import voice_ltl.session as session_mod
 from sim.sim_core import SimGo2, SimObject
 from voice_ltl.diagrams import MAP_HINT_TEXT, TOO_BIG_TEXT
-from voice_ltl.grid import GridWorld
+from voice_ltl.grid import GridWorld, grid_shape
 from voice_ltl.grid_executor import GRID_EXEC_CONFIG, GRID_SETTLE_S, MIN_SPEED, flows_on
 from voice_ltl.llm import FakeLLM
-from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, edge_distance, msg_not_found,
+from voice_ltl.objects import (DEFAULT_LAYOUT, MSG_NO_POSE, MSG_POSITION_DRIFT, Obj, edge_distance, msg_not_found,
                                winding_number)
 from voice_ltl.session import EXEC_ACTIONS, MSG_NO_PATH, DirectSimLink, Session
 
@@ -201,9 +201,20 @@ def test_walk_to_the_chair_in_the_fake_go2(tmp_path):
     assert not getattr(link, "hit", False)
 
 
+def walled_box():
+    """A 1.0 m box at (2.5, 0) and four benches around it, 0.8-1.1 m from its sides, that block every near cell
+    of the box. The box alone has near cells now (band B, spec §10.4)."""
+    return [SimObject("box_1", "box", 2.5, 0.0, 1.0, 1.0),
+            SimObject("bench_1", "bench", 1.05, 0.0, 0.3, 3.0), SimObject("bench_2", "bench", 3.95, 0.0, 0.3, 3.0),
+            SimObject("bench_3", "bench", 2.5, 1.45, 3.0, 0.3), SimObject("bench_4", "bench", 2.5, -1.45, 3.0, 0.3)]
+
+
 def test_object_with_no_near_cell_gives_the_no_path_reason(tmp_path):
+    rows = [Obj(o.id, o.label, o.x, o.y, (o.sx, o.sy)) for o in walled_box()]
+    assert grid_shape((0.0, 0.0, 0.0), rows[:1], frozenset({"near_box_1"})).near["near_box_1"]
+    assert not grid_shape((0.0, 0.0, 0.0), rows, frozenset({"near_box_1"})).near["near_box_1"]
     sim = SimGo2()
-    sim.objects.append(SimObject("box_1", "box", 2.5, 0.0, 1.0, 1.0))   # r = 0.707: no near band
+    sim.objects.extend(walled_box())
     sess, link = make_objects(tmp_path, llm_for("F near_box_1"), sim=sim)
     sess.submit_text("箱まで歩いて")
     drive(sess, link, 2.0)
@@ -673,7 +684,7 @@ def test_a_move_held_too_long_clears_the_goal(tmp_path):
 
 def test_a_no_path_error_still_shows_the_grid(tmp_path):
     sim = SimGo2()
-    sim.objects.append(SimObject("box_1", "box", 2.5, 0.0, 1.0, 1.0))
+    sim.objects.extend(walled_box())
     sess, link = make_objects(tmp_path, llm_for("F near_box_1"), sim=sim)
     sess.submit_text("箱まで歩いて")
     drive(sess, link, 1.0)

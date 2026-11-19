@@ -270,6 +270,42 @@ def test_a_reply_without_well_formed_substitutions_is_unreadable(reply):
         run, _ = fake_run(stdout)
         with pytest.raises(LLMError):
             ClaudeCLI(runner=run)("p", PROMPT_SCHEMA)
-    good = {**reply, "substitutions": [{"said": "走って", "as": "前へ歩く"}]}
+    good = {**reply, "substitutions": [{"said": "走って", "as": "前へ歩く"}], "unresolved_objects": []}
     run, _ = fake_run(json.dumps({"is_error": False, "structured_output": good}))
     assert ClaudeCLI(runner=run)("p", PROMPT_SCHEMA) == good
+
+
+@pytest.mark.parametrize("reply", [
+    {"formula": "F hello", "unsupported": [], "substitutions": []},                         # no unresolved_objects
+    {"formula": "F hello", "unsupported": [], "substitutions": [], "unresolved_objects": None},
+    {"formula": "F hello", "unsupported": [], "substitutions": [], "unresolved_objects": "机"},
+    {"formula": None, "unsupported": ["机"], "substitutions": [], "unresolved_objects": [{"said": "机"}]},
+    {"formula": None, "unsupported": ["机"], "substitutions": [],
+     "unresolved_objects": [{"said": "机", "label": None}]},
+])
+def test_reply_without_unresolved_objects_is_unreadable(reply):
+    # open-objects spec §9.2: the field is required for both CLIs, so a reply without it is MSG_UNREADABLE
+    from voice_ltl.llm import MSG_UNREADABLE
+    from voice_ltl.prompt import SCHEMA as PROMPT_SCHEMA
+    for stdout in (json.dumps({"is_error": False, "structured_output": reply}),
+                   json.dumps({"is_error": False, "result": json.dumps(reply)})):
+        run, _ = fake_run(stdout)
+        with pytest.raises(LLMError) as e:
+            ClaudeCLI(runner=run)("p", PROMPT_SCHEMA)
+        assert str(e.value) == MSG_UNREADABLE
+
+    def codex_run(argv, **kw):
+        Path(argv[argv.index("-o") + 1]).write_text(json.dumps(reply, ensure_ascii=False), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    with pytest.raises(LLMError) as e:
+        CodexCLI(runner=codex_run)("p", PROMPT_SCHEMA)
+    assert str(e.value) == MSG_UNREADABLE
+    # the same reply with a well-formed field is read by both
+    good = {**reply, "unresolved_objects": [{"said": "机", "label": "desk"}]}
+    run, _ = fake_run(json.dumps({"is_error": False, "structured_output": good}))
+    assert ClaudeCLI(runner=run)("p", PROMPT_SCHEMA) == good
+
+    def codex_good(argv, **kw):
+        Path(argv[argv.index("-o") + 1]).write_text(json.dumps(good, ensure_ascii=False), encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    assert CodexCLI(runner=codex_good)("p", PROMPT_SCHEMA) == good

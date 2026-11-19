@@ -1,0 +1,37 @@
+# Image for the `detector` service: go2-voice-ltl-detector:yoloe-11s (compose.yaml, profile detector)
+# ultralytics, YOLOE weights and the CLIP tokenizer fork are AGPL-3.0 (docs/simulation.md)
+# mobileclip_blt.ts (the text encoder) is Apple's MobileCLIP: its terms (Apple ML Research Model TOU) allow
+# Research Purposes only, no commercial use (open-objects spec §11.2)
+# Build (from the repository root; it needs the network once):
+#   docker build -t go2-voice-ltl-detector:yoloe-11s -f docker/Dockerfile.detector docker
+FROM ros:jazzy-ros-base-noble
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ENV DEBIAN_FRONTEND=noninteractive
+ARG TORCH_VERSION=2.14.1
+ARG TORCHVISION_VERSION=0.29.1
+ARG ULTRALYTICS_VERSION=8.4.210
+ARG CLIP_COMMIT=7ffa84b3bfa40c42ecc1c77147a855e69cb2dd40
+ARG ASSETS=https://github.com/ultralytics/assets/releases/download/v8.4.0
+ARG YOLOE_SHA256=8e439445c87338b79d9ce21dec109f4621e26df67e94d26ea1a98c1e64dce3e3
+ARG MOBILECLIP_SHA256=a67804d1b0f07b8b9a20c1761ec0847f34660f5fa338ec70e8f3fce68ed95e54
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-venv libgl1 libglib2.0-0t64 ros-jazzy-rmw-cyclonedds-cpp curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv --system-site-packages /opt/det
+ENV PATH=/opt/det/bin:$PATH VIRTUAL_ENV=/opt/det
+RUN pip install --no-cache-dir "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+        --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir "ultralytics==${ULTRALYTICS_VERSION}" \
+        "clip @ git+https://github.com/ultralytics/CLIP.git@${CLIP_COMMIT}" pytest==8.4.2
+# Weights: fixed URLs, fixed sha256 (the build fails on any other byte)
+RUN mkdir -p /opt/yoloe/config && cd /opt/yoloe \
+    && curl -fsSL -o yoloe-11s-seg.pt   "${ASSETS}/yoloe-11s-seg.pt" \
+    && curl -fsSL -o mobileclip_blt.ts  "${ASSETS}/mobileclip_blt.ts" \
+    && printf '%s  %s\n' "${YOLOE_SHA256}" yoloe-11s-seg.pt "${MOBILECLIP_SHA256}" mobileclip_blt.ts | sha256sum -c -
+ENV YOLO_CONFIG_DIR=/opt/yoloe/config YOLO_AUTOINSTALL=False YOLO_OFFLINE=True \
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONPATH=/work:/work/nl_control \
+    OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+RUN yolo settings weights_dir=/opt/yoloe sync=False > /dev/null
+WORKDIR /work
+ENTRYPOINT ["bash", "-c", "source /opt/ros/jazzy/setup.bash && exec \"$@\"", "--"]
+CMD ["python3", "-m", "detector.node"]

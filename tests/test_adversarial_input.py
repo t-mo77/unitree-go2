@@ -33,8 +33,9 @@ def logcap(caplog):
 
 
 def reply(formula, unsupported=None, substitutions=None):
+    # all four keys of prompt.SCHEMA (open-objects spec §9.2: unresolved_objects is required)
     return {"formula": formula, "unsupported": [] if unsupported is None else unsupported,
-            "substitutions": [] if substitutions is None else substitutions}
+            "substitutions": [] if substitutions is None else substitutions, "unresolved_objects": []}
 
 
 # ---------------------------------------------------------------- 1. strange formulas

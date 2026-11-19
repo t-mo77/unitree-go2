@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "objects": [
+    {"id": "box_1", "model": "primitive:box", "x": 2.5, "y": 1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.5, 0.5]}, "height": 0.5,
+     "detectable": false, "accept": ["box"]},
+    {"id": "chair_1", "model": "primitive:chair", "x": 2.5, "y": -1.5, "yaw_deg": 0,
+     "footprint": {"offset": [0.0, 0.0], "size": [0.45, 0.45]}, "height": 0.9,
+     "detectable": false, "accept": ["chair"]}
+  ]
+}
