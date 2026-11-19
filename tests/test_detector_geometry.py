@@ -993,6 +993,24 @@ def test_the_far_face_test_turns_at_60_degrees(deg, ends):
     assert g._side(u, p[:, 1], rays, lateral, +1) == (g.EDGE_PAD, True)
 
 
+def test_the_far_face_test_takes_the_median_of_the_outward_components():
+    """The statistic of R-H6a's far-face test is the median (the final review, tests-2: with the mean every other
+    test still passed). 11 returns spread 1 m across the far side (u = 1 along +x), 3 m from the camera: 7 rays at 45°
+    from the axis (outward cos 45° = 0.71) and 4 grazing it at 90° (outward 0, a second face). The median, 0.71, is
+    >= 1 / PAD_GAIN_MAX, so the face faces the camera and does not end the object; the mean, 0.45, would say it does.
+    The other way round (4 at 45°, 7 at 90°: median 0, mean 0.26) the face ends the object."""
+    v = np.linspace(-0.5, 0.5, 11)
+    p = np.column_stack([np.ones_like(v), v])
+    lateral, depth = np.array([0.0, 1.0]), np.array([1.0, 0.0])
+    head_on, grazed = 3.0 * np.array([math.cos(math.pi / 4), math.sin(math.pi / 4)]), 3.0 * np.array([0.0, 1.0])
+    for n_head_on, ends in ((7, False), (4, True)):
+        rays = np.array([head_on] * n_head_on + [grazed] * (len(v) - n_head_on))
+        outward = rays @ depth / np.hypot(rays[:, 0], rays[:, 1])
+        assert (float(np.median(outward)) >= 1.0 / g.PAD_GAIN_MAX) != ends
+        assert float(np.mean(outward)) < 1.0 / g.PAD_GAIN_MAX
+        assert g._side(p[:, 0], p[:, 1], rays, lateral, +1, axis=depth) == (g.EDGE_PAD, ends)
+
+
 LIDAR_XY = np.array(LIDAR_IN_BODY[:2]) + BASE[:2]
 
 

@@ -515,17 +515,18 @@ def translate(instruction: str, llm: LLM, max_tries: int = 3, scene: Scene | Non
             used = _formula_labels(formula)
             # O8, the entry's kind by §9.7 (its said's head word first; pre-final review F5)
             open_items = [e.said for e in entries if (kind := _said_kind(e)) is None or kind[0] not in used]
-            attempts.append(Attempt(formula, open_items, [], _shown(entries)))
             if open_items:
+                attempts.append(Attempt(formula, open_items, [], _shown(entries)))
                 return Translation(False, None, open_items, attempts,
                                    _unsupported_message(open_items, view, entries, instruction), scene=scene)
-            missing = _kind_guard(formula, view, instruction, entries)                           # O35
-            if missing:
-                return Translation(False, None, [], attempts, "".join(missing), scene=scene)
-            far = _too_far(formula, view)
-            if far is not None:
-                return Translation(False, None, [], attempts, msg_too_far(far, _users_word(far, instruction)),
-                                   scene=scene)
+            # the kind guard (O35), then a far object (P5): the refusal is also the attempt's errors, so the page
+            # shows that attempt failed, with the reason (the final review, language-2)
+            refusal = _kind_guard(formula, view, instruction, entries)
+            if not refusal and (far := _too_far(formula, view)) is not None:
+                refusal = [msg_too_far(far, _users_word(far, instruction))]
+            attempts.append(Attempt(formula, [], refusal, _shown(entries)))
+            if refusal:
+                return Translation(False, None, [], attempts, "".join(refusal), scene=scene)
             return Translation(True, formula, [], attempts, "", subs or earlier_subs, scene=scene)
         attempts.append(Attempt(formula, [], errors, _shown(entries)))
         earlier_subs = subs or earlier_subs

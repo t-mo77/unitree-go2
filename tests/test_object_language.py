@@ -284,6 +284,10 @@ def test_far_object_is_refused_early():                   # P5
     t = translate("箱まで歩いて", FakeLLM([{"formula": "F near_box_1", "unsupported": []}]), scene=far)
     assert not t.ok and t.message == msg_too_far("box") and t.formula is None
     assert t.scene is far and len(t.attempts) == 1
+    assert t.attempts[0].unsupported == [] and t.attempts[0].errors == [msg_too_far("box")]   # language-2
+    t = translate("x", FakeLLM([{"formula": "F near_box_1", "unsupported": []}]),
+                  scene=dataclasses.replace(far, pose=(1.5, 0.0, 0.0)))
+    assert t.ok and t.attempts[0].errors == []
 
 
 def test_the_first_far_object_in_the_formula_is_named():
@@ -575,12 +579,15 @@ def test_going_targets():                                  # spec §9.6 rule 3, 
 def test_kind_guard_refuses_another_kind():                # O35
     t = translate("ゴミ箱まで行って", llm_for("F near_box_1"), scene=SCENE)
     assert t.formula is None and t.message == msg_not_found("trash_can", "ゴミ箱")
-    assert not t.ok and t.scene is SCENE and t.attempts[0].formula == "F near_box_1" and t.attempts[0].errors == []
+    assert not t.ok and t.scene is SCENE and t.attempts[0].formula == "F near_box_1"
+    # the attempt carries the refusal as its reason, so the page shows it failed (the final review, language-2)
+    assert t.attempts[0].unsupported == [] and t.attempts[0].errors == [msg_not_found("trash_can", "ゴミ箱")]
     assert translate("冷蔵庫の横の椅子まで行って", llm_for("F near_chair_1"), scene=SCENE).ok
     assert translate("ゴミ箱まで行って", llm_for("F near_box_1"), scene=WITH_A_TRASH_CAN).ok
     # every missing target is told once; a target that is in the Scene is not
     t = translate("ゴミ箱と冷蔵庫と箱の周りを回って", llm_for("F around_chair_1"), scene=SCENE)
     assert t.message == msg_not_found("trash_can", "ゴミ箱") + msg_not_found("refrigerator", "冷蔵庫")
+    assert t.attempts[0].errors == [msg_not_found("trash_can", "ゴミ箱"), msg_not_found("refrigerator", "冷蔵庫")]
     # no target word: nothing to guard
     for instruction in ("家具の周りを回って", "障害物まで行って", "グリーンまで行って", "x"):
         assert translate(instruction, llm_for("F around_box_1"), scene=SCENE).ok, instruction
