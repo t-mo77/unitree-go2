@@ -99,6 +99,13 @@ OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profil
 docker compose --profile gazebo --profile detector down  # 全部止める
 ```
 
+検出器から logical に戻すときは、先に検出器ごと止めます（止めずに戻すと検出器が残り、物の一覧が交互に空になります。[docs/simulation.md](docs/simulation.md#検出器で物を見つける)）：
+
+```bash
+docker compose --profile gazebo --profile detector down  # logical に戻す前に、検出器ごと止める
+SIM_KIND=gazebo docker compose --profile gazebo up -d    # logical で起動し直す
+```
+
 検出器は AGPL-3.0 の ultralytics を使い、文字の符号化器の重みは研究のためだけに使えます（[docs/simulation.md](docs/simulation.md#検出器で物を見つける)）。
 実機の道（PR #4 の Linux 直接実行と `compose.robot.yaml`）は、この仕事で変えていません。
 

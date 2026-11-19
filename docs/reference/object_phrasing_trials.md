@@ -222,6 +222,8 @@ cd ~/work/physicalAI/go2 && docker compose run --rm --no-deps -T -e ROS_DOMAIN_I
 - 判定は Task J と同じ（上の「試し方」）。断る言葉に「選べません」が増えた。
 - 1 件の行の `attempts` には、試みごとに、コードが受けた `unresolved`（`label` は `vocabulary.lookup` の答えか null）と、Claude が書いたままの `raw_unresolved` が残る。
   生の値は道具の中だけで LLM を包んで取る（Claude の文字は app に入らない）。
+  見張りか遠すぎで断った試みの errors には、その断りのメッセージが入る（この直しの後の回から。H4 の記録は前のコードなので、そこでは空）。
+  直しは最後の review の language-2（`f799544`、2026-11-19）。
 - 各回の JSON 行（72 行：1 行目の LLM、70 件、最後の要約）は、git に入らない作業場所 `~/work/physicalAI/go2/.superpowers/sdd/2026-11-11-go2-open-objects/h4/` の `run1.jsonl`・`run2.jsonl` に残した。
 
 新しい物の一覧（open-objects spec §13.2。SCENE・ONE_BOX・EMPTY・TWO_BOXES・FAR_BOX は上の Task J の表のまま。Go2 は原点で向き 0）：

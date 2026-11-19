@@ -30,6 +30,10 @@ LICENSE_FILE = "リポジトリに LICENSE ファイルを足すかどうかは�
 Q4 = "ただの形の箱（box_1）と椅子（chair_1）は、検出器の目標ではなく、検出器で見つかることを当てにできません。"
 REAL_ROBOT = "実機の道（PR #4 の Linux 直接実行と `compose.robot.yaml`）は、この仕事で変えていません。"
 DETECTOR_UP = "OBJECTS_SOURCE=detector SIM_KIND=gazebo docker compose --profile gazebo --profile detector up -d"
+# back to logical (the final review, runtime-2): stop the detector with its profile first, then start logical again;
+# `up` without the detector profile leaves the detector running beside a logical Gazebo (two /go2/objects senders)
+DETECTOR_DOWN_FIRST = "docker compose --profile gazebo --profile detector down  # logical に戻す前に、検出器ごと止める"
+LOGICAL_AGAIN = "SIM_KIND=gazebo docker compose --profile gazebo up -d    # logical で起動し直す"
 DETECTOR_BUILD = "docker compose --profile detector build detector"
 GAZEBO_BUILDS = ("docker build -t go2-voice-ltl-gazebo:patch-0005 -f docker/Dockerfile.gazebo docker",
                  "docker compose --profile gazebo build gazebo")
@@ -92,6 +96,8 @@ def test_commands_for_the_household_room_and_the_detector():
         for build in GAZEBO_BUILDS:
             assert build in doc, build
         assert doc.index(GAZEBO_BUILDS[0]) < doc.index(GAZEBO_BUILDS[1])
+        assert DETECTOR_DOWN_FIRST in doc and LOGICAL_AGAIN in doc
+        assert doc.index(DETECTOR_UP) < doc.index(DETECTOR_DOWN_FIRST) < doc.index(LOGICAL_AGAIN)
 
 
 def test_the_real_robot_path_is_unchanged_in_the_docs():
@@ -116,6 +122,12 @@ def test_the_specs_point_to_each_other_and_carry_the_measured_room():
 # The voice plan's recording step names the agent temp folder twice on one line (line 941). It was on main before this
 # work and is left alone: the one known exception, pinned by its count so that a new temp path there still fails.
 KNOWN_TEMP = {"docs/superpowers/plans/2026-11-04-voice-ltl-go2.md": 2}
+
+
+def test_no_doc_keeps_a_fill_marker():
+    """Task 4.1 left `<!-- fill:… -->` markers for numbers still being measured (H6, then H6b); all are filled."""
+    for path in [README, *sorted((ROOT / "docs").rglob("*.md"))]:
+        assert "<!-- fill:" not in text(path), path.relative_to(ROOT).as_posix()
 
 
 def test_no_doc_carries_a_home_or_temp_path():

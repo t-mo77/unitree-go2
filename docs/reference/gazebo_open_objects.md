@@ -362,6 +362,9 @@ TD -m "not slow" tests/test_detector_geometry.py tests/test_detector_tracker.py 
   出た注意は torch の `torch.jit.load` の FutureWarning（ultralytics が `mobileclip_blt.ts` を読むところ）だけで、結果には関わらない。
 - 2 つ目（14:11:56〜14:12:03）：**192 passed**（5.99 秒）。飛ばしたもの・選ばれなかったものはない。numpy 2.5.4 の上で、幾何・追跡・
   検出の核・正解の検出器・記録と流し直しの道具のテストが通った。
+- 後の確かめ（Task 4.1 の注、2026-11-19）：検出器のイメージ（numpy 2.5.4）での幾何・追跡・検出の核・正解の検出器・記録と流し直しの道具のテスト
+  （H2 の 2 つ目の行）を、最後の review の後の木（`objects2/final-fix7`、2026-11-19）でもう一度流して **249 passed**（74.9 秒）。H2（`ced4e87`）の
+  192 から、R-PF3・R-PF3b・R-PF3c・R-H6a の固定が増えた分（最後の review の tests-1）。
 
 ### 変えたもの
 
