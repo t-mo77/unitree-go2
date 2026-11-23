@@ -66,7 +66,8 @@ from voice_ltl.automata import SpecError, Synthesis, synthesize
 from voice_ltl.diagrams import MAX_DRAW_STATES, render_focus_svg, render_svg, too_big_svg
 from voice_ltl.grid import GridError, GridState, GridWorld, grid_world
 from voice_ltl.grid_executor import FLOWS_INTO_FORWARD, GridExecutor, GridStep, flows_on
-from voice_ltl.llm import LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, _is_secretish
+from voice_ltl.llm import (LLM, MSG_REDACTED, ClaudeCLI, CodexCLI, LLMError, OpenRouterLLM,
+                           _is_secretish)
 # objects.py has the copy (P3); MSG_TOO_SPREAD and the others of grid_world come as a GridError
 from voice_ltl.objects import (MSG_NO_POSE, MSG_POSITION_DRIFT, NO_PATH_REASON, Obj, Scene, formula_atoms,
                                formula_object_props, parse_rows, snapshot_rows)
@@ -310,11 +311,13 @@ def _sup_highlight(rt: Runtime) -> tuple[int, list[tuple[int, str]]]:
 
 
 def _backend(llm: LLM) -> str | None:
-    """Which LLM translates: "claude" or "codex" (None for a test's FakeLLM)."""
+    """Which LLM translates: "claude", "codex" or "openrouter" (None for a test's FakeLLM)."""
     if isinstance(llm, ClaudeCLI):
         return "claude"
     if isinstance(llm, CodexCLI):
         return "codex"
+    if isinstance(llm, OpenRouterLLM):
+        return "openrouter"
     return None
 
 

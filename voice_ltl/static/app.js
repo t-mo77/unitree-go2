@@ -24,7 +24,7 @@ const STATUS = {  // Session status -> the pill under the talk button
 const TAB_JA = { FOCUS: "計画の道", SUP: "監督器", TRIMMED: "trim 後", SPEC: "要求", PLANT: "環境" };
 // snapshot link_kind -> [the mode (hidden on a phone), what the page drives]
 const LINK_JA = { fake: ["シミュレーション", "にせ Go2"], gazebo: ["シミュレーション", "Gazebo"], robot: [null, "実機"] };
-const LLM_JA = { claude: "Claude", codex: "Codex" };  // snapshot llm_backend
+const LLM_JA = { claude: "Claude", codex: "Codex", openrouter: "OpenRouter" };  // snapshot llm_backend
 const STEP_STATE = { done: "done", current: "now", pending: "todo" };  // snapshot steps -> CSS
 const LOGIN_TITLE = "LLM にログインできていません";  // the notice's title (its message is longer)
 // A recording shorter than this, or a smaller one (a webm of its header alone), holds no
