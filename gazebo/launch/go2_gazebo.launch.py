@@ -39,7 +39,10 @@ SET_CAMERA = ("for i in $(seq 60); do gz service -s /gui/move_to/pose --reqtype 
 def generate_launch_description() -> LaunchDescription:
     playground = get_package_share_directory("gz_quadruped_playground")
     world_sdf = os.path.join(playground, "worlds", "default.sdf")
-    robot_description = xacro.process_file(str(XACRO)).toxml()
+    # GO2_SIM_CAMERA=1：追尾の画面に出す画像のカメラを 1 台付ける（描画の分だけ重くなる）
+    front_camera = os.environ.get("GO2_SIM_CAMERA", "").strip() == "1"
+    robot_description = xacro.process_file(
+        str(XACRO), mappings={"FRONT_CAMERA": "true" if front_camera else "false"}).toxml()
     sim_time = {"use_sim_time": True}
 
     # Gazebo（サーバーと画面）。-r：すぐ動かし始める。gui:=false なら -s（サーバーだけ）
@@ -75,7 +78,7 @@ def generate_launch_description() -> LaunchDescription:
             f"/model/{MODEL}/odometry@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             f"/world/{WORLD}/create@ros_gz_interfaces/srv/SpawnEntity",
             f"/world/{WORLD}/remove@ros_gz_interfaces/srv/DeleteEntity",
-        ],
+        ] + (["/gazebo/front_camera/image@sensor_msgs/msg/Image[gz.msgs.Image"] if front_camera else []),
         parameters=[sim_time])
 
     # 実機と同じ窓口（/api/sport/request・/sportmodestate・/utlidar/cloud）、/go2/objects と /sim/*

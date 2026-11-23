@@ -18,9 +18,11 @@
   </header>
   <main class="page">
     <section class="card" aria-label="UWB リモコン追尾の操作">
-      <p class="empty-text">Go2 を立たせ、ペアリング済みの UWB 追従用リモコンを身につけてください。周囲を空け、すぐにリモコンで停止できる状態で始めてください。</p>
-      <div>
+      <p id="follow-mode" class="label">追尾のやり方: 確認中…</p>
+      <p id="follow-intro" class="empty-text">Go2 を立たせ、ペアリング済みの UWB 追従用リモコンを身につけてください。周囲を空け、すぐにリモコンで停止できる状態で始めてください。</p>
+      <div class="follow-buttons">
         <button id="follow-start" type="button" class="button">リモコン追尾を開始</button>
+        <button id="sim-stand" type="button" class="button" hidden>Go2 を立たせる（シミュレーション）</button>
       </div>
       <p id="follow-status" class="empty-text" role="status">停止中</p>
     </section>
@@ -28,16 +30,27 @@
       <h2 id="follow-map-title" class="label">Go2 と UWB リモコンの位置</h2>
       <figure class="map-figure">
         <div class="map-box">
-          <canvas id="follow-map" class="map" role="img" aria-label="Go2 とリモコンの位置を上から見た図"></canvas>
+          <canvas id="follow-map" class="map follow-map" role="img" aria-label="Go2 とリモコンの位置を上から見た図"></canvas>
         </div>
-        <figcaption>矢印は Go2 の向き、青い点は UWB の推定位置です。座標は Go2 のオドメトリ基準です。</figcaption>
+        <figcaption>矢印は Go2 の向き、青い点は UWB の推定位置です。座標は Go2 のオドメトリ基準です。<span id="cloud-hint" hidden>小さな四角は LiDAR の点群で見つけた障害物です（赤: Go2 から 0.9 m 以内、橙: 1.5 m 以内、灰: それより遠い）。緑の矢印は、追尾中に Go2 が進もうとしている向きです。</span><span id="sim-hint" hidden>シミュレーションでは、地図をクリックするかドラッグするとリモコンが動きます（白い丸が本当の位置）。</span></figcaption>
       </figure>
       <dl class="facts">
         <div><dt>Go2</dt><dd id="go2-position">待機中</dd></div>
         <div><dt>リモコン</dt><dd id="uwb-position">待機中</dd></div>
         <div><dt>距離・相対方向</dt><dd id="uwb-relative">—</dd></div>
         <div><dt>UWB チャンネル</dt><dd id="uwb-channel">—</dd></div>
+        <div id="obstacle-row" hidden><dt>障害物（点群）</dt><dd id="obstacle-info">—</dd></div>
       </dl>
+    </section>
+    <section id="camera-card" class="card" aria-labelledby="camera-title" hidden>
+      <h2 id="camera-title" class="label">Go2 の前のカメラ</h2>
+      <figure class="map-figure">
+        <div class="map-box camera-box">
+          <img id="camera-view" class="camera-view" alt="Go2 の前のカメラの映像" hidden>
+          <p id="camera-empty" class="camera-empty">映像を待っています…</p>
+        </div>
+        <figcaption id="camera-caption">Go2 の前のカメラの最新の映像です。</figcaption>
+      </figure>
     </section>
   </main>
 </body>

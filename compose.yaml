@@ -35,6 +35,23 @@ services:
       GO2_WAIT_READY_S: "${GO2_WAIT_READY_S:-}"
     command: python3 -m voice_ltl.server
 
+  # UWB remote tracking page (voice_ltl/follow.py) with a fake UWB remote, in place of app.
+  # It drives the same Go2, so stop app first: docker compose stop app
+  #   docker compose --profile fake --profile follow up sim follow           (fake Go2)
+  #   SIM_KIND=gazebo docker compose --profile follow up -d follow           (Gazebo already up)
+  follow:
+    <<: *go2
+    profiles: ["follow"]
+    ports:
+      - "127.0.0.1:${GO2_UI_PORT:-8810}:8000"
+    environment:
+      SIM: "1"
+      GO2_UI_PORT: "${GO2_UI_PORT:-8810}"
+      SIM_KIND: "${SIM_KIND:-fake}"
+      GO2_WAIT_READY_S: "${GO2_WAIT_READY_S:-}"
+      FOLLOW_CONTROL: own
+    command: python3 -m voice_ltl.follow
+
   sim:
     <<: *go2
     profiles: ["fake"]
@@ -58,6 +75,9 @@ services:
     # 0001-0005 from this tree and put that image under the given tag.
     image: ${GO2_GAZEBO_IMAGE:-go2-voice-ltl-gazebo:patch-0005}
     init: true
+    environment:
+      # 1: add a front image camera for the tracking page (480x270, 5 Hz; slows the simulation)
+      GO2_SIM_CAMERA: "${GO2_SIM_CAMERA:-0}"
     volumes:
       - ./:/work
       - /dev/null:/work/env.txt:ro   # the simulator never needs the token file

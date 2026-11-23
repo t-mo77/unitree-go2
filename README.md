@@ -69,6 +69,37 @@ Go2 本体の障害物回避を有効にして立たせ、UWB 追従用リモコ
 対応するか目視で確認できます。青い点は Go2 の UWB 測距と方位から求めた推定位置です。
 UWB チャンネルはリモコンの個体識別子ではありません。
 
+追尾のやり方は `env.txt` の `FOLLOW_CONTROL` で選びます。
+
+- `utrack`（実機の既定）：Go2 本体の UTrack に任せます。
+- `own`：このプログラムが UWB の距離と方向から Move を送り、リモコンの方を向いて
+  1 m 手前まで歩きます（前進は最大 0.4 m/s、後退・横歩きはしません）。間に障害物があれば、
+  LiDAR の点群から通れる向きを選んで回り込みます（`voice_ltl/avoid.py`）。実機では Move を
+  本体の障害物回避サービス経由で送ります。**`own` はまだ実機で試していません。**
+
+#### シミュレーションで追尾を試す
+
+シミュレーションには UTrack がないので、`own` だけで動きます。にせ UWB リモコンが
+同じプロセスで動き、画面の地図をクリック・ドラッグするとリモコンが動きます。
+「Go2 を立たせる（シミュレーション）」で立たせてから「リモコン追尾を開始」を押します。
+
+```bash
+bash scripts/run_local.sh follow-fake                                  # Linux 直接（偽 Go2）
+docker compose stop app                                                # Mac：操作画面のアプリを止めてから
+docker compose --profile fake --profile follow up sim follow           # Mac：偽 Go2
+SIM_KIND=gazebo docker compose --profile follow up -d follow           # Mac：Gazebo を起動済みのとき
+```
+
+追尾の画面には Go2 の前のカメラの映像も出ます。
+
+- Gazebo：起動するときに `GO2_SIM_CAMERA=1` を付けると、前のカメラ（480×270・5 Hz）が付きます。
+  描画の分だけシミュレーションが遅くなります（手元の Mac で RTF 0.78 → 0.6 程度）。偽の Go2 には映像がありません。
+  ```bash
+  GO2_SIM_CAMERA=1 SIM_KIND=gazebo docker compose --profile gazebo up -d gazebo
+  ```
+- 実機：Go2 の動画サービス（videohub の GetImageSample）から JPEG を取り出して表示します。
+  画面を開いている間だけ取りに行きます。**まだ実機で試していません。**
+
 ## 1. 準備（Mac）
 
 Docker Desktop を起動してから：

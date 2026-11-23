@@ -24,7 +24,7 @@ def environment(mode, original=None):
     # このPCのCUDA 13とWhisperのCUDA 12依存を混在させず、既定はCPUで動かす。
     env.setdefault("WHISPER_DEVICE", "cpu")
     env["RMW_IMPLEMENTATION"] = "rmw_cyclonedds_cpp"
-    if mode in ("fake", "test"):
+    if mode in ("fake", "follow-fake", "test"):
         # HumbleはROS_LOCALHOST_ONLY=1だとloをXMLに追加するため、明示指定と重複する。
         # localhostへの制限は下のCycloneDDS XMLで行う。
         env.update(SIM="1", SIM_KIND="fake", ROS_DOMAIN_ID="73", ROS_LOCALHOST_ONLY="0",
@@ -85,14 +85,19 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", default="fake",
-                        choices=("fake", "robot", "follow", "check", "sensors", "test"))
+                        choices=("fake", "robot", "follow", "follow-fake", "check", "sensors", "test"))
     args = parser.parse_args()
     processes = []
     try:
         env = environment(args.mode)
         if args.mode == "test":
             command = [sys.executable, "-m", "pytest", "-q", "-m", "not slow", "tests", "nl_control/tests"]
-        elif args.mode == "follow":
+        elif args.mode in ("follow", "follow-fake"):
+            if args.mode == "follow-fake":
+                processes.append(subprocess.Popen(
+                    [sys.executable, "-m", "sim.fake_go2"], env=env, cwd=ROOT,
+                    start_new_session=True))
+                print("偽Go2とにせUWBリモコン: localhostのみ・ROSドメイン73。", flush=True)
             command = [sys.executable, "-m", "voice_ltl.follow"]
         elif args.mode in ("check", "sensors"):
             module = "robot_check" if args.mode == "check" else "sensor_check"
