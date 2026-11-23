@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Go2 UWB リモコン追尾</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/follow.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 class="brand-name">Go2 UWB リモコン追尾</h1>
+      <button id="follow-stop" type="button" class="stop-button">止める</button>
+    </div>
+  </header>
+  <main class="page">
+    <section class="card" aria-label="UWB リモコン追尾の操作">
+      <p class="empty-text">Go2 を立たせ、ペアリング済みの UWB 追従用リモコンを身につけてください。周囲を空け、すぐにリモコンで停止できる状態で始めてください。</p>
+      <div>
+        <button id="follow-start" type="button" class="button">リモコン追尾を開始</button>
+      </div>
+      <p id="follow-status" class="empty-text" role="status">停止中</p>
+    </section>
+    <section class="card" aria-labelledby="follow-map-title">
+      <h2 id="follow-map-title" class="label">Go2 と UWB リモコンの位置</h2>
+      <figure class="map-figure">
+        <div class="map-box">
+          <canvas id="follow-map" class="map" role="img" aria-label="Go2 とリモコンの位置を上から見た図"></canvas>
+        </div>
+        <figcaption>矢印は Go2 の向き、青い点は UWB の推定位置です。座標は Go2 のオドメトリ基準です。</figcaption>
+      </figure>
+      <dl class="facts">
+        <div><dt>Go2</dt><dd id="go2-position">待機中</dd></div>
+        <div><dt>リモコン</dt><dd id="uwb-position">待機中</dd></div>
+        <div><dt>距離・相対方向</dt><dd id="uwb-relative">—</dd></div>
+        <div><dt>UWB チャンネル</dt><dd id="uwb-channel">—</dd></div>
+      </dl>
+    </section>
+  </main>
+</body>
+</html>

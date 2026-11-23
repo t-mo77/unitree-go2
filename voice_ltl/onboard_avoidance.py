@@ -95,7 +95,7 @@ class OnboardAvoidance:
             with self._lock:
                 self._pending.pop(identity, None)
 
-    def prepare(self):
+    def verify_enabled(self):
         end = time.monotonic() + 3
         # 1つは自分の監視用の購読者。
         while self.pub.get_subscription_count() <= 1 and time.monotonic() < end:
@@ -105,6 +105,9 @@ class OnboardAvoidance:
         state = self._call(SWITCH_GET, {})
         if state.get("enable") is not True:
             raise RuntimeError("Go2本体の障害物回避が無効です。Unitreeアプリで有効にしてから起動してください。")
+
+    def prepare(self):
+        self.verify_enabled()
         self.guard.freeze(self.node)
         if self.guard.conflicts(self.node):
             raise RuntimeError("Go2の障害物回避APIにほかの操作元があります。")

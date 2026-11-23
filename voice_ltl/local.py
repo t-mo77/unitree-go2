@@ -41,6 +41,8 @@ def environment(mode, original=None):
         env.setdefault("GO2_OBSTACLE_AUTHORITY", "go2")
         if mode == "sensors":
             env["GO2_OBSTACLE_AUTHORITY"] = "pc"
+        if mode == "follow":
+            env["GO2_OBSTACLE_AUTHORITY"] = "go2"
         env.setdefault("GO2_LIDAR_PROFILE", "go2")
         iface = (env.get("GO2_IFACE") or "").strip()
         if not iface:
@@ -83,13 +85,15 @@ def stop(process):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", nargs="?", default="fake",
-                        choices=("fake", "robot", "check", "sensors", "test"))
+                        choices=("fake", "robot", "follow", "check", "sensors", "test"))
     args = parser.parse_args()
     processes = []
     try:
         env = environment(args.mode)
         if args.mode == "test":
             command = [sys.executable, "-m", "pytest", "-q", "-m", "not slow", "tests", "nl_control/tests"]
+        elif args.mode == "follow":
+            command = [sys.executable, "-m", "voice_ltl.follow"]
         elif args.mode in ("check", "sensors"):
             module = "robot_check" if args.mode == "check" else "sensor_check"
             command = [sys.executable, "-m", f"voice_ltl.{module}"]
