@@ -200,3 +200,22 @@ def test_climb_two_meters_end_to_end(tmp_path):
 def test_gait_steps_are_named_on_the_page():
     assert ACTION_JA["stairs_gait"] != "stairs_gait" and ACTION_JA["normal_gait"] != "normal_gait"
     assert json.dumps(ACTION_JA, ensure_ascii=False)
+
+
+# ---- キーボードで試す（scripts/keyboard_velocity.py。実機の Linux の PC で、アプリなしで） ----
+
+def test_keyboard_sends_the_same_classic_walk():
+    from scripts import keyboard_velocity as kv
+    assert kv.CLASSIC_WALK == CLASSIC_WALK
+    assert kv.GAIT_KEYS == {"3": True, "4": False}
+    assert not set(kv.GAIT_KEYS) & (set(kv.VELOCITY_KEYS) | {"1", "2", " ", "z"})
+    assert " 3 " in kv.HELP and " 4 " in kv.HELP and "ClassicWalk" in kv.HELP
+
+
+def test_keyboard_names_the_official_states():
+    from scripts import keyboard_velocity as kv
+    assert "ClassicWalk" in kv.state_line(2010) and "Agile" in kv.state_line(100)
+    assert kv.state_line(9999) == "[STATE] error_code 9999"
+    # 名前を付けた番号は、1002（StandUp 直後の歩けない立ち方）を除いて、actions.py の公式の表にある
+    from go2_nl_control.actions import UNKNOWN
+    assert all(state_from_error_code(c) != UNKNOWN for c in kv.STATE_NAMES if c != 1002)

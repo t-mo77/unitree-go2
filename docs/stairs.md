@@ -43,7 +43,49 @@ Go2 に階段を登らせる（降りさせる）ときは、Unitree が用意�
       "F(stairs_gait & X F(moved_forward & X F(moved_forward & X F(normal_gait & X F(turned_left & X F lying)))))"
   ```
 
-## 実機で試す手順
+## キーボードで試す（実機、アプリなし）
+
+登るところだけを試すなら、これがいちばん短い道です。アプリ（ページ・LLM・監督器）を使わずに、`scripts/keyboard_velocity.py` から公式の窓口を直接送ります。
+
+- キー 3 で `ClassicWalk(true)`、キー 4 で `ClassicWalk(false)` を送ります（`/api/sport/request`、api_id 2049）。
+- W を押している間だけ、前へ 0.3 m/s の `Move`（1008）を送ります。離すと 0.5 秒で `StopMove` を送って止まります。
+- このアプリの LiDAR の止まる仕組みも、本体の障害物よけの窓口（`/api/obstacles_avoid`）も通りません。
+- 画面には、`/sportmodestate` の `error_code` が変わるたびに `[STATE] error_code 2010 階段も歩ける歩き方 (ClassicWalk)` のような 1 行が出ます。
+- 偽の Go2 で確かめたこと（2026-11-25）：1 → 3 → W を 2 秒 → 4 で、`error_code` は 1004 → 1002 → 1013 → 2010（歩いている間も 2010）→ 100 と変わりました。実機では、まだ確かめていません。
+
+**用意：** Go2 と有線でつないだ Linux の PC（[real_robot.md](real_robot.md) の §1〜§3 と、§6 の `robot_check`）。ページ（サーバー）と `run_formula` は止めておきます（`/api/sport/request` の送り手が 2 つになります）。リモコンを持った人がそばにいて、すぐダンピング（Damp）にできるようにします。階段の下と横に人がいないようにします。
+
+**起動：** Docker なしなら、PC の端末で：
+
+```bash
+source ~/unitree_ros2/setup.sh
+python3 scripts/keyboard_velocity.py
+```
+
+Docker なら：
+
+```bash
+docker compose -f compose.robot.yaml run --rm --no-deps app python3 scripts/keyboard_velocity.py
+```
+
+止まるのが遅いと感じたら、キーのリピートを速くします（`xset r rate 200 30`。キーボードをつないだ PC のデスクトップの端末で）。
+
+**手順：**
+
+1. **版を確かめる：** Unitree のアプリで、Go2 のソフトが V1.1.6 以上かを確かめます。V1.1.6 より前なら、ここで止めます。
+2. **平らな床で：** 前を 2 m 以上空けて、次を順に押します。出た `error_code` を書き留めます。
+   1. 1（立つ）→ 1013 が出る。
+   2. 3（階段の歩き方）→ 2010 が出るか。
+   3. W を 2 秒ほど押して離す → 歩くか。歩いている間に別の値が出ないか。
+   4. 4（ふだんの歩き方）→ 100 が出るか。
+   5. W を少し押す → ふだんどおり歩くか。
+3. **低い段 1 つ：** 高さ 5〜10 cm ほどの、ずれない台を、Go2 の前 0.5 m に置きます。A・D・Q・E でまっすぐ向けてから、3 → W を押し続けます。後ろ足まで台に乗ったら離します。次を書き留めます。
+   - 台の前で止まって進まなかったか（本体の障害物よけが、`Move`（1008）でも効くのかは、わかっていません）。
+   - 登れたか。そのときの `error_code`。
+4. **本物の階段：** 段の高さが 16 cm 以下の階段で、いちばん下の段の前に、まっすぐ向けて立たせます。3 → W で、最初は 2〜3 段で離して止まり、様子を見ます。段の上で止まったまま立っていられるかは、わかっていません。うまくいったら、上の平らなところまで登って離し、4 で戻します。
+5. **終わり：** 2 で伏せるか、Z で終了します。3 のまま終えると「階段も歩ける歩き方のままです」と出ます。そのときは、もう一度起動して 4 を押します。
+
+## 実機で試す手順（ページから話す）
 
 [real_robot.md](real_robot.md) の準備と「動かす前の確かめ」（`robot_check`、姿勢の値、LiDAR）を済ませてから始めます。以下のコマンドは Docker の形です。Docker なしで動かすときは `bash scripts/run_local.sh robot` でページを開き、`ros2` の道具は PC の ROS 2 で動かします。
 

@@ -5,6 +5,8 @@
     python3 keyboard_velocity.py
 
 - 起動すると操作キーの一覧が出る。まず 1 で立たせてから W/A/S/D などで歩かせる。
+- 階段は、立ってから 3 で公式の階段も歩ける歩き方 (ClassicWalk) にして、W で登る。
+  登り終えたら 4 でふだんの歩き方に戻す (docs/stairs.md の「キーボードで試す」)。
 - 速度キーは押している間だけ動き、離すと止まる。
   反応が鈍い・止まるのが遅いときは、キーのリピートを速くする: xset r rate 200 30
   (キーボードをつないでいる側の PC のデスクトップのターミナルで実行する)
@@ -14,6 +16,7 @@
 - /api/sport/request に Request を publish すると Go2 が動く (High Level の Sport API)。
   どの動きをするかは header.identity.api_id で選び、速度などは parameter に JSON で入れる。
 - キーが押されている間、Move を RATE [Hz] で送り続け、離したら StopMove を送る。
+- /sportmodestate の error_code (Go2 の今の状態の番号) が変わるたびに 1 行出す。
 """
 
 import json
@@ -24,8 +27,10 @@ import termios  # Linux 専用 (Windows では動かない)
 import time
 
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 from unitree_api.msg import Request
+from unitree_go.msg import SportModeState
 
 # === 設定 (ここを変えると速さなどを変えられる) ===========================
 SPEED = (0.3, 0.5, 0.8)  # キーを押したときの [前後 m/s, 左右 m/s, 旋回 rad/s]
@@ -35,6 +40,7 @@ STANDUP_WAIT = 3.0  # StandUp を送ってから BalanceStand を送るまでの
 # ======================================================================
 
 TOPIC = "/api/sport/request"
+STATE_TOPIC = "/sportmodestate"
 
 # api_id (動きの番号)
 BALANCE_STAND = 1002  # 歩ける立ち方にする (StandUp のあとに送る)
@@ -42,6 +48,18 @@ STOP_MOVE = 1003  # 移動を止める
 STAND_UP = 1004  # 立つ (関節を固めた立ち方。このままでは歩けない)
 STAND_DOWN = 1005  # 伏せる
 MOVE = 1008  # 速度で動く。parameter = {"x": 前後 [m/s], "y": 左右 [m/s], "z": 旋回 [rad/s]}
+CLASSIC_WALK = 2049  # 公式の ClassicWalk (Go2 のソフト V1.1.6 以上)。parameter = {"data": true} で
+                     # 階段も歩ける歩き方 (error_code 2010)、{"data": false} でやめる (Agile、error_code 100)
+
+# キー → ClassicWalk の data
+GAIT_KEYS = {"3": True, "4": False}
+
+# error_code → 表示 (公式の Motion Services Interface V2.0 の表から。表に無い番号は番号だけ出す)
+STATE_NAMES = {
+    1001: "伏せ (Damp)", 1002: "立ち (StandUp。このままでは歩けない)", 1004: "伏せ", 2006: "伏せ",
+    1007: "座り", 1013: "立ち (歩ける)", 1015: "歩き", 1016: "走り", 1017: "歩き (Endurance)",
+    2010: "階段も歩ける歩き方 (ClassicWalk)", 100: "ふだんの歩き方 (Agile)",
+}
 
 # キー → (前後, 左右, 旋回) の向き。+ が 前 / 左 / 左回り
 VELOCITY_KEYS = {
@@ -61,6 +79,8 @@ HELP = f"""\
 ================================================================
  1          : 立つ (StandUp → BalanceStand)。歩く前に押す
  2          : 伏せる (StandDown)。終了する前に押しておく
+ 3          : 階段も歩ける歩き方にする (ClassicWalk オン)。立っているときに押す
+ 4          : ふだんの歩き方に戻す (ClassicWalk オフ)
  W / S (↑↓) : 前進 / 後退      {SPEED[0]:.2f} m/s
  A / D (←→) : 左 / 右          {SPEED[1]:.2f} m/s
  Q / E      : 左回り / 右回り  {SPEED[2]:.2f} rad/s
@@ -94,6 +114,16 @@ class Go2:
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         self.node = rclpy.create_node("go2_keyboard_velocity")
         self.pub = self.node.create_publisher(Request, TOPIC, 10)
+        self.error_code = None  # 最後に届いた /sportmodestate の error_code (まだ届いていなければ None)
+        self.node.create_subscription(SportModeState, STATE_TOPIC, self._on_state, qos_profile_sensor_data)
+
+    def _on_state(self, msg):
+        self.error_code = int(msg.error_code)
+
+    def receive(self):
+        """届いている /sportmodestate を読む (待たない)。"""
+        for _ in range(10):
+            rclpy.spin_once(self.node, timeout_sec=0.0)
 
     def wait_connected(self, timeout=5.0):
         """Go2 が見つかるまで待つ (見つかる前に送ると届かないことがある)。"""
@@ -117,6 +147,12 @@ class Go2:
     def close(self):
         self.node.destroy_node()
         rclpy.try_shutdown()
+
+
+def state_line(code):
+    """error_code を表示する 1 行。"""
+    name = STATE_NAMES.get(code)
+    return f"[STATE] error_code {code}" + (f" {name}" if name else "")
 
 
 def velocity(last_pressed, now):
@@ -157,13 +193,15 @@ def main():
 
     last_pressed = {}  # 速度キー → 最後に届いた時刻
     moving = False  # いま Move を送っているか (止まったときに StopMove を 1 回だけ送るため)
+    shown_code = None  # 最後に表示した error_code
+    classic = False  # 最後に送った ClassicWalk が true か (終わるときの注意のため)
     try:
         while True:
             now = time.time()
             for key in read_keys(fd):
                 if key == "z":
                     raise KeyboardInterrupt
-                if key in ("1", "2") and moving:  # 歩いている途中なら、先に止める
+                if key in ("1", "2", *GAIT_KEYS) and moving:  # 歩いている途中なら、先に止める
                     go2.send(STOP_MOVE)
                     moving = False
                 if key == "1":
@@ -176,10 +214,21 @@ def main():
                     last_pressed.clear()
                     print("\r[GO2] 伏せます (StandDown)")
                     go2.send(STAND_DOWN)
+                elif key in GAIT_KEYS:
+                    last_pressed.clear()
+                    classic = GAIT_KEYS[key]
+                    print("\r[GO2] " + ("階段も歩ける歩き方にします (ClassicWalk オン)" if classic
+                                         else "ふだんの歩き方に戻します (ClassicWalk オフ)"))
+                    go2.send(CLASSIC_WALK, {"data": classic})
                 elif key == " ":
                     last_pressed.clear()
                 elif key in VELOCITY_KEYS:
                     last_pressed[key] = now
+
+            go2.receive()
+            if go2.error_code is not None and go2.error_code != shown_code:
+                shown_code = go2.error_code
+                print("\r" + state_line(shown_code) + "            ")
 
             v = velocity(last_pressed, time.time())
             if any(v):
@@ -201,6 +250,8 @@ def main():
         try:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             print("\n[STOP] StopMove を送って終了しました。立ったままなら、リモコンで伏せさせてください")
+            if classic:
+                print("[注意] 階段も歩ける歩き方のままです。戻すときは、もう一度起動して 4 を押してください")
         except (termios.error, OSError):
             pass
         go2.close()
