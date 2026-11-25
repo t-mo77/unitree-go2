@@ -121,6 +121,10 @@ class SimGo2:
     def posture(self) -> str:
         return state_from_error_code(self.error_code)
 
+    @property
+    def velocity(self) -> tuple[float, float, float]:
+        return self._vel
+
     # ---- 指令 ----
     def handle(self, api_id: int, parameter: str, now: float) -> None:
         if api_id == STOP_MOVE:                  # いつでも受け付ける（安全側）

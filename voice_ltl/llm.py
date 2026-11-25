@@ -1,4 +1,4 @@
-"""LLM の窓口。Claude CLI / Codex CLI / テスト用の偽物。
+"""LLM の窓口。Claude CLI / Codex CLI / OpenRouter（HTTP）/ テスト用の偽物。
 
 翻訳役の CLI に、トークンや作業のファイルを触らせない（SEC-3、Ruling R37）:
 - 空の一時フォルダ（/work の外）を作業場所にして起動する。
@@ -97,8 +97,9 @@ def _validated(value, schema: dict) -> dict:
 
 
 # 子のプロセスに渡さない、もう一方の LLM の秘密（環境変数の名前の頭）
-_CLAUDE_SECRETS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_")   # Codex に渡さない
-_CODEX_SECRETS = ("OPENAI_", "CODEX_")                         # Claude に渡さない
+_OPENROUTER_SECRETS = ("OPENROUTER_",)                        # どちらの CLI にも渡さない
+_CLAUDE_SECRETS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_", *_OPENROUTER_SECRETS)  # Codex に渡さない
+_CODEX_SECRETS = ("OPENAI_", "CODEX_", *_OPENROUTER_SECRETS)   # Claude に渡さない
 
 # Codex に道具を使わせない（codex-cli 0.166.0 の `codex features list` と
 # `codex debug prompt-input` で確かめた）。shell_tool・unified_exec を切るとシェル
@@ -196,6 +197,52 @@ class CodexCLI:
         return _validated(out, schema)
 
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+_FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)
+
+
+def _post(url: str, headers: dict, body: dict, timeout_s: float):
+    import httpx   # サーバーを動かすときだけ要る
+    try:
+        return httpx.post(url, headers=headers, json=body, timeout=timeout_s)
+    except httpx.TimeoutException:
+        raise LLMError(_msg_timeout(timeout_s)) from None
+    except httpx.HTTPError:
+        raise LLMError("OpenRouter につながりません（インターネットの経路を確かめてください）") from None
+
+
+class OpenRouterLLM:
+    """OpenRouter の Chat Completions を HTTP で呼ぶ。道具は渡さず、答えは JSON スキーマで縛る。"""
+
+    def __init__(self, api_key: str, model: str, timeout_s: float = 60.0, post=_post,
+                 url: str = OPENROUTER_URL):
+        self.api_key, self.model, self.timeout_s = api_key, model, timeout_s
+        self.post, self.url = post, url
+
+    def __call__(self, prompt: str, schema: dict) -> dict:
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_schema",
+                                "json_schema": {"name": "answer", "strict": False, "schema": schema}},
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "X-Title": "go2-voice-ltl"}
+        resp = self.post(self.url, headers, body, self.timeout_s)
+        if resp.status_code in (401, 403):
+            raise LLMError("OpenRouter の API キーが使えません（env.txt の OPENROUTER_API_KEY）")
+        if resp.status_code != 200:
+            log.warning("OpenRouter HTTP %s: %s", resp.status_code, _redacted_head(resp.text))
+            raise LLMError(MSG_UNREADABLE)
+        try:
+            content = resp.json()["choices"][0]["message"]["content"]
+            m = _FENCE.match(content)
+            out = json.loads(m.group(1) if m else content)
+        except (TypeError, ValueError, KeyError, IndexError):
+            log.warning("OpenRouter reply: %s", _redacted_head(resp.text))
+            raise LLMError(MSG_UNREADABLE) from None
+        return _validated(out, schema)
+
+
 class FakeLLM:
     """テスト用。replies を順に返す（Exception は raise する）。"""
 
@@ -223,4 +270,12 @@ def make_llm(env: Mapping[str, str]) -> LLM:
         return ClaudeCLI(model=model)
     if backend == "codex":
         return CodexCLI(model=model)
-    raise ValueError(f"LLM_BACKEND が不正です: {backend}（claude か codex）")
+    if backend == "openrouter":
+        key = (env.get("OPENROUTER_API_KEY") or "").strip()
+        if not key:
+            raise ValueError("env.txt の OPENROUTER_API_KEY が空です")
+        if not model:
+            raise ValueError("OpenRouter では env.txt の LLM_MODEL にモデル名を書いてください"
+                             "（例：anthropic/claude-sonnet-4.5）")
+        return OpenRouterLLM(api_key=key, model=model)
+    raise ValueError(f"LLM_BACKEND が不正です: {backend}（claude・codex・openrouter）")

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from voice_ltl import llm as llm_module
-from voice_ltl.llm import ClaudeCLI, CodexCLI, FakeLLM, LLMError, make_llm
+from voice_ltl.llm import ClaudeCLI, CodexCLI, FakeLLM, LLMError, OpenRouterLLM, make_llm
 
 REPO = Path(__file__).resolve().parents[1]   # /work in the container
 # test-only fake values (never real secrets)
@@ -18,6 +18,7 @@ FAKE_ENV = {
     "OPENAI_BASE_URL": "http://openai.invalid",
     "CODEX_API_KEY": "fake-codex-key",
     "CODEX_HOME": "/fake/codex-home",
+    "OPENROUTER_API_KEY": "fake-openrouter-key",
 }
 
 SCHEMA = {
@@ -273,3 +274,72 @@ def test_a_reply_without_well_formed_substitutions_is_unreadable(reply):
     good = {**reply, "substitutions": [{"said": "走って", "as": "前へ歩く"}]}
     run, _ = fake_run(json.dumps({"is_error": False, "structured_output": good}))
     assert ClaudeCLI(runner=run)("p", PROMPT_SCHEMA) == good
+
+
+class _Resp:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code, self._payload, self.text = status_code, payload, text
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json")
+        return self._payload
+
+
+def _openrouter(content=None, status=200, payload=None):
+    calls = []
+
+    def post(url, headers, body, timeout_s):
+        calls.append((url, headers, body, timeout_s))
+        p = payload if payload is not None else {"choices": [{"message": {"content": content}}]}
+        return _Resp(status, p, "body")
+    return OpenRouterLLM(api_key="fake-key", model="vendor/model", post=post), calls
+
+
+def test_make_llm_openrouter():
+    llm = make_llm({"LLM_BACKEND": "openrouter", "OPENROUTER_API_KEY": "k", "LLM_MODEL": "a/b"})
+    assert isinstance(llm, OpenRouterLLM) and llm.model == "a/b" and llm.api_key == "k"
+    with pytest.raises(ValueError):
+        make_llm({"LLM_BACKEND": "openrouter", "LLM_MODEL": "a/b"})          # no key
+    with pytest.raises(ValueError):
+        make_llm({"LLM_BACKEND": "openrouter", "OPENROUTER_API_KEY": "k"})   # no model
+
+
+def test_openrouter_request_and_parse():
+    llm, calls = _openrouter(json.dumps(GOOD))
+    assert llm("p", SCHEMA) == GOOD
+    url, headers, body, timeout_s = calls[0]
+    assert url.startswith("https://openrouter.ai/") and headers["Authorization"] == "Bearer fake-key"
+    assert body["model"] == "vendor/model" and body["messages"] == [{"role": "user", "content": "p"}]
+    assert body["response_format"]["json_schema"]["schema"] == SCHEMA
+    assert "tools" not in body and timeout_s == 60.0
+
+
+def test_openrouter_accepts_a_fenced_json_reply():
+    llm, _ = _openrouter("```json\n" + json.dumps(GOOD) + "\n```")
+    assert llm("p", SCHEMA) == GOOD
+
+
+@pytest.mark.parametrize("kw", [
+    {"content": "not json"},
+    {"content": json.dumps({"formula": "F hello"})},          # misses required keys
+    {"payload": {"error": {"message": "x"}}},
+    {"content": json.dumps(GOOD), "status": 500},
+])
+def test_openrouter_bad_replies_are_unreadable(kw):
+    llm, _ = _openrouter(**kw)
+    with pytest.raises(LLMError):
+        llm("p", SCHEMA)
+
+
+def test_openrouter_bad_key_says_so():
+    llm, _ = _openrouter(json.dumps(GOOD), status=401)
+    with pytest.raises(LLMError, match="OPENROUTER_API_KEY"):
+        llm("p", SCHEMA)
+
+
+def test_cli_children_never_get_the_openrouter_key(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "fake-openrouter-key")
+    run, calls = fake_run(json.dumps({"is_error": False, "structured_output": GOOD}))
+    ClaudeCLI(runner=run)("p", SCHEMA)
+    assert "OPENROUTER_API_KEY" not in calls[0][1]["env"]

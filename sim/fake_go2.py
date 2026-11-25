@@ -109,6 +109,9 @@ class FakeGo2(Node):
         msg.stamp.sec, msg.stamp.nanosec = sec, nanosec
         msg.error_code = self.sim.error_code
         msg.position = [float(self.sim.x), float(self.sim.y), 0.0]
+        vx, vy, yaw_speed = self.sim.velocity
+        msg.velocity = [vx, vy, 0.0]
+        msg.yaw_speed = yaw_speed
         yaw = math.atan2(math.sin(self.sim.yaw), math.cos(self.sim.yaw))   # 実機の IMU と同じ -π〜π
         msg.imu_state.rpy = [0.0, 0.0, yaw]
         self._state_pub.publish(msg)

@@ -646,7 +646,7 @@ def test_server_now_is_the_clock_of_waiting_since(tmp_path):
 
 
 def test_link_kind_llm_backend_and_block_timeout(tmp_path):
-    from voice_ltl.llm import ClaudeCLI, CodexCLI
+    from voice_ltl.llm import ClaudeCLI, CodexCLI, OpenRouterLLM
 
     sess, _ = make(tmp_path, llm_for())
     snap = sess.snapshot()
@@ -656,6 +656,8 @@ def test_link_kind_llm_backend_and_block_timeout(tmp_path):
                    link_kind="gazebo").snapshot()["link_kind"] == "gazebo"
     assert Session(link, ClaudeCLI(), None, tmp_path, background=False).snapshot()["llm_backend"] == "claude"
     assert Session(link, CodexCLI(), None, tmp_path, background=False).snapshot()["llm_backend"] == "codex"
+    assert Session(link, OpenRouterLLM("k", "a/b"), None, tmp_path,
+                   background=False).snapshot()["llm_backend"] == "openrouter"
 
 
 def test_waiting_since_for_a_wait_and_for_a_held_move(tmp_path):

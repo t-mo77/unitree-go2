@@ -51,6 +51,56 @@ PCはLiDAR点群から移動を禁止しません。画面の「Go2判断」は�
 既存の有線IPv4が `192.168.123.x/24` なら、`.99` に変更する必要はありません。
 テストは `bash scripts/run_local.sh test`。
 
+### UWB リモコン追尾
+
+UWB リモコンの測距と方位から、このプログラムが Go2 の移動を制御します。
+通常の実機モード（`robot`）を終了し、Unitree アプリかリモコンで標準追尾を解除してから起動します。
+
+```bash
+bash scripts/run_local.sh follow
+```
+
+Go2 本体の障害物回避をオンにし、ペアリング済みの UWB 追従用リモコンを身につけます。
+周囲を空けてから <http://localhost:8810> の「Go2 を立たせる」を押します。
+立ったことと地図上のリモコン位置を確認してから「リモコン追尾を開始」を押してください。
+画面上部の「歩行・旋回を止める」は、立った姿勢を保つ通常停止（StopMove）です。
+Go2 の速度データで停止を確認します。
+止まらない場合や接続が切れた場合は純正リモコンで非常停止してください。
+サーバー終了時やブラウザとの接続が切れたときにも停止指令を送ります。
+追尾用リモコンの準備は [Unitree の取扱説明書](https://marketing.unitree.com/article/en/Go2/Companion_Remote_Control.html) を参照してください。
+位置図は追尾開始前から表示されます。意図したリモコンだけを少し動かし、青い点と距離・方向が
+対応するか目視で確認できます。青い点は Go2 の UWB 測距と方位から求めた推定位置です。
+UWB チャンネルはリモコンの個体識別子ではありません。
+
+Go2 はリモコンの方を向き、約 1 m 手前で止まります。前進は最大 0.4 m/s です。
+PC が UWB の距離と方位から移動指令を計算し、障害物による移動可否は Go2 本体の回避サービスが判断します。
+画面の LiDAR 点群は確認用です。本体の回避サービスが無効か応答しない場合は起動を中止します。
+UWB の測位が途切れると停止して待ちます。**この追尾は実機未検証です。**
+
+#### シミュレーションで追尾を試す
+
+シミュレーションでは、にせ UWB リモコンが
+同じプロセスで動き、画面の地図をクリック・ドラッグするとリモコンが動きます。
+シミュレーションの障害物判定には PC の LiDAR 点群を使います。
+「Go2 を立たせる」で立たせてから「リモコン追尾を開始」を押します。
+
+```bash
+bash scripts/run_local.sh follow-fake                                  # Linux 直接（偽 Go2）
+docker compose stop app                                                # Mac：操作画面のアプリを止めてから
+docker compose --profile fake --profile follow up sim follow           # Mac：偽 Go2
+SIM_KIND=gazebo docker compose --profile follow up -d follow           # Mac：Gazebo を起動済みのとき
+```
+
+追尾の画面には Go2 の前のカメラの映像も出ます。
+
+- Gazebo：起動するときに `GO2_SIM_CAMERA=1` を付けると、前のカメラ（480×270・5 Hz）が付きます。
+  描画の分だけシミュレーションが遅くなります（手元の Mac で RTF 0.78 → 0.6 程度）。偽の Go2 には映像がありません。
+  ```bash
+  GO2_SIM_CAMERA=1 SIM_KIND=gazebo docker compose --profile gazebo up -d gazebo
+  ```
+- 実機：Go2 の動画サービス（videohub の GetImageSample）から JPEG を取り出して表示します。
+  画面を開いている間だけ取りに行きます。**まだ実機で試していません。**
+
 ## 1. 準備（Mac）
 
 Docker Desktop を起動してから：

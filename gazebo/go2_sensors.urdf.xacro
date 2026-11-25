@@ -11,10 +11,14 @@
   - OdometryPublisher：base の本当の位置と向き（50 Hz、/model/robot/odometry）。/sportmodestate の position・rpy にする。
   画像を出すカメラ（D435 と前のカメラ）は付けない（EXTERNAL_SENSORS は false のまま）。画像を出すカメラがあると
   RTF が 0.13 まで落ちる（docs/reference/gazebo_feasibility_jazzy.md）。
+  - FRONT_CAMERA:=true（launch は GO2_SIM_CAMERA=1 のとき）だけ、追尾の画面に出す画像のカメラを
+    logical camera と同じ位置に 1 台付ける。描画を軽くするため 480×270・5 Hz。Gazebo のトピック
+    gazebo/front_camera/image（ROS では /gazebo/front_camera/image、sensor_msgs/Image）。
 -->
 <robot name="go2" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- robot.xacro より先に決めた値が使われる -->
   <xacro:arg name="GAZEBO" default="true"/>
+  <xacro:arg name="FRONT_CAMERA" default="false"/>
   <xacro:include filename="$(find go2_description)/xacro/robot.xacro"/>
 
   <joint name="utlidar_joint" type="fixed">
@@ -84,6 +88,30 @@
       <topic>gazebo/logical_camera</topic>
     </sensor>
   </gazebo>
+
+  <xacro:if value="$(arg FRONT_CAMERA)">
+    <gazebo reference="logical_camera">
+      <sensor name="front_camera" type="camera">
+        <topic>gazebo/front_camera/image</topic>
+        <update_rate>5</update_rate>
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <gz_frame_id>logical_camera</gz_frame_id>
+        <camera>
+          <horizontal_fov>2.094</horizontal_fov>
+          <image>
+            <width>480</width>
+            <height>270</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>30</far>
+          </clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:if>
 
   <gazebo>
     <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">

@@ -69,8 +69,10 @@ def _raise_keyboard_interrupt(signum, frame):
 
 
 class RosLink:
-    def __init__(self, perception: PerceptionConfig, node_name: str = "go2_voice_ltl"):
-        self.obstacle_authority = os.environ.get("GO2_OBSTACLE_AUTHORITY", "pc")
+    def __init__(self, perception: PerceptionConfig, node_name: str = "go2_voice_ltl",
+                 *, obstacle_authority: Optional[str] = None):
+        self.obstacle_authority = (os.environ.get("GO2_OBSTACLE_AUTHORITY", "pc")
+                                   if obstacle_authority is None else obstacle_authority)
         if self.obstacle_authority not in ("pc", "go2"):
             raise ValueError("GO2_OBSTACLE_AUTHORITYはpcかgo2で指定してください。")
         self._avoidance = None
@@ -203,6 +205,10 @@ class RosLink:
     def pose(self) -> Optional[Pose]:
         return self._pose
 
+    def state_fresh(self, now: float) -> bool:
+        stamp = self._state_time
+        return stamp is not None and now - stamp <= STATE_TIMEOUT
+
     def error_code(self) -> Optional[int]:
         """最後に受けた /sportmodestate の error_code。まだ届いていなければ None。"""
         return self._error_code
@@ -217,7 +223,7 @@ class RosLink:
     def reading(self, now: float) -> Reading:
         r = (Reading(CLEAR, CLEAR, None, None, authority="go2")
              if self.obstacle_authority == "go2" else self._sensing.current(now))
-        if self._state_time is None or now - self._state_time > STATE_TIMEOUT:
+        if not self.state_fresh(now):
             # 位置が測れないまま動かないよう、前後とも途切れ扱いにする（nl_control.py の env と同じ）
             return Reading(SENSOR_LOST, SENSOR_LOST, r.front_dist, r.back_dist, authority=r.authority)
         return r
