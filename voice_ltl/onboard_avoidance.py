@@ -14,7 +14,13 @@ from voice_ltl.publisher_guard import PublisherGuard
 REQUEST_TOPIC = "/api/obstacles_avoid/request"
 RESPONSE_TOPIC = "/api/obstacles_avoid/response"
 SWITCH_GET, MOVE, USE_API = 1002, 1003, 1004
+DISCOVERY_TIMEOUT_S = 3.0
+REPLY_TIMEOUT_S = 2.0
 log = logging.getLogger(__name__)
+
+
+class ReplyTimeout(RuntimeError):
+    pass
 
 
 class OnboardAvoidance:
@@ -79,8 +85,8 @@ class OnboardAvoidance:
     def _call(self, api, parameter):
         identity, pending = self._publish(api, parameter, reply=True)
         try:
-            if not pending["event"].wait(2):
-                raise RuntimeError(f"Go2本体の障害物回避サービスが応答しません（API {api}）")
+            if not pending["event"].wait(REPLY_TIMEOUT_S):
+                raise ReplyTimeout(f"Go2本体の障害物回避サービスが応答しません（API {api}）")
             response = pending["response"]
             if response.header.status.code != 0:
                 raise RuntimeError(f"Go2本体の障害物回避サービスが拒否しました（API {api}, code {response.header.status.code}）")
@@ -96,13 +102,16 @@ class OnboardAvoidance:
                 self._pending.pop(identity, None)
 
     def verify_enabled(self):
-        end = time.monotonic() + 3
+        end = time.monotonic() + DISCOVERY_TIMEOUT_S
         # 1つは自分の監視用の購読者。
-        while self.pub.get_subscription_count() <= 1 and time.monotonic() < end:
+        while self.pub.get_subscription_count() <= 1 or self.node.count_publishers(RESPONSE_TOPIC) == 0:
+            if time.monotonic() >= end:
+                raise RuntimeError("Go2の障害物回避サービスに接続できません。要求と応答の接続を確認してください。")
             time.sleep(0.05)
-        if self.pub.get_subscription_count() <= 1:
-            raise RuntimeError("Go2の障害物回避サービスが見つかりません。通常Moveには切り替えません。")
-        state = self._call(SWITCH_GET, {})
+        try:
+            state = self._call(SWITCH_GET, {})
+        except ReplyTimeout:
+            state = self._call(SWITCH_GET, {})
         if state.get("enable") is not True:
             raise RuntimeError("Go2本体の障害物回避が無効です。Unitreeアプリで有効にしてから起動してください。")
 
@@ -130,8 +139,10 @@ class OnboardAvoidance:
     def close(self):
         try:
             if self.owned:
-                self.stop()
-                self._call(USE_API, {"is_remote_commands_from_api": False})
+                try:
+                    self.stop()
+                finally:
+                    self._call(USE_API, {"is_remote_commands_from_api": False})
         finally:
             self.owned = self.prepared = False
             self._stop.set()

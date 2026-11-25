@@ -1,4 +1,4 @@
-"""UWB 追尾（FOLLOW_CONTROL=own）で障害物をよけて進む向きを選ぶ。ROS に依存しない。
+"""UWB 追尾で障害物をよけて進む向きを選ぶ。ROS に依存しない。
 
 LiDAR の点群を機体座標（x 前、y 左）の平面の点にし（obstacle_points）、
 Go2 の胴幅に余裕を足した帯を各方向へ伸ばして、ぶつかるまでの空き（free_length）を測る。

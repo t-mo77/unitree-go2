@@ -1,23 +1,25 @@
 const startButton = document.getElementById("follow-start");
 const stopButton = document.getElementById("follow-stop");
 const statusText = document.getElementById("follow-status");
-const standButton = document.getElementById("sim-stand");
+const standButton = document.getElementById("follow-stand");
 let currentSocket = null;
 let simulating = false;
+let standing = false;
+let stopping = false;
 
-const CONTROL_JA = {
-  utrack: ["Go2 本体の追尾（UTrack）", "Go2 を立たせ、ペアリング済みの UWB 追従用リモコンを身につけてください。周囲を空け、すぐにリモコンで停止できる状態で始めてください。"],
-  own: ["このプログラムの制御（UWB の距離と方向から歩く）", "Go2 を立たせてください。Go2 はリモコンの方を向き、1 m の距離まで歩いて止まります。周囲を空け、すぐに停止できる状態で始めてください。"],
-};
+function updateButtons() {
+  startButton.disabled = standing || stopping || currentSocket !== null;
+  standButton.disabled = startButton.disabled;
+  stopButton.disabled = stopping;
+}
 
 async function loadConfig() {
   try {
     const config = await (await fetch("/api/config")).json();
-    const [mode, intro] = CONTROL_JA[config.control] ?? [config.control, null];
-    document.getElementById("follow-mode").textContent = `追尾のやり方: ${mode}${config.sim ? "・シミュレーション" : ""}`;
-    if (intro) document.getElementById("follow-intro").textContent = intro;
+    document.getElementById("follow-mode").textContent =
+      config.sim ? "UWB 追尾・シミュレーション" : "UWB 追尾・障害物判定は Go2 本体";
     simulating = config.sim;
-    standButton.hidden = !simulating;
+    document.getElementById("obstacle-label").textContent = simulating ? "障害物（点群）" : "LiDAR 点群（参考）";
     document.getElementById("sim-hint").hidden = !simulating;
     map.classList.toggle("sim-drag", simulating);
     if (config.camera) startCamera(config.sim);
@@ -27,23 +29,25 @@ async function loadConfig() {
 }
 
 standButton.addEventListener("click", async () => {
-  standButton.disabled = true;
+  standing = true;
+  updateButtons();
   statusText.textContent = "Go2 を立たせています…";
   try {
-    const result = await (await fetch("/api/sim/stand", { method: "POST" })).json();
-    statusText.textContent = result.message;
+    const result = await (await fetch("/api/stand", { method: "POST" })).json();
+    if (!stopping) statusText.textContent = result.message;
   } catch {
-    statusText.textContent = "立ち上がりを送れませんでした";
+    if (!stopping) statusText.textContent = "立ち上がりを確認できませんでした";
   } finally {
-    standButton.disabled = false;
+    standing = false;
+    updateButtons();
   }
 });
 
 startButton.addEventListener("click", () => {
-  startButton.disabled = true;
-  statusText.textContent = "Go2 の追尾サービスを確認しています…";
+  statusText.textContent = "Go2 の姿勢とセンサーを確認しています…";
   const socket = new WebSocket(`ws://${location.host}/ws/follow`);
   currentSocket = socket;
+  updateButtons();
   let finished = false;
 
   socket.addEventListener("open", () => {
@@ -65,9 +69,9 @@ startButton.addEventListener("click", () => {
   socket.addEventListener("close", () => {
     if (currentSocket !== socket) return;
     currentSocket = null;
-    startButton.disabled = false;
+    updateButtons();
     if (!finished) {
-      statusText.textContent = "接続が切れ、追尾の解除を確認できません。リモコンで停止してください。";
+      statusText.textContent = "接続が切れ、Go2 の停止を確認できません。純正リモコンで非常停止してください。";
     }
   });
 });
@@ -75,19 +79,19 @@ startButton.addEventListener("click", () => {
 stopButton.addEventListener("click", async () => {
   const socket = currentSocket;
   currentSocket = null;
+  stopping = true;
+  updateButtons();
   socket?.close();
-  startButton.disabled = true;
-  stopButton.disabled = true;
-  statusText.textContent = "追尾を解除しています…";
+  statusText.textContent = "歩行・旋回の停止を確認しています…";
   try {
     const response = await fetch("/api/stop", { method: "POST" });
     const result = await response.json();
     statusText.textContent = result.message;
   } catch {
-    statusText.textContent = "追尾の解除を確認できません。リモコンで停止してください。";
+    statusText.textContent = "Go2 の停止を確認できません。純正リモコンで非常停止してください。";
   } finally {
-    startButton.disabled = false;
-    stopButton.disabled = false;
+    stopping = false;
+    updateButtons();
   }
 });
 
@@ -245,7 +249,6 @@ const direction = (radians) => {
 };
 
 function renderObstacles(data, disconnected) {
-  // utrack のときは点群を受けないので、項目ごと出さない
   const shown = !disconnected && "obstacles" in data;
   obstacleRow.hidden = !shown;
   document.getElementById("cloud-hint").hidden = !shown;

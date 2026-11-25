@@ -28,3 +28,12 @@ def test_robot_uses_selected_interface_and_domain_zero(monkeypatch, tmp_path):
     config = ElementTree.fromstring(env["CYCLONEDDS_URI"])
     assert config.find(".//NetworkInterface").get("name") == "enp3s0"
     assert server.listen_address(env) == ("127.0.0.1", 9123)
+
+
+def test_follow_uses_onboard_avoidance_with_the_real_robot(monkeypatch, tmp_path):
+    monkeypatch.setattr(local, "ROOT", tmp_path)
+    (tmp_path / "env.txt").write_text("GO2_IFACE=enp3s0\nGO2_OBSTACLE_AUTHORITY=pc\n")
+    env = local.environment("follow", {"PATH": "/usr/bin"})
+    assert env["SIM"] == "0"
+    assert env["ROS_DOMAIN_ID"] == "0"
+    assert env["GO2_OBSTACLE_AUTHORITY"] == "go2"

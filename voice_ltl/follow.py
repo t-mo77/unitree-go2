@@ -1,15 +1,11 @@
 """UWB リモコン追尾の専用ページ。通常の動作指示は扱わない。
 
-追尾のやり方は FOLLOW_CONTROL で選ぶ:
-- utrack: Go2 本体の UTrack に任せる（実機の既定）。
-- own: このプログラムが UWB の距離と方向から Move を送り、リモコンへ歩いていく
-  （シミュレーションの既定。シミュレーションには UTrack が無いので own だけ）。
+UWB の測距と方位を購読し、進む方向と速度を計算して Go2 に送る。
 シミュレーション（SIM=1）では、にせ UWB リモコン（sim.fake_uwb）を同じプロセスで動かし、
 ページの地図をクリック・ドラッグしてリモコンを動かせる。
 """
 
 import asyncio
-import json
 import logging
 import math
 import os
@@ -29,52 +25,43 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from starlette.concurrency import run_in_threadpool
-from unitree_api.msg import Request, Response
 from unitree_go.msg import SportModeState, UwbState
 
-from go2_nl_control.actions import BALANCE_STAND, MOVE, STAND_UP, STANDING
+from go2_nl_control.actions import ACTIONS, LYING, MOVE, STANDING
 from go2_nl_control.executor import STOP, Command
 from go2_nl_control.supervisor import SENSOR_LOST
 from voice_ltl.camera import SimCamera, VideoHubCamera
 from voice_ltl.avoid import AvoidConfig, choose_heading, free_length, obstacle_points
-from voice_ltl.onboard_avoidance import OnboardAvoidance
 from voice_ltl.perception_config import perception_config
 from voice_ltl.ros_link import LIDAR_TOPIC, STATE_TIMEOUT, STATE_TOPIC, RosLink
 from voice_ltl.server import STATIC, LocalOnly, listen_address, sim_mode, ui_port, wait_ready_seconds
+from voice_ltl.session import STAND_LOCK
 
-REQUEST_TOPIC = "/api/uwbswitch/request"
-RESPONSE_TOPIC = "/api/uwbswitch/response"
 UWB_STATE_TOPIC = "/uwbstate"
 UWB_STATE_TIMEOUT = 1.0
-SWITCH_SET, SWITCH_GET, IS_TRACKING = 1001, 1002, 1003
-REPLY_TIMEOUT = 1.0
 HEARTBEAT_TIMEOUT = 3.0
 STOPPED = "この画面からの追尾は停止しています"
-STOP_FAILED = "Go2 の追尾解除を確認できません。リモコンで停止してください"
+STOP_FAILED = "Go2 に停止指令を送れません。純正リモコンで非常停止してください"
+STOP_UNCONFIRMED = "Go2 の停止を確認できません。純正リモコンで非常停止してください"
+STOP_CONFIRM_S = 0.3
+MAX_TURN_WITHOUT_PROGRESS = math.radians(210)
+TURN_PROGRESS_M = 0.15
 UWB_FRESH_S = 0.5     # 自前の制御は、これより古い UWB の測定では動かない [s]
 CLOUD_FRESH_S = 0.5   # これより古い点群では、よける向きを選ばない [s]
 MAP_GRID = 0.1        # 地図に出す点の間引きの格子 [m]
 MAP_MAX_POINTS = 3000  # 地図に出す点の数の上限
 CONTROL_PERIOD = 0.1  # 自前の制御が Move を送る間隔 [s]（Move は 1 秒で切れる）
-FOLLOW_CONTROLS = ("utrack", "own")
 log = logging.getLogger(__name__)
 
 
-def follow_control(env):
-    """FOLLOW_CONTROL（utrack / own）。空ならシミュレーションは own、実機は utrack。"""
-    simulating = sim_mode(env)
-    control = (env.get("FOLLOW_CONTROL") or "").strip().lower() or ("own" if simulating else "utrack")
-    if control not in FOLLOW_CONTROLS:
-        raise ValueError(f"FOLLOW_CONTROL は utrack か own にしてください（今: {control!r}）")
-    if simulating and control == "utrack":
-        raise ValueError("シミュレーションには Go2 本体の追尾（UTrack）がありません。FOLLOW_CONTROL=own にしてください")
-    return control
+def check_robot_state(link):
+    link.spin_once()
+    if not link.state_fresh(time.time()):
+        raise RuntimeError("Go2 の状態が届いていません")
 
 
 def check_robot(link):
-    link.spin_once()
-    if link.reading(time.time()).front == SENSOR_LOST:
-        raise RuntimeError("Go2 の状態が届いていません")
+    check_robot_state(link)
     if link.posture() != STANDING:
         raise RuntimeError("Go2 を立たせてから追尾を開始してください")
 
@@ -85,6 +72,7 @@ class FollowPositions:
     fake = None   # シミュレーションのにせ UWB リモコン（sim.fake_uwb.FakeUwb）
     perception = None  # LiDAR の取り付け（None なら点群を受けない）
     cloud = None  # (受けた時刻, 機体座標の障害物の点 M×2, 受けたときの Go2 の位置か None)
+    motion = None
 
     def __init__(self, simulate_uwb=False, perception=None):
         self.pose = None
@@ -105,8 +93,24 @@ class FollowPositions:
         self.thread.start()
 
     def on_pose(self, msg):
+        now = time.monotonic()
         pose = (float(msg.position[0]), float(msg.position[1]), float(msg.imu_state.rpy[2]))
-        self.pose = (time.monotonic(), pose) if all(map(math.isfinite, pose)) else None
+        self.pose = (now, pose) if all(map(math.isfinite, pose)) else None
+        speed = math.hypot(float(msg.velocity[0]), float(msg.velocity[1]))
+        yaw_speed = abs(float(msg.yaw_speed))
+        previous = self.motion
+        still_since = None
+        if speed <= 0.05 and yaw_speed <= 0.05:
+            still_since = now
+            if previous is not None and now - previous[0] <= STATE_TIMEOUT and previous[1] is not None:
+                still_since = previous[1]
+        self.motion = (now, still_since)
+
+    def stationary_after(self, start):
+        sample = self.motion
+        return (sample is not None and sample[1] is not None
+                and time.monotonic() - sample[0] <= STATE_TIMEOUT
+                and sample[0] - max(sample[1], start) >= STOP_CONFIRM_S)
 
     def on_uwb(self, msg):
         now = time.monotonic()
@@ -196,113 +200,6 @@ class FollowPositions:
         self.node.destroy_node()
 
 
-class UTrack:
-    def __init__(self, link, avoidance):
-        self.link = link
-        self.avoidance = avoidance
-        self.node = rclpy.create_node("go2_uwb_follow")
-        self.publisher = self.node.create_publisher(Request, REQUEST_TOPIC, 10)
-        self.node.create_subscription(Response, RESPONSE_TOPIC, self._receive, 10)
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.lock = threading.Lock()
-        self.owner = None
-        self.reply = None
-        self.identity = None
-        self.was_tracking = False
-
-    def _receive(self, msg):
-        identity = msg.header.identity
-        if (identity.id, identity.api_id) == self.identity:
-            self.reply = msg
-
-    def _call(self, api, parameters):
-        request = Request()
-        identity = time.monotonic_ns()
-        request.header.identity.id = identity
-        request.header.identity.api_id = api
-        request.parameter = json.dumps(parameters)
-        self.identity = (identity, api)
-        self.reply = None
-        self.publisher.publish(request)
-        end = time.monotonic() + REPLY_TIMEOUT
-        while self.reply is None and (remaining := end - time.monotonic()) > 0:
-            self.executor.spin_once(timeout_sec=remaining)
-        if self.reply is None:
-            raise RuntimeError(f"Go2 の追尾サービスが応答しません（API {api}）")
-        code = self.reply.header.status.code
-        if code != 0:
-            raise RuntimeError(f"Go2 が追尾の要求を拒否しました（API {api}, code {code}）")
-        return self.reply.data
-
-    def _enabled(self, api):
-        try:
-            value = json.loads(self._call(api, {}))["enable"]
-        except (ValueError, TypeError, KeyError):
-            raise RuntimeError(f"追尾サービスの状態を読み取れません（API {api}）") from None
-        if type(value) not in (bool, int) or value not in (0, 1):
-            raise RuntimeError(f"追尾サービスの状態が不正です（API {api}）")
-        return bool(value)
-
-    def _check_robot(self):
-        check_robot(self.link)
-
-    def start(self, owner):
-        with self.lock:
-            if self.owner is not None:
-                raise RuntimeError("追尾を開始済みか、前回の解除を確認できていません")
-            self._check_robot()
-            if not self.publisher.get_subscription_count() or not self.node.count_publishers(RESPONSE_TOPIC):
-                raise RuntimeError("Go2 の UWB 追尾サービスが見つかりません")
-            self.avoidance.verify_enabled()
-            if self._enabled(SWITCH_GET) or self._enabled(IS_TRACKING):
-                raise RuntimeError("Go2 の追尾がすでに有効です。Unitree アプリかリモコンで解除してください")
-            self._check_robot()
-            if owner.is_set():
-                raise RuntimeError("ブラウザとの通信が途切れました")
-            # 応答が失われても、ここからは必ず解除を試みる。
-            self.owner = owner
-            self.was_tracking = False
-            self._call(SWITCH_SET, {"enable": 1})
-
-    def status(self, owner):
-        with self.lock:
-            if self.owner is not owner:
-                return None
-            self._check_robot()
-            tracking = self._enabled(IS_TRACKING)
-            if self.was_tracking and not tracking:
-                raise RuntimeError("Go2 の追尾が途切れました")
-            self.was_tracking = tracking
-            return "UWB リモコンを追尾中" if tracking else "追尾モード有効。UWB リモコンを待っています"
-
-    def stop(self, owner=None):
-        with self.lock:
-            if self.owner is None or (owner is not None and self.owner is not owner):
-                return False
-            try:
-                self._call(SWITCH_SET, {"enable": 0})
-            except RuntimeError:
-                # 解除の要求または応答が失われた場合も、通常の停止指令を試す。
-                try:
-                    self.link.send(STOP)
-                except Exception:
-                    log.exception("Sport.StopMove の送信に失敗しました")
-                try:
-                    self._call(SWITCH_SET, {"enable": 0})
-                except RuntimeError:
-                    raise RuntimeError(STOP_FAILED) from None
-            self.owner = None
-            return True
-
-    def close(self):
-        try:
-            self.stop()
-        finally:
-            self.executor.shutdown()
-            self.node.destroy_node()
-
-
 @dataclass(frozen=True)
 class WalkConfig:
     stop_distance: float = 1.0          # リモコンにこれより近づいたら止まる [m]
@@ -312,7 +209,7 @@ class WalkConfig:
     max_turn: float = 0.8               # 旋回の速さの上限 [rad/s]
     turn_gain: float = 1.5              # 旋回の速さ = これ × 方向
     turn_only: float = math.radians(35)  # 方向のずれがこれより大きい間は、その場で回るだけ
-    face_deadband: float = math.radians(10)  # 止まっている間、これより小さいずれは直さない
+    face_deadband: float = math.radians(10)
     acc: float = 0.6                    # 前進の加速度の上限 [m/s^2]（減速は制限しない）
     turn_acc: float = 2.0               # 旋回の加速度の上限 [rad/s^2]
 
@@ -329,10 +226,9 @@ def walk_velocity(distance, bearing, front_blocked, walking, cfg=WalkConfig()):
     """
     limit = cfg.stop_distance + (0.0 if walking else cfg.resume_margin)
     walking = distance > limit
-    if not walking and abs(bearing) < cfg.face_deadband:
-        turn = 0.0
-    else:
-        turn = _clamp(cfg.turn_gain * bearing, cfg.max_turn)
+    if not walking:
+        return 0.0, 0.0, False
+    turn = 0.0 if abs(bearing) < cfg.face_deadband else _clamp(cfg.turn_gain * bearing, cfg.max_turn)
     forward = 0.0
     if walking and abs(bearing) < cfg.turn_only and not front_blocked:
         forward = min(cfg.max_speed, cfg.speed_gain * (distance - cfg.stop_distance)) * math.cos(bearing)
@@ -347,31 +243,46 @@ def _ramp_up(current, target, step):
 
 
 class WalkToUwb:
-    """このプログラムが UWB の位置へ Go2 を歩かせる。UTrack と同じ start・status・stop を持つ。"""
+    """このプログラムが UWB の位置へ Go2 を歩かせる。"""
 
     def __init__(self, link, positions, cfg=WalkConfig(), avoid=AvoidConfig()):
         self.link = link
         self.positions = positions
+        self.use_pc_lidar = link.obstacle_authority == "pc"
         self.cfg = cfg
         self.avoid = avoid
         self.side = 0   # 障害物をよけている側（choose_heading）
         self.heading = None  # 地図用：いま進もうとしている向き（オドメトリ座標の角度）
         self.lock = threading.Lock()
+        self.command_lock = threading.Lock()
         self.halt = threading.Event()
+        self.standing_up = False
+        self.stop_unconfirmed = False
+        self.stop_epoch = 0
         self.owner = None
         self.thread = None
         self.fault = None
         self.message = ""
         self.velocity = (0.0, 0.0)
         self.walking = False
+        self.turn_budget_used = 0.0
+        self.progress_distance = math.inf
 
-    def start(self, owner):
+    def start(self, owner, stop_epoch=None):
         with self.lock:
+            if stop_epoch is not None and self.stop_epoch != stop_epoch:
+                raise RuntimeError(STOPPED)
+            if self.stop_unconfirmed:
+                raise RuntimeError(STOP_UNCONFIRMED)
             if self.owner is not None:
-                raise RuntimeError("追尾を開始済みか、前回の解除を確認できていません")
+                raise RuntimeError("追尾を開始済みです")
+            if self.standing_up:
+                raise RuntimeError("Go2 が立ち上がるまで待ってください")
             check_robot(self.link)
             if self.positions.measurement() is None:
                 raise RuntimeError("UWB リモコンの測位が届いていません")
+            if self.use_pc_lidar and self._pc_obstacles() is None:
+                raise RuntimeError("LiDAR の点群が届いていません")
             if owner.is_set():
                 raise RuntimeError("ブラウザとの通信が途切れました")
             self.owner = owner
@@ -380,9 +291,39 @@ class WalkToUwb:
             self.velocity = (0.0, 0.0)
             self.walking = False
             self.side = 0
+            self.turn_budget_used = 0.0
+            self.progress_distance = math.inf
             self.halt.clear()
             self.thread = threading.Thread(target=self._run, name="go2-walk-to-uwb", daemon=True)
             self.thread.start()
+
+    def stand(self):
+        with self.lock:
+            if self.stop_unconfirmed:
+                raise RuntimeError(STOP_UNCONFIRMED)
+            if self.owner is not None or self.standing_up:
+                raise RuntimeError("追尾や立ち上がりが終わってから操作してください")
+            check_robot_state(self.link)
+            posture = self.link.posture()
+            if posture == STANDING:
+                return "Go2 は立っています"
+            steps = ACTIONS["stand"].sequence
+            if self.link.error_code() == STAND_LOCK:
+                steps = steps[1:]
+            elif posture != LYING:
+                raise RuntimeError("リモコンで Go2 を伏せさせてから立たせてください")
+            self.halt.clear()
+            self.standing_up = True
+        try:
+            for api, delay in steps:
+                check_robot_state(self.link)
+                if not self._send_motion(Command(api)) or self.halt.wait(delay):
+                    raise RuntimeError("立ち上がりの指令を中断しました")
+            check_robot(self.link)
+            return "Go2 が立ちました"
+        finally:
+            with self.lock:
+                self.standing_up = False
 
     def _run(self):
         try:
@@ -393,8 +334,11 @@ class WalkToUwb:
         except Exception:
             log.exception("追尾の制御で異常が起きました")
             self.fault = "追尾の制御で異常が起きました"
-        if self.fault is not None:
-            self._send_stop()
+        if self.fault is not None and not self.halt.is_set():
+            try:
+                self._send_stop()
+            except RuntimeError as exc:
+                self.fault = str(exc)
 
     def _tick(self, dt):
         check_robot(self.link)
@@ -405,41 +349,62 @@ class WalkToUwb:
             self.walking = False
             self.message = "UWB リモコンを見失いました。止まって待っています"
         else:
-            distance, bearing = measured
-            target = self._steer(distance, bearing)
+            points = self._pc_obstacles() if self.use_pc_lidar else None
+            if self.use_pc_lidar and points is None:
+                self.heading = None
+                self.walking = False
+                self.message = "LiDAR の点群が途切れました。止まって待っています"
+                target = (0.0, 0.0)
+            else:
+                distance, bearing = measured
+                target = self._steer(distance, bearing, points)
+                if self.progress_distance - distance >= TURN_PROGRESS_M:
+                    self.progress_distance = distance
+                    self.turn_budget_used = 0.0
+                self.turn_budget_used += abs(target[1]) * dt
+                if self.turn_budget_used >= MAX_TURN_WITHOUT_PROGRESS:
+                    raise RuntimeError("リモコンに近づけないまま旋回が続いたため追尾を中止しました")
         previous = self.velocity
         self.velocity = (_ramp_up(previous[0], target[0], self.cfg.acc * dt),
                          _ramp_up(previous[1], target[1], self.cfg.turn_acc * dt))
         if self.velocity != (0.0, 0.0):
-            self.link.send(Command(MOVE, {"x": round(self.velocity[0], 3), "y": 0.0,
-                                          "z": round(self.velocity[1], 3)}))
+            self._send_motion(Command(MOVE, {"x": round(self.velocity[0], 3), "y": 0.0,
+                                              "z": round(self.velocity[1], 3)}))
         elif previous != (0.0, 0.0):
-            self.link.send(STOP)
+            self._send_stop()
 
-    def _steer(self, distance, bearing):
-        """リモコンの距離・方向から (前進, 旋回) を決め、画面の文を書く。障害物はよけて回り込む。"""
+    def _pc_obstacles(self):
+        if self.link.reading(time.time()).front == SENSOR_LOST:
+            return None
+        return self.positions.obstacles()
+
+    def _steer(self, distance, bearing, points):
+        """リモコンの距離・方向から前進と旋回の速度を決める。"""
         self.heading = None
-        blocked = self.link.reading(time.time()).front_blocked
-        forward, turn, walking = walk_velocity(distance, bearing, blocked, self.walking, self.cfg)
-        if not walking:
-            self.walking = False
+        blocked = self.use_pc_lidar and self.link.reading(time.time()).front_blocked
+        forward, turn, self.walking = walk_velocity(distance, bearing, blocked, self.walking, self.cfg)
+        if not self.walking:
             self.side = 0
             self.message = f"リモコンのそばで待っています（{distance:.1f} m）"
             return forward, turn
-        travel = distance - self.cfg.stop_distance
-        heading, free, self.side = choose_heading(self.positions.obstacles(), bearing, travel,
-                                                  self.side, self.avoid)
-        if heading is None:
-            self.walking = True
-            self.message = f"回り込める道が見つかりません。止まっています（リモコンまで {distance:.1f} m）"
-            return 0.0, 0.0
-        forward, turn, self.walking = walk_velocity(distance, heading, blocked, True, self.cfg)
+
+        heading = bearing
+        if self.use_pc_lidar:
+            travel = distance - self.cfg.stop_distance
+            heading, free, self.side = choose_heading(points, bearing, travel, self.side, self.avoid)
+            if heading is None:
+                self.message = f"回り込める道が見つかりません。止まっています（リモコンまで {distance:.1f} m）"
+                return 0.0, 0.0
+            forward, turn, self.walking = walk_velocity(distance, heading, blocked, True, self.cfg)
+            # 空きが少ないほど遅く進む（空きの手前 0.1 m で止まる速さ）。
+            forward = min(forward, max(0.0, self.cfg.speed_gain * (free - 0.1)))
+
         pose = self.link.pose()
         if pose is not None:
             self.heading = pose[2] + heading
-        # 空きが少ないほど遅く進む（空きの手前 0.1 m で止まる速さ）
-        forward = min(forward, max(0.0, self.cfg.speed_gain * (free - 0.1)))
-        if blocked:
+        if not self.use_pc_lidar:
+            self.message = f"追尾指令を送っています（リモコンまで {distance:.1f} m、障害物判定は Go2 本体）"
+        elif blocked:
             self.message = f"前に障害物があるため、向きを変えています（リモコンまで {distance:.1f} m）"
         elif self.side:
             self.message = (f"障害物を{'左' if self.side > 0 else '右'}によけて、"
@@ -448,13 +413,27 @@ class WalkToUwb:
             self.message = f"リモコンへ歩いています（{distance:.1f} m）"
         return forward, turn
 
+    def _send_motion(self, command):
+        with self.command_lock:
+            if self.halt.is_set():
+                return False
+            self.link.send(command)
+            return True
+
     def _send_stop(self):
-        self.velocity = (0.0, 0.0)
-        try:
-            self.link.send(STOP)
-        except Exception:
-            log.exception("Sport.StopMove の送信に失敗しました")
-            raise RuntimeError(STOP_FAILED) from None
+        with self.command_lock:
+            failure = None
+            for attempt in range(3):
+                if attempt:
+                    time.sleep(0.05)
+                try:
+                    self.link.send(STOP)
+                    failure = None
+                except Exception as exc:
+                    failure = exc
+                    log.exception("停止指令の送信に失敗しました")
+            if failure is not None:
+                raise RuntimeError(STOP_FAILED) from failure
 
     def plan(self):
         """地図用：追尾中に進もうとしている向き（オドメトリ座標の角度）。無ければ None。"""
@@ -468,16 +447,35 @@ class WalkToUwb:
                 raise RuntimeError(self.fault)
             return self.message
 
-    def stop(self, owner=None):
+    def stop(self, owner=None, *, confirm=False):
         with self.lock:
-            if self.owner is None or (owner is not None and self.owner is not owner):
+            if owner is not None and self.owner is not owner:
                 return False
+            if owner is None:
+                self.stop_epoch += 1
             self.halt.set()
-            if self.thread is not None:
-                self.thread.join(timeout=2)
-            self.owner = None
-            self.heading = None
-            self._send_stop()
+            stopped_at = time.monotonic()
+            if confirm:
+                self.stop_unconfirmed = True
+            try:
+                self._send_stop()
+            except RuntimeError:
+                self.stop_unconfirmed = True
+                raise
+            finally:
+                if self.thread is not None:
+                    self.thread.join()
+                    self.thread = None
+                self.owner = None
+                self.heading = None
+                self.velocity = (0.0, 0.0)
+            if confirm:
+                deadline = stopped_at + 2.0
+                while not self.positions.stationary_after(stopped_at):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(STOP_UNCONFIRMED)
+                    time.sleep(0.05)
+                self.stop_unconfirmed = False
             return True
 
     def close(self):
@@ -526,31 +524,16 @@ class SpinningLink:
 
 
 class SimTools:
-    """シミュレーションだけの操作：Go2 を立たせる・にせ UWB リモコンを動かす。"""
+    """シミュレーションの UWB リモコンを動かす。"""
 
-    def __init__(self, link, tag, track):
-        self.link = link
+    def __init__(self, tag):
         self.tag = tag
-        self.track = track
-        self.lock = threading.Lock()
-
-    def stand(self):
-        if self.track.owner is not None:
-            raise RuntimeError("追尾中は立ち上がりを送りません")
-        if not self.lock.acquire(blocking=False):
-            raise RuntimeError("立ち上がりの途中です")
-        try:
-            self.link.send(Command(STAND_UP))
-            time.sleep(3.0)
-            self.link.send(Command(BALANCE_STAND))
-        finally:
-            self.lock.release()
 
     def place(self, x, y):
         return self.tag.place(x, y)
 
 
-def create_follow_app(track, page_port, positions, control="utrack", sim=None, camera=None):
+def create_follow_app(track, page_port, positions, sim=None, camera=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(LocalOnly, page_port=page_port)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -561,7 +544,7 @@ def create_follow_app(track, page_port, positions, control="utrack", sim=None, c
 
     @app.get("/api/config")
     def config():
-        return {"control": control, "sim": sim is not None, "camera": camera is not None}
+        return {"control": "own", "sim": sim is not None, "camera": camera is not None}
 
     @app.get("/api/camera")
     def camera_image():
@@ -571,21 +554,22 @@ def create_follow_app(track, page_port, positions, control="utrack", sim=None, c
         _, kind, data = frame
         return HttpResponse(content=data, media_type=kind, headers={"Cache-Control": "no-store"})
 
+    @app.post("/api/stand")
+    def stand():
+        try:
+            return {"message": track.stand()}
+        except RuntimeError as exc:
+            return JSONResponse({"message": str(exc)}, status_code=409)
+
     if sim is not None:
+        app.add_api_route("/api/sim/stand", stand, methods=["POST"])
+
         @app.post("/api/sim/uwb")
         def place_uwb(body: dict):
             try:
                 return {"position": sim.place(body.get("x"), body.get("y"))}
             except (ValueError, TypeError) as exc:
                 return JSONResponse({"message": str(exc)}, status_code=400)
-
-        @app.post("/api/sim/stand")
-        def stand():
-            try:
-                sim.stand()
-            except RuntimeError as exc:
-                return JSONResponse({"message": str(exc)}, status_code=409)
-            return {"message": "立ち上がりを送りました"}
 
     @app.get("/api/position")
     def position():
@@ -598,13 +582,14 @@ def create_follow_app(track, page_port, positions, control="utrack", sim=None, c
     @app.post("/api/stop")
     def stop():
         try:
-            track.stop()
+            track.stop(confirm=True)
         except RuntimeError as exc:
             return JSONResponse({"message": str(exc)}, status_code=503)
-        return {"message": STOPPED}
+        return {"message": "Go2 の停止を確認しました"}
 
     @app.websocket("/ws/follow")
     async def follow(socket: WebSocket):
+        stop_epoch = track.stop_epoch
         await socket.accept()
         owner = threading.Event()
         heartbeat = None
@@ -623,7 +608,7 @@ def create_follow_app(track, page_port, positions, control="utrack", sim=None, c
             if await asyncio.wait_for(socket.receive_text(), HEARTBEAT_TIMEOUT) != "start":
                 return
             heartbeat = asyncio.create_task(receive_heartbeat())
-            await run_in_threadpool(track.start, owner)
+            await run_in_threadpool(track.start, owner, stop_epoch)
             while (status := await run_in_threadpool(track.status, owner)) is not None:
                 await socket.send_json({"message": status, "active": True})
                 if not await asyncio.wait_for(heartbeat, HEARTBEAT_TIMEOUT):
@@ -659,41 +644,30 @@ def main():
         host, port = listen_address(os.environ)
         page_port = ui_port(os.environ)
         wait_s = wait_ready_seconds(os.environ)
-        control = follow_control(os.environ)
         simulating = sim_mode(os.environ)
-        link = RosLink(perception_config())
+        perception = perception_config()
+        link = RosLink(perception, obstacle_authority="pc" if simulating else "go2")
     except (ValueError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from None
+    stop_times = 0
     try:
         link.wait_ready(wait_s)
-        with (closing(FollowPositions(simulate_uwb=simulating,
-                                      perception=perception_config() if control == "own" else None)) as positions,
+        link.prepare_onboard_avoidance()
+        stop_times = 3
+        with (closing(FollowPositions(simulate_uwb=simulating, perception=perception)) as positions,
               closing(SpinningLink(link)) as spinning):
-            if control == "own":
-                # 実機（障害物の判断が Go2 本体）では、Move を本体回避サービス経由で送る。
-                link.prepare_onboard_avoidance()
-                track = WalkToUwb(spinning, positions)
-                avoidance = None
-            else:
-                avoidance = OnboardAvoidance()
-                track = UTrack(spinning, avoidance)
-            sim = SimTools(spinning, positions.fake.tag, track) if simulating else None
-            camera = SimCamera(positions.node) if simulating else VideoHubCamera()
-            try:
-                with closing(track), closing(camera):
-                    log.info("UWB 追尾のページ: http://localhost:%d（%s）", page_port,
-                             "このプログラムの制御" if control == "own" else "Go2 本体の UTrack")
-                    uvicorn.run(create_follow_app(track, page_port, positions, control, sim, camera),
-                                host=host, port=port, timeout_graceful_shutdown=2)
-            finally:
-                if avoidance is not None:
-                    avoidance.close()
+            with (closing(WalkToUwb(spinning, positions)) as track,
+                  closing(SimCamera(positions.node) if simulating else VideoHubCamera()) as camera):
+                sim = SimTools(positions.fake.tag) if simulating else None
+                log.info("UWB 追尾のページ: http://localhost:%d", page_port)
+                uvicorn.run(create_follow_app(track, page_port, positions, sim, camera),
+                            host=host, port=port, timeout_graceful_shutdown=2)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from None
     except KeyboardInterrupt:
         pass
     finally:
-        link.close(stop_times=3 if control == "own" else 0)
+        link.close(stop_times=stop_times)
 
 
 if __name__ == "__main__":

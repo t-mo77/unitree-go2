@@ -49,7 +49,6 @@ services:
       GO2_UI_PORT: "${GO2_UI_PORT:-8810}"
       SIM_KIND: "${SIM_KIND:-fake}"
       GO2_WAIT_READY_S: "${GO2_WAIT_READY_S:-}"
-      FOLLOW_CONTROL: own
     command: python3 -m voice_ltl.follow
 
   sim:

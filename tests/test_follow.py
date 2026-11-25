@@ -1,76 +1,18 @@
 import math
 import threading
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from rclpy.executors import SingleThreadedExecutor
 
-from go2_nl_control.actions import STANDING
+from go2_nl_control.actions import BALANCE_STAND, LYING, STAND_UP, STANDING
 from go2_nl_control.executor import STOP
 from go2_nl_control.supervisor import CLEAR
 from voice_ltl import follow
 
 PAGE = "http://localhost:8810"
-
-
-@pytest.fixture
-def track(monkeypatch):
-    executor = Mock(spec=SingleThreadedExecutor)
-    monkeypatch.setattr(follow, "SingleThreadedExecutor", lambda: executor)
-    node = Mock()
-    node.create_publisher.return_value.get_subscription_count.return_value = 1
-    node.count_publishers.return_value = 1
-    monkeypatch.setattr(follow.rclpy, "create_node", lambda _: node)
-    link = Mock()
-    link.reading.return_value = SimpleNamespace(front=CLEAR)
-    link.posture.return_value = STANDING
-    track = follow.UTrack(link, Mock())
-    track._call = Mock()
-    return track
-
-
-def test_follows_only_after_initial_checks_and_stops_on_loss(track):
-    track._call.side_effect = ['{"enable":0}', '{"enable":false}', "", '{"enable":1}', '{"enable":0}', ""]
-    owner = threading.Event()
-    track.start(owner)
-    track.avoidance.verify_enabled.assert_called_once()
-    assert track.status(owner) == "UWB リモコンを追尾中"
-    with pytest.raises(RuntimeError, match="途切れました"):
-        track.status(owner)
-    assert not track.stop(object())
-    assert track.stop(owner)
-    assert track._call.call_args_list == [
-        call(follow.SWITCH_GET, {}), call(follow.IS_TRACKING, {}),
-        call(follow.SWITCH_SET, {"enable": 1}), call(follow.IS_TRACKING, {}),
-        call(follow.IS_TRACKING, {}), call(follow.SWITCH_SET, {"enable": 0}),
-    ]
-
-
-def test_lost_enable_reply_requires_cleanup_and_blocks_another_start(track):
-    track._call.side_effect = ['{"enable":0}', '{"enable":0}', RuntimeError("timeout"),
-                               RuntimeError("timeout"), RuntimeError("timeout"), ""]
-    owner = threading.Event()
-    with pytest.raises(RuntimeError, match="timeout"):
-        track.start(owner)
-    with pytest.raises(RuntimeError, match="解除を確認できません"):
-        track.stop(owner)
-    track.link.send.assert_called_once_with(STOP)
-    with pytest.raises(RuntimeError, match="前回の解除"):
-        track.start(object())
-    assert track.stop()
-
-
-def test_browser_disconnect_during_preflight_prevents_enable(track):
-    owner = threading.Event()
-    track.avoidance.verify_enabled.side_effect = owner.set
-    track._call.side_effect = ['{"enable":0}', '{"enable":0}']
-    with pytest.raises(RuntimeError, match="ブラウザ"):
-        track.start(owner)
-    assert track._call.call_args_list == [call(follow.SWITCH_GET, {}), call(follow.IS_TRACKING, {})]
-    assert not track.stop()
 
 
 def test_browser_timeout_releases_tracking(monkeypatch):
@@ -92,7 +34,8 @@ def test_positions_are_available_before_start_and_expire(monkeypatch):
     clock = SimpleNamespace(now=5.0)
     monkeypatch.setattr(follow, "time", SimpleNamespace(monotonic=lambda: clock.now))
     positions = follow.FollowPositions.__new__(follow.FollowPositions)
-    pose = SimpleNamespace(position=[2, 3], imu_state=SimpleNamespace(rpy=[0, 0, math.pi / 2]))
+    pose = SimpleNamespace(position=[2, 3], imu_state=SimpleNamespace(rpy=[0, 0, math.pi / 2]),
+                           velocity=[0, 0, 0], yaw_speed=0)
     remote = SimpleNamespace(distance_est=2, orientation_est=-math.pi / 2, channel=0, error_state=0)
     positions.on_pose(pose)
     positions.on_uwb(remote)
@@ -100,7 +43,8 @@ def test_positions_are_available_before_start_and_expire(monkeypatch):
     # Project the measurement using the pose at receipt, even if the Go2 turns before the poll.
     pose.imu_state.rpy[2] = 0
     positions.on_pose(pose)
-    track = Mock(spec=follow.UTrack)
+    track = Mock(spec=follow.WalkToUwb)
+    track.plan.return_value = None
     app = follow.create_follow_app(track, 8810, positions)
     client = TestClient(app, base_url=PAGE)
     response = client.get("/api/position")
@@ -120,18 +64,6 @@ def test_positions_are_available_before_start_and_expire(monkeypatch):
     assert positions.snapshot() == {"go2": None, "uwb": None}
 
 
-# ---------- このプログラムによる追尾（FOLLOW_CONTROL=own） ----------
-
-def test_follow_control_defaults_and_refuses_utrack_in_simulation():
-    assert follow.follow_control({}) == "utrack"
-    assert follow.follow_control({"SIM": "1"}) == "own"
-    assert follow.follow_control({"FOLLOW_CONTROL": "own"}) == "own"
-    with pytest.raises(ValueError, match="UTrack"):
-        follow.follow_control({"SIM": "1", "FOLLOW_CONTROL": "utrack"})
-    with pytest.raises(ValueError, match="utrack か own"):
-        follow.follow_control({"FOLLOW_CONTROL": "walk"})
-
-
 def test_walk_velocity_turns_first_walks_then_stops_with_hysteresis():
     cfg = follow.WalkConfig()
     # 横にいる：その場で回るだけ（左が正）
@@ -149,8 +81,8 @@ def test_walk_velocity_turns_first_walks_then_stops_with_hysteresis():
     # 止まった後は、行き違いの幅を越えるまで歩き出さない
     assert follow.walk_velocity(1.2, 0.0, False, False, cfg)[2] is False
     assert follow.walk_velocity(1.4, 0.0, False, False, cfg)[2] is True
-    # 止まっていても、大きくずれたら向きは直す
-    assert follow.walk_velocity(0.8, math.radians(-40), False, False, cfg)[1] < 0
+    # 到着後は方位がずれても旋回しない
+    assert follow.walk_velocity(0.8, math.radians(-40), False, False, cfg) == (0.0, 0.0, False)
 
 
 def test_ramp_limits_speeding_up_only():
@@ -163,12 +95,13 @@ def test_ramp_limits_speeding_up_only():
 @pytest.fixture
 def walker():
     link = Mock()
+    link.obstacle_authority = "pc"
     link.reading.return_value = SimpleNamespace(front=CLEAR, front_blocked=False)
     link.posture.return_value = STANDING
     link.pose.return_value = (0.0, 0.0, 0.0)
     positions = Mock()
     positions.measurement.return_value = (3.0, 0.0)
-    positions.obstacles.return_value = None
+    positions.obstacles.return_value = np.empty((0, 2))
     return follow.WalkToUwb(link, positions)
 
 
@@ -177,6 +110,7 @@ def test_walker_sends_ramped_moves_and_stops_when_uwb_is_lost(walker):
     walker.start(owner)
     walker.halt.set()            # 自動の周期を止め、tick を手で回す
     walker.thread.join()
+    walker.halt.clear()
     walker._tick(0.1)
     move = walker.link.send.call_args.args[0]
     assert move.api_id == follow.MOVE and move.parameter == {"x": 0.06, "y": 0.0, "z": 0.0}
@@ -189,8 +123,71 @@ def test_walker_sends_ramped_moves_and_stops_when_uwb_is_lost(walker):
     walker._tick(0.1)            # 止まったままなら送り直さない
     walker.link.send.assert_not_called()
     assert walker.stop(owner)
-    walker.link.send.assert_called_once_with(STOP)
+    assert [args.args[0] for args in walker.link.send.call_args_list] == [STOP] * 3
     assert walker.status(owner) is None
+
+
+def test_walker_requires_fresh_lidar_to_start_and_keep_moving(walker):
+    owner = threading.Event()
+    walker.positions.obstacles.return_value = None
+    with pytest.raises(RuntimeError, match="LiDAR"):
+        walker.start(owner)
+    walker.link.send.assert_not_called()
+
+    walker.positions.obstacles.return_value = np.empty((0, 2))
+    walker.start(owner)
+    walker.halt.set()
+    walker.thread.join()
+    walker.halt.clear()
+    walker._tick(0.1)
+    assert walker.link.send.call_args.args[0].api_id == follow.MOVE
+
+    walker.positions.obstacles.return_value = None
+    walker._tick(0.1)
+    assert walker.link.send.call_args.args[0] == STOP
+    assert "LiDAR" in walker.status(owner)
+    assert walker.stop(owner)
+
+
+def test_onboard_follow_leaves_obstacle_decisions_to_go2_and_stops_on_uwb_loss(walker):
+    link, positions = walker.link, walker.positions
+    link.obstacle_authority = "go2"
+    positions.obstacles.return_value = None
+    link.reading.return_value = SimpleNamespace(front=follow.SENSOR_LOST, front_blocked=True)
+    track = follow.WalkToUwb(link, positions)
+    owner = threading.Event()
+    track.start(owner)
+    track.halt.set()
+    track.thread.join()
+    track.halt.clear()
+
+    track._tick(0.1)
+    move = link.send.call_args.args[0]
+    assert move.api_id == follow.MOVE and move.parameter["x"] > 0
+    positions.obstacles.assert_not_called()
+    link.reading.assert_not_called()
+
+    positions.measurement.return_value = None
+    track._tick(0.1)
+    assert link.send.call_args.args[0] == STOP
+    assert track.stop(owner)
+
+
+def test_real_follow_refuses_to_start_when_onboard_avoidance_is_unavailable(monkeypatch):
+    monkeypatch.setenv("SIM", "0")
+    link = Mock()
+    link.prepare_onboard_avoidance.side_effect = RuntimeError("本体の障害物回避が無効です")
+    ros_link = Mock(return_value=link)
+    run = Mock()
+    monkeypatch.setattr(follow, "RosLink", ros_link)
+    monkeypatch.setattr(follow.uvicorn, "run", run)
+
+    with pytest.raises(SystemExit, match="障害物回避が無効"):
+        follow.main()
+    assert ros_link.call_args.kwargs["obstacle_authority"] == "go2"
+    link.prepare_onboard_avoidance.assert_called_once()
+    link.close.assert_called_once_with(stop_times=0)
+    run.assert_not_called()
 
 
 def test_walker_refuses_without_uwb_and_reports_faults(walker):
@@ -206,6 +203,78 @@ def test_walker_refuses_without_uwb_and_reports_faults(walker):
         walker.status(owner)
     walker.link.send.assert_called_with(STOP)
     assert walker.stop(owner)
+
+
+def test_stop_prevents_a_pending_move(walker):
+    computing = threading.Event()
+    release = threading.Event()
+    sent_stop = threading.Event()
+
+    def measurement():
+        computing.set()
+        release.wait(1)
+        return 3.0, 0.0
+
+    walker.positions.measurement.side_effect = [(3.0, 0.0), None]
+    walker.start(threading.Event())
+    walker.positions.measurement.side_effect = measurement
+    walker.link.send.side_effect = lambda cmd: sent_stop.set() if cmd == STOP else None
+    stopping = threading.Thread(target=walker.stop)
+    try:
+        assert computing.wait(1)
+        stopping.start()
+        assert sent_stop.wait(1)
+    finally:
+        release.set()
+        if stopping.ident is not None:
+            stopping.join(timeout=2)
+        else:
+            walker.stop()
+    assert not stopping.is_alive()
+    assert [args.args[0] for args in walker.link.send.call_args_list] == [STOP] * 3
+
+
+def test_stop_rejects_start_from_an_older_connection(walker):
+    stop_epoch = walker.stop_epoch
+    walker.stop()
+    with pytest.raises(RuntimeError, match="停止しています"):
+        walker.start(threading.Event(), stop_epoch)
+    assert walker.owner is None
+
+
+def test_fails_when_rotating_without_progress(walker):
+    walker.positions.measurement.return_value = (3.0, math.pi / 2)
+    walker.turn_budget_used = follow.MAX_TURN_WITHOUT_PROGRESS
+    walker.progress_distance = 3.0
+    with pytest.raises(RuntimeError, match="旋回"):
+        walker._tick(0.1)
+    walker.link.send.assert_not_called()
+
+
+def test_stand_uses_stand_up_then_balance_stand(walker, monkeypatch):
+    monkeypatch.setitem(follow.ACTIONS, "stand",
+                        SimpleNamespace(sequence=((STAND_UP, 0), (BALANCE_STAND, 0))))
+    walker.link.posture.side_effect = [LYING, STANDING]
+    assert walker.stand() == "Go2 が立ちました"
+    assert [args.args[0].api_id for args in walker.link.send.call_args_list] == [STAND_UP, BALANCE_STAND]
+
+
+def test_motion_telemetry_must_report_fresh_stationary_samples(monkeypatch):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(follow, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    positions = follow.FollowPositions.__new__(follow.FollowPositions)
+    pose = SimpleNamespace(position=[0, 0], imu_state=SimpleNamespace(rpy=[0, 0, 0]),
+                           velocity=[0, 0, 0], yaw_speed=0.4)
+    positions.on_pose(pose)
+    assert not positions.stationary_after(0)
+    pose.yaw_speed = 0
+    clock.now = 0.1
+    positions.on_pose(pose)
+    clock.now = 0.45
+    positions.on_pose(pose)
+    assert positions.stationary_after(0)
+    clock.now += follow.STATE_TIMEOUT + 0.1
+    assert not positions.stationary_after(0)
 
 
 def test_fake_uwb_measures_relative_to_go2_and_rejects_far_places():
@@ -239,16 +308,19 @@ def test_positions_measurement_drops_stale_and_errors(monkeypatch):
 def test_simulation_endpoints():
     sim = Mock()
     sim.place.return_value = (1.0, 2.0)
-    app = follow.create_follow_app(Mock(), 8810, Mock(), "own", sim)
+    track = Mock()
+    track.stand.return_value = "Go2 が立ちました"
+    app = follow.create_follow_app(track, 8810, Mock(), sim=sim)
     client = TestClient(app, base_url=PAGE, headers={"origin": PAGE})
     assert client.get("/api/config").json() == {"control": "own", "sim": True, "camera": False}
     assert client.post("/api/sim/uwb", json={"x": 1, "y": 2}).json() == {"position": [1.0, 2.0]}
     sim.place.side_effect = ValueError("遠すぎます")
     assert client.post("/api/sim/uwb", json={"x": 99, "y": 0}).status_code == 400
     assert client.post("/api/sim/stand").status_code == 200
-    real = TestClient(follow.create_follow_app(Mock(), 8810, Mock()), base_url=PAGE, headers={"origin": PAGE})
-    assert real.get("/api/config").json() == {"control": "utrack", "sim": False, "camera": False}
+    real = TestClient(follow.create_follow_app(track, 8810, Mock()), base_url=PAGE, headers={"origin": PAGE})
+    assert real.get("/api/config").json() == {"control": "own", "sim": False, "camera": False}
     assert real.get("/api/camera").status_code == 204
+    assert real.post("/api/stand").json() == {"message": "Go2 が立ちました"}
     assert real.post("/api/sim/uwb", json={"x": 1, "y": 2}).status_code in (404, 405)
 
 
@@ -277,16 +349,16 @@ def test_walker_detours_around_obstacles_and_stops_when_boxed_in(walker):
     from tests.test_avoid import square
     walker.positions.obstacles.return_value = square(1.5, 0.1)
     walker.walking = True
-    forward, turn = walker._steer(3.0, 0.0)
+    forward, turn = walker._steer(3.0, 0.0, walker.positions.obstacles())
     assert turn < 0 and walker.side == -1 and "右によけて" in walker.message
     walker.avoid = follow.AvoidConfig(max_detour=math.radians(60))   # 三方を壁に囲まれた
     walker.positions.obstacles.return_value = np.array(
         [(0.6, y) for y in np.arange(-3, 3, 0.05)]
         + [(x, side) for x in np.arange(-3, 0.6, 0.05) for side in (0.5, -0.5)])
-    assert walker._steer(3.0, 0.0) == (0.0, 0.0)
+    assert walker._steer(3.0, 0.0, walker.positions.obstacles()) == (0.0, 0.0)
     assert "道が見つかりません" in walker.message
-    walker.positions.obstacles.return_value = None   # 点群が無ければ（Go2 本体の回避に任せ）まっすぐ
-    forward, turn = walker._steer(3.0, 0.0)
+    walker.positions.obstacles.return_value = np.empty((0, 2))   # 点群から障害物が検出されなければまっすぐ
+    forward, turn = walker._steer(3.0, 0.0, walker.positions.obstacles())
     assert forward > 0 and turn == 0 and walker.side == 0
 
 
@@ -318,7 +390,7 @@ def test_walker_reports_its_heading_for_the_map(walker):
     walker.walking = True
     assert walker.plan() is None        # 追尾していなければ出さない
     walker.owner = threading.Event()
-    walker._steer(3.0, 0.0)
+    walker._steer(3.0, 0.0, walker.positions.obstacles())
     assert walker.plan() < 1.0          # 右へよける向き
-    walker._steer(0.5, 0.0)             # 着いたら消える
+    walker._steer(0.5, 0.0, walker.positions.obstacles())             # 着いたら消える
     assert walker.plan() is None

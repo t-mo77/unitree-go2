@@ -13,7 +13,7 @@
   <header class="topbar">
     <div class="topbar-inner">
       <h1 class="brand-name">Go2 UWB リモコン追尾</h1>
-      <button id="follow-stop" type="button" class="stop-button">止める</button>
+      <button id="follow-stop" type="button" class="stop-button">歩行・旋回を止める</button>
     </div>
   </header>
   <main class="page">
@@ -21,10 +21,10 @@
       <p id="follow-mode" class="label">追尾のやり方: 確認中…</p>
       <p id="follow-intro" class="empty-text">Go2 を立たせ、ペアリング済みの UWB 追従用リモコンを身につけてください。周囲を空け、すぐにリモコンで停止できる状態で始めてください。</p>
       <div class="follow-buttons">
+        <button id="follow-stand" type="button" class="button">Go2 を立たせる</button>
         <button id="follow-start" type="button" class="button">リモコン追尾を開始</button>
-        <button id="sim-stand" type="button" class="button" hidden>Go2 を立たせる（シミュレーション）</button>
       </div>
-      <p id="follow-status" class="empty-text" role="status">停止中</p>
+      <p id="follow-status" class="empty-text" role="status">追尾待機中</p>
     </section>
     <section class="card" aria-labelledby="follow-map-title">
       <h2 id="follow-map-title" class="label">Go2 と UWB リモコンの位置</h2>
@@ -39,7 +39,7 @@
         <div><dt>リモコン</dt><dd id="uwb-position">待機中</dd></div>
         <div><dt>距離・相対方向</dt><dd id="uwb-relative">—</dd></div>
         <div><dt>UWB チャンネル</dt><dd id="uwb-channel">—</dd></div>
-        <div id="obstacle-row" hidden><dt>障害物（点群）</dt><dd id="obstacle-info">—</dd></div>
+        <div id="obstacle-row" hidden><dt id="obstacle-label">LiDAR 点群</dt><dd id="obstacle-info">—</dd></div>
       </dl>
     </section>
     <section id="camera-card" class="card" aria-labelledby="camera-title" hidden>

@@ -286,6 +286,19 @@ def test_onboard_mode_never_falls_back_to_unfiltered_sport_move(ros, monkeypatch
     assert link.node.pub.msgs[-1].header.identity.api_id == STOP_MOVE
 
 
+def test_explicit_pc_mode_uses_lidar_and_sport_api(ros, monkeypatch):
+    monkeypatch.setenv("GO2_OBSTACLE_AUTHORITY", "go2")
+    _, make = ros
+    link = make(obstacle_authority="pc")
+    assert ros_link.LIDAR_TOPIC in link.node.subscriptions
+    assert not link.state_fresh(time.time())
+    link._on_state(_state())
+    assert link.state_fresh(time.time())
+    assert link.reading(time.time()).front == SENSOR_LOST
+    link.send(Command(MOVE, {"x": .2, "y": 0., "z": .1}))
+    assert link.node.pub.msgs[-1].header.identity.api_id == MOVE
+
+
 def test_wait_ready_says_go2_not_found_without_a_subscriber_or_state(ros, monkeypatch):
     _, make = ros
     link = make()

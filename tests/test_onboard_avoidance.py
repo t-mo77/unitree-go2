@@ -14,10 +14,14 @@ class Node:
         self.client = None
         self.enabled = True
         self.reject = None
+        self.response_matches = 1
+        self.drop_reply_to_first_request = False
         self.pub = SimpleNamespace(publish=self.publish, get_subscription_count=lambda: 2)
 
     def publish(self, message):
         self.messages.append(message)
+        if self.drop_reply_to_first_request and len(self.messages) == 1:
+            return
         if not message.header.policy.noreply:
             response = Response()
             response.header.identity.id = message.header.identity.id
@@ -31,6 +35,10 @@ class Node:
 
     def create_subscription(self, *args):
         pass
+
+    def count_publishers(self, topic):
+        assert topic == oa.RESPONSE_TOPIC
+        return self.response_matches
 
     def get_publishers_info_by_topic(self, topic):
         return [SimpleNamespace(node_name="go2_onboard_avoidance", endpoint_gid=bytes([1]) * 24)]
@@ -68,6 +76,28 @@ def test_disabled_onboard_avoidance_never_acquires_or_moves(client):
     with pytest.raises(RuntimeError):
         instance.move({"x": .2, "y": 0., "z": 0.})
     assert [m.header.identity.api_id for m in node.messages] == [oa.SWITCH_GET]
+
+
+def test_waits_for_response_reader_to_match_the_robot(client, monkeypatch):
+    instance, node = client
+    node.response_matches = 0
+
+    def match_response(_delay):
+        assert not node.messages
+        node.response_matches = 1
+
+    monkeypatch.setattr(oa.time, "sleep", match_response)
+    instance.verify_enabled()
+    assert [m.header.identity.api_id for m in node.messages] == [oa.SWITCH_GET]
+
+
+def test_retries_only_the_read_only_query_after_a_missing_reply(client, monkeypatch):
+    instance, node = client
+    node.drop_reply_to_first_request = True
+    monkeypatch.setattr(oa, "REPLY_TIMEOUT_S", 0)
+    instance.prepare()
+    assert [m.header.identity.api_id for m in node.messages] == [oa.SWITCH_GET, oa.SWITCH_GET, oa.USE_API]
+    assert node.messages[0].header.identity.id != node.messages[1].header.identity.id
 
 
 def test_rejection_does_not_fall_back_to_sport_move(client):
