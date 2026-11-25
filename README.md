@@ -144,5 +144,6 @@ docker compose run --rm --no-deps app python3 -m pytest -q -m "not slow" tests n
 | [docs/simulation.md](docs/simulation.md) | 偽の Go2 と Gazebo（ページ、物、`run_formula`、controller のパッチ、転んだとき） |
 | [docs/vocabulary.md](docs/vocabulary.md) | 話せること、物を使う指示、単語帳と状態遷移図の足し方 |
 | [docs/real_robot.md](docs/real_robot.md) | 実機の Go2 を有線でつなぐ（用意するもの、確かめ、安全の注意、困ったとき） |
+| [docs/stairs.md](docs/stairs.md) | 階段（公式の ClassicWalk）：話し方、Gazebo でできること、実機で試す手順 |
 | [docs/unknowns.md](docs/unknowns.md) | わかっていないこと |
 | [docs/design.md](docs/design.md) | 設計書 |

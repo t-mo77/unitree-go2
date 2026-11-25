@@ -115,7 +115,7 @@ class GazeboBridge(Node):
         self._pose: Optional[Pose] = None
         self._quat = (1.0, 0.0, 0.0, 0.0)   # (w, x, y, z)
         self._last_note = ""
-        self._last_code = self.core.error_code
+        self._last_code = self.core.reported_code
 
         self._control_pub = self.create_publisher(Inputs, CONTROL_TOPIC, 10)
         # 実機と同じく、状態と点群は best effort で出す
@@ -161,9 +161,9 @@ class GazeboBridge(Node):
         if sent is not None:
             self._send(sent)
         self._log_notes()
-        if self.core.error_code != self._last_code:
-            self.get_logger().info(f"error_code {self._last_code} → {self.core.error_code}")
-            self._last_code = self.core.error_code
+        if self.core.reported_code != self._last_code:
+            self.get_logger().info(f"error_code {self._last_code} → {self.core.reported_code}")
+            self._last_code = self.core.reported_code
 
     def _on_log(self, msg: Log) -> None:
         """controller の状態の切り替えを、1 行も落とさず橋渡しの中身に知らせる。時刻は受けたときの sim
@@ -208,7 +208,7 @@ class GazeboBridge(Node):
 
         st = SportModeState()
         st.stamp.sec, st.stamp.nanosec = msg.header.stamp.sec, msg.header.stamp.nanosec
-        st.error_code = int(self.core.error_code)
+        st.error_code = int(self.core.reported_code)   # ClassicWalk の後は Classic 2010・Agile 100
         st.position = [float(p.x), float(p.y), float(p.z)]
         st.body_height = float(p.z)
         st.velocity = [float(self._pose[6]), float(self._pose[7]), float(v.z)]

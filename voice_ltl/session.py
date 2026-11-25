@@ -90,7 +90,7 @@ ACTION_JA = {
     "stand": "立つ", "lie_down": "伏せる", "sit": "おすわり", "rise_sit": "立ち上がる",
     "hello": "挨拶", "stretch": "伸び", "content": "喜ぶ", "heart": "ハート", "scrape": "おじぎ",
     "dance": "ダンス", "forward": "前進", "backward": "後退", "turn_left": "左に回る",
-    "turn_right": "右に回る",
+    "turn_right": "右に回る", "stairs_gait": "階段の歩き方", "normal_gait": "ふだんの歩き方",
 }
 SENSOR_JA = {"front_blocked": "前方に物が出た", "front_clear": "前方の物が消えた",
              "back_blocked": "後方に物が出た", "back_clear": "後方の物が消えた"}
@@ -244,7 +244,7 @@ class DirectSimLink:
         return self.sim.posture
 
     def error_code(self) -> int | None:
-        return self.sim.error_code
+        return self.sim.reported_code   # what the fake Go2 publishes (2010 / 100 after a ClassicWalk)
 
     def other_senders(self) -> int:
         return 0  # only this session drives the SimGo2

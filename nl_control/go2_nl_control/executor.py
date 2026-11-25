@@ -152,7 +152,7 @@ class Executor:
                 self._advance()
                 return out + self._tick(now, 0.0, env, pose)
             api, wait = spec.sequence[self.seq_i]
-            out.append(Command(api))
+            out.append(Command(api, None if spec.parameter is None else dict(spec.parameter)))
             self.seq_i += 1
             self.wait_left = wait
         return out

@@ -9,10 +9,11 @@ from voice_ltl.world import (
 def test_go2_world_counts():
     w = go2_world(PlantState(LYING, False, False))
     assert len(w.states) == 12 and w.states[0] == PlantState(LYING, False, False)
-    assert len(w.transitions) == 80
-    assert sum(1 for t in w.transitions if t[3] == "c") == 56
+    # 立っている 4 状態（前・後ろの障害物）ごとに stairs_gait・normal_gait の 2 つ
+    assert len(w.transitions) == 88
+    assert sum(1 for t in w.transitions if t[3] == "c") == 64
     assert sum(1 for t in w.transitions if t[3] == "u") == 24
-    assert len({t[1] for t in w.transitions}) == 60
+    assert len({t[1] for t in w.transitions}) == 68
     assert set(w.marked) == set(w.states)
 
 
@@ -33,7 +34,7 @@ def test_sensor_events():
 
 
 def test_vocabulary_is_safe_and_complete():
-    assert len(PROPOSITIONS) == 15 and set(PROP_DESCRIPTION_JA) == set(PROPOSITIONS)
+    assert len(PROPOSITIONS) == 17 and set(PROP_DESCRIPTION_JA) == set(PROPOSITIONS)
     assert not {"flip", "jump", "handstand"} & set(ACTION_NAMES)
     assert step_value("forward") == 0.5 and step_value("turn_left") == 90.0 and step_value("hello") == 0
     assert all(type(step_value(a)) is float for a in ACTION_NAMES)

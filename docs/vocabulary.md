@@ -7,7 +7,7 @@
 | 種類 | 命題（`voice_ltl/world.py`） |
 |---|---|
 | 姿勢 | `standing`（立っている）、`sitting`（おすわり）、`lying`（伏せ） |
-| 動作をした | `hello`（挨拶）、`stretched`（伸び）、`content`（喜ぶ）、`heart`（ハート）、`scraped`（おじぎ）、`danced`（ダンス）、`moved_forward`、`moved_backward`、`turned_left`、`turned_right` |
+| 動作をした | `hello`（挨拶）、`stretched`（伸び）、`content`（喜ぶ）、`heart`（ハート）、`scraped`（おじぎ）、`danced`（ダンス）、`moved_forward`、`moved_backward`、`turned_left`、`turned_right`、`stairs_gait`（階段の歩き方に切り替えた）、`normal_gait`（ふだんの歩き方に戻した） |
 | センサー | `obstacle_front`（前に障害物）、`obstacle_back`（後ろに障害物） |
 
 前進・後退は 0.5 m、旋回は 90 度が 1 回です。数は繰り返しで表します（1 動作につき 12 回まで）。
@@ -34,6 +34,8 @@
 | 回れ右 / 20回挨拶して | 右旋回 2 回 / 挨拶 12 回（上限） | 置き換えと上限を「こう受け取りました」に出す |
 | 前に何かあるまで進んで / 握手して | （断る） | 動かずに伝える |
 | 0メートル進んで / 這って進んで / こっちに来て | （断る） | 動かずに伝える |
+| 階段を2メートル登って | `stairs_gait` → 前進 4 回 → `normal_gait` | 公式の ClassicWalk に切り替えて前へ 2 m、ふだんの歩き方に戻す。Gazebo では歩き方は変わらず、階段は登れない。[stairs.md](stairs.md) |
+| 階段を登って（距離なし） | `F stairs_gait` | 切り替えるだけ。「こう受け取りました」に「進む距離を言ってください」と出す |
 
 ### 物を使う指示（箱と椅子）
 

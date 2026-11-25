@@ -9,6 +9,7 @@ from voice_ltl.automata import World
 ACTION_NAMES = (
     "stand", "lie_down", "sit", "rise_sit", "hello", "stretch", "content",
     "heart", "scrape", "dance", "forward", "backward", "turn_left", "turn_right",
+    "stairs_gait", "normal_gait",
 )
 
 ACTION_PROP = {
@@ -17,6 +18,7 @@ ACTION_PROP = {
     "heart": "heart", "scrape": "scraped", "dance": "danced",
     "forward": "moved_forward", "backward": "moved_backward",
     "turn_left": "turned_left", "turn_right": "turned_right",
+    "stairs_gait": "stairs_gait", "normal_gait": "normal_gait",
 }
 
 POSTURE_PROP = {LYING: "lying", STANDING: "standing", SITTING: "sitting"}
@@ -42,6 +44,8 @@ PROP_DESCRIPTION_JA = {
     "moved_backward": "後ろへ下がった",
     "turned_left": "左へ向きを変えた",
     "turned_right": "右へ向きを変えた",
+    "stairs_gait": "階段も歩ける歩き方に切り替えた（このあとの前進・後退・旋回は、その歩き方で歩く）",
+    "normal_gait": "ふだんの歩き方に戻した",
     "obstacle_front": "前に障害物がある",
     "obstacle_back": "後ろに障害物がある",
 }

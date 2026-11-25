@@ -54,10 +54,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO, LYING, MOVE,
-                                    RISE_SIT, SCRAPE, SIT, STAND_DOWN, STAND_UP, STANDING,
+from go2_nl_control.actions import (BALANCE_STAND, CLASSIC_WALK, CONTENT, DANCE1, HEART, HELLO, LYING,
+                                    MOVE, RISE_SIT, SCRAPE, SIT, STAND_DOWN, STAND_UP, STANDING,
                                     STOP_MOVE, STRETCH, state_from_error_code)
-from sim.sim_core import BOX_HEIGHT, FOOTPRINT, Box
+from sim.sim_core import BOX_HEIGHT, FOOTPRINT, Box, gait_code, parse_gait
 from voice_ltl.objects import DEFAULT_SIZE, ID_RE, MAX_SIZE, Obj, format_message
 
 # ---- /control_input の command（unitree_guide controller） ----
@@ -107,6 +107,7 @@ _SWITCH = re.compile(r"Switched from (.+?) to (.+)")   # UnitreeGuideController:
 STAND_S = 2.0      # StandUp・StandDown・Sit・RiseSit が終わるまで
 BALANCE_S = 0.5
 GESTURE_S = 3.0
+GAIT_S = 1.0       # ClassicWalk（歩き方の切り替え。Gazebo では見かけだけ）が終わるまで
 MOVE_HOLD_S = 1.0  # Move は送り直しが無ければこの秒数で止まる
 GESTURES = (HELLO, STRETCH, CONTENT, DANCE1, SCRAPE, HEART)
 STANDING_CODES = (1002, 1013, 1015)   # この橋渡しが、立っているときに出す error_code
@@ -156,6 +157,7 @@ _API_NAMES = {
     BALANCE_STAND: "BalanceStand", STOP_MOVE: "StopMove", STAND_UP: "StandUp",
     STAND_DOWN: "StandDown", MOVE: "Move", SIT: "Sit", RISE_SIT: "RiseSit", HELLO: "Hello",
     STRETCH: "Stretch", CONTENT: "Content", DANCE1: "Dance1", SCRAPE: "Scrape", HEART: "Heart",
+    CLASSIC_WALK: "ClassicWalk",
 }
 
 
@@ -241,6 +243,9 @@ class BridgeCore:
         sim_now = now if sim_now is None else sim_now
         self._code = 1001             # 窓口の error_code（起動直後は脱力 = 伏せ扱い）。実機の時間で変わる
         self.error_code = 1001        # 返す error_code（_refresh_code）。知らせ無しなら _code と同じ
+        # ClassicWalk で切り替えた歩き方（"classic"・"agile"。None は切り替えていない）。controller の歩き方は
+        # 変えず、/sportmodestate に出す code（reported_code）だけを実機の表に合わせる
+        self.gait: Optional[str] = None
         self.notes: List[str] = []
         # (送ってよいシミュレーションの時刻, 入力, 速度だけか)。step 1 回で 1 通だけ出す。知らせ有りなら速度だけ
         self._queue: List[Tuple[float, ControllerInput, bool]] = []
@@ -287,6 +292,11 @@ class BridgeCore:
         self._handle(api_id, parameter, now, sim)
         self._refresh_code(sim)
 
+    @property
+    def reported_code(self) -> int:
+        """/sportmodestate に出す error_code：error_code を、ClassicWalk で切り替えた歩き方の code にしたもの。"""
+        return gait_code(self.error_code, self.gait)
+
     def _handle(self, api_id: int, parameter: str, now: float, sim: float) -> None:
         name = api_name(api_id)
         if api_id == STOP_MOVE:                   # いつでも受け付ける（安全側）
@@ -323,6 +333,11 @@ class BridgeCore:
             self._stop(sim)
             self._finish(now, GESTURE_S, 1013)
             self._note(f"{name}（Gazebo では再現なし）")
+        elif api_id == CLASSIC_WALK and posture == STANDING and (gait := parse_gait(parameter)) is not None:
+            self._stop(sim)
+            self.gait = gait
+            self._finish(now, GAIT_S, 1013)
+            self._note(f"{name}（Gazebo では歩き方は変わりません。階段は登れません）")
         elif api_id == MOVE and code in (1013, 1015):
             self._move(parameter, now, sim)
         else:

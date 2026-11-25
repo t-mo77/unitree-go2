@@ -70,7 +70,7 @@ class FakeGo2(Node):
         self.create_timer(1.0 / STATE_HZ, self._on_state_timer)
         self.create_timer(1.0 / CLOUD_HZ, self._on_cloud_timer)
         self.create_timer(1.0 / OBJECTS_HZ, self._on_objects_timer)
-        self._last_code = self.sim.error_code
+        self._last_code = self.sim.reported_code
         self._last_collided = self.sim.collided
 
     # ---------- 受信 ----------
@@ -107,15 +107,15 @@ class FakeGo2(Node):
         msg = SportModeState()
         sec, nanosec = self.get_clock().now().seconds_nanoseconds()
         msg.stamp.sec, msg.stamp.nanosec = sec, nanosec
-        msg.error_code = self.sim.error_code
+        msg.error_code = self.sim.reported_code   # 歩き方を切り替えていれば Classic 2010・Agile 100
         msg.position = [float(self.sim.x), float(self.sim.y), 0.0]
         yaw = math.atan2(math.sin(self.sim.yaw), math.cos(self.sim.yaw))   # 実機の IMU と同じ -π〜π
         msg.imu_state.rpy = [0.0, 0.0, yaw]
         self._state_pub.publish(msg)
 
-        if self.sim.error_code != self._last_code:
-            self.get_logger().info(f"error_code {self._last_code} → {self.sim.error_code}（{self.sim.posture}）")
-            self._last_code = self.sim.error_code
+        if self.sim.reported_code != self._last_code:
+            self.get_logger().info(f"error_code {self._last_code} → {self.sim.reported_code}（{self.sim.posture}）")
+            self._last_code = self.sim.reported_code
         if self.sim.collided != self._last_collided:
             if self.sim.collided:
                 self.get_logger().warning(f"箱にぶつかりました: x={self.sim.x:.2f} y={self.sim.y:.2f}")

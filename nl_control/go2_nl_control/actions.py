@@ -22,6 +22,10 @@ CONTENT = 1020        # 喜ぶ
 DANCE1 = 1022         # ダンス
 SCRAPE = 1029         # おじぎ
 HEART = 1036          # 前足でハートを描く
+# 階段も歩ける歩き方（公式 Motion Services Interface V2.0 の ClassicWalk。Go2 のソフト V1.1.6 以上）。
+# parameter = {"data": true} で入る、{"data": false} で出る（出ると Agile、error_code 100 になる）。
+# 公式の説明：AI-classic gait。階段・砂利・芝生・滑りやすい床に強い。入っている間の error_code は 2010
+CLASSIC_WALK = 2049
 
 # ---- 姿勢の状態（監督器の状態） ----
 LYING = "LYING"        # 伏せ・脱力
@@ -39,10 +43,12 @@ class ActionSpec:
     param: Optional[str] = None            # "distance" [m] / "angle" [度] / "seconds" [s]
     velocity: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # 移動系：Move の向き（+1/-1）
     forward: bool = False                  # 体が前へ出る動作（前方に障害物があると保留）
+    parameter: Optional[dict] = None       # sequence の指令に付ける parameter（ClassicWalk の {"data": …}）
 
 
 # 歩ける姿勢でだけできるジェスチャー
 _G = {STANDING: STANDING}
+GAIT_SWITCH_S = 2.0   # 歩き方を切り替えてから次の動作までの待ち [s]（切り替えの知らせは無いので、決まった秒数）
 
 ACTIONS: Dict[str, ActionSpec] = {
     "stand": ActionSpec(
@@ -78,6 +84,15 @@ ACTIONS: Dict[str, ActionSpec] = {
     "heart": ActionSpec("heart", "前足でハートを描く", _G, sequence=((HEART, 5.0),)),
     "scrape": ActionSpec("scrape", "おじぎで挨拶する", _G, sequence=((SCRAPE, 4.0),)),
     "dance": ActionSpec("dance", "ダンスをする", _G, sequence=((DANCE1, 12.0),)),
+
+    # 歩き方の切り替え（姿勢は立ったまま）。階段を登る・降りるのは Go2 自身の歩き方に任せ、
+    # このアプリは切り替えて、ふだんどおり forward などを送るだけ
+    "stairs_gait": ActionSpec(
+        "stairs_gait", "階段も歩ける歩き方（公式の ClassicWalk）に切り替える", _G,
+        sequence=((CLASSIC_WALK, GAIT_SWITCH_S),), parameter={"data": True}),
+    "normal_gait": ActionSpec(
+        "normal_gait", "階段も歩ける歩き方をやめて、ふだんの歩き方に戻す", _G,
+        sequence=((CLASSIC_WALK, GAIT_SWITCH_S),), parameter={"data": False}),
 }
 
 # パラメータの範囲（範囲外は丸めずに却下する）

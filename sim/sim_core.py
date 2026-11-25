@@ -16,7 +16,7 @@ from typing import Dict, List, Literal, Optional
 
 import numpy as np
 
-from go2_nl_control.actions import (BALANCE_STAND, CONTENT, DANCE1, HEART, HELLO, LYING,
+from go2_nl_control.actions import (BALANCE_STAND, CLASSIC_WALK, CONTENT, DANCE1, HEART, HELLO, LYING,
                                     MOVE, RISE_SIT, SCRAPE, SIT, SITTING, STAND_DOWN,
                                     STAND_UP, STANDING, STOP_MOVE, STRETCH,
                                     state_from_error_code)
@@ -33,8 +33,28 @@ POINT_STEP = 0.05     # 点群の間隔 [m]
 BOX_HEIGHT = 0.4      # 箱の高さ [m]
 GESTURE_S = 3.0
 GESTURES = (HELLO, STRETCH, CONTENT, DANCE1, SCRAPE, HEART)
+GAIT_S = 1.0          # ClassicWalk で歩き方を切り替える間、ほかの指令を受け付けない [s]
 _EPS = 1e-9
 _START_CODE = {LYING: 1004, STANDING: 1013, SITTING: 1007}
+# 歩き方ごとに、立ち・歩き（1013・1015）のかわりに返す error_code（公式 Motion Services Interface V2.0 の表）
+_GAIT_CODE = {"classic": 2010, "agile": 100}
+
+
+def parse_gait(parameter: str) -> Optional[str]:
+    """ClassicWalk の parameter（{"data": true / false}）から行き先の歩き方。形が違えば None。"""
+    try:
+        data = json.loads(parameter).get("data") if parameter else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(data, bool):
+        return None
+    return "classic" if data else "agile"
+
+
+def gait_code(code: int, gait: Optional[str]) -> int:
+    """返す error_code：立ち・歩き（1013・1015）は、歩き方を切り替えていればその歩き方の code（Classic 2010、
+    Agile 100）。伏せ・座り・立ち固め（1002）などはそのまま。中の動き（Move を受け付けるか）は 1013・1015 で決める。"""
+    return _GAIT_CODE.get(gait, code) if code in (1013, 1015) else code
 
 
 def _point_segment_dist(p, a, b) -> float:
@@ -106,6 +126,7 @@ class SimGo2:
         self.y = 0.0
         self.yaw = 0.0
         self.error_code = _START_CODE[posture]
+        self.gait: Optional[str] = None   # ClassicWalk で切り替えた歩き方（"classic"・"agile"）。None は切り替えていない
         self.collided = False
         self.boxes: List[Box] = []
         self.objects: List[SimObject] = []    # 名前つきの物（boxes とは別。/sim/world・clear_boxes に入らない）
@@ -120,6 +141,11 @@ class SimGo2:
     @property
     def posture(self) -> str:
         return state_from_error_code(self.error_code)
+
+    @property
+    def reported_code(self) -> int:
+        """/sportmodestate に出す error_code（歩き方を切り替えていれば 2010・100）。"""
+        return gait_code(self.error_code, self.gait)
 
     # ---- 指令 ----
     def handle(self, api_id: int, parameter: str, now: float) -> None:
@@ -149,6 +175,13 @@ class SimGo2:
             if self.error_code == 1015:          # 歩きながらでも、受け付けたら止まって 1013 に戻る
                 self.error_code = 1013
             self._start(api_id, now, GESTURE_S, self.error_code)
+        elif api_id == CLASSIC_WALK and posture == STANDING and (gait := parse_gait(parameter)) is not None:
+            # 歩き方だけを変える（偽の Go2 は、どの歩き方でも同じように歩く）。切り替える間は止まる
+            self._set_vel((0.0, 0.0, 0.0), now)
+            if self.error_code == 1015:
+                self.error_code = 1013
+            self.gait = gait
+            self._start(api_id, now, GAIT_S, self.error_code)
         elif api_id == MOVE and self.error_code in (1013, 1015):
             try:
                 p = json.loads(parameter)

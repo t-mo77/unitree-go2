@@ -77,7 +77,7 @@ def test_prompt_with_8_objects_and_a_reask_stays_under_20000_characters():
 def test_refusal_line_and_the_object_rules():
     p = build_prompt("x")
     assert ("- 物の一覧（Objects）にない場所・物・人や、まわりを見て決める動き（キッチン、ボール、一覧にない物、"
-            "障害物の周りを回る、階段を上る、おいで、こっちに来て、駆け寄って、ついて来て など）。"
+            "障害物の周りを回る、おいで、こっちに来て、駆け寄って、ついて来て など）。"
             "Objects にある物は「### 物」に従います。\n") in p
     rules = section(p, "### 物（Objects にある物を使う指示）\n", "### 断るもの")
     assert "near_〈id〉（その物の手前にいて、物の方を向いている）" in rules
